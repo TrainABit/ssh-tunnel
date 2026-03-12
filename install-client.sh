@@ -118,14 +118,32 @@ if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
 fi
 
 mkdir -p "$INSTALL_DIR"
+
+# Check if dependencies changed (package.json diff)
+NEED_NPM=false
+if ! diff -q "${SCRIPT_DIR}/client/package.json" "${INSTALL_DIR}/package.json" &>/dev/null; then
+  NEED_NPM=true
+fi
+
+if $TUNNEL_ACTIVE && $NEED_NPM; then
+  fail "package.json changed — cannot safely update npm packages over a live tunnel. Run upgrade via a direct SSH connection to the device."
+fi
+
+# Copy source files (safe while service is running — only JS files, no node_modules)
 rsync -a --exclude='node_modules' "${SCRIPT_DIR}/client/" "$INSTALL_DIR/" 2>/dev/null \
   || { cp -r "${SCRIPT_DIR}/client/." "$INSTALL_DIR/"; rm -rf "${INSTALL_DIR}/node_modules"; }
 
-cd "$INSTALL_DIR"
-echo -e "  ${DIM}Running npm install...${NC}"
-if ! npm install --omit=dev 2>&1; then
-  fail "npm install failed — see output above"
+if $NEED_NPM; then
+  # Not over a live tunnel — safe to modify node_modules
+  cd "$INSTALL_DIR"
+  echo -e "  ${DIM}Running npm install...${NC}"
+  if ! npm install --omit=dev 2>&1; then
+    fail "npm install failed — see output above"
+  fi
+else
+  info "Dependencies unchanged — skipping npm install"
 fi
+
 chmod +x "${INSTALL_DIR}/bin/tunnelvault.js"
 
 cat > /usr/local/bin/tunnelvault <<WRAPEOF
