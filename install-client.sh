@@ -4,11 +4,12 @@
 # Usage: sudo bash install-client.sh --server ws://SERVER:4000 --token TOKEN
 #
 # Options:
-#   --server URL    TunnelVault server WebSocket URL (required)
-#   --token TOKEN   Per-client auth token from dashboard (required)
+#   --server URL    TunnelVault server WebSocket URL (required for fresh install)
+#   --token TOKEN   Per-client auth token from dashboard (required for fresh install)
 #   --port PORT     Local port to tunnel (default: 22 for SSH)
 #   --protocol PROTO Tunnel protocol: http or tcp (default: tcp)
 #   --user USER     Linux user to install service as (default: current user or pi)
+#   --upgrade       Upgrade existing install — preserves config, only updates code
 # ================================================================
 set -euo pipefail
 
@@ -18,15 +19,17 @@ BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m
 step_num=0
 TOTAL_STEPS=6
 step() { step_num=$((step_num + 1)); echo ""; echo -e "${BOLD}${BLUE}[${step_num}/${TOTAL_STEPS}]${NC} ${BOLD}$*${NC}"; echo -e "${DIM}$(printf '%.0s─' {1..60})${NC}"; }
-info()  { echo -e "  ${GREEN}✓${NC} $*"; }
-warn()  { echo -e "  ${YELLOW}⚠${NC} $*"; }
-fail()  { echo -e "  ${RED}✗${NC} $*"; exit 1; }
+info()    { echo -e "  ${GREEN}✓${NC} $*"; }
+warn()    { echo -e "  ${YELLOW}⚠${NC} $*"; }
+fail()    { echo -e "  ${RED}✗${NC} $*"; exit 1; }
+skipped() { echo -e "  ${DIM}– $* (skipped)${NC}"; }
 
 SERVER_URL=""
 AUTH_TOKEN=""
 LOCAL_PORT=22
 PROTOCOL="tcp"
 SERVICE_USER="${SUDO_USER:-${USER:-pi}}"
+UPGRADE=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -35,21 +38,46 @@ while [[ $# -gt 0 ]]; do
     --port)     LOCAL_PORT="$2";   shift 2 ;;
     --protocol) PROTOCOL="$2";     shift 2 ;;
     --user)     SERVICE_USER="$2"; shift 2 ;;
-    -h|--help) head -n 14 "$0" | tail -n +2 | sed 's/^# \?//'; exit 0 ;;
+    --upgrade)  UPGRADE=true;      shift   ;;
+    -h|--help) head -n 16 "$0" | tail -n +2 | sed 's/^# \?//'; exit 0 ;;
     *) echo -e "${RED}Unknown option: $1${NC}"; exit 1 ;;
   esac
 done
 
-[[ -z "$SERVER_URL" ]] && fail "--server is required (e.g. ws://1.2.3.4:4000)"
-[[ -z "$AUTH_TOKEN" ]] && fail "--token is required (get it from the dashboard)"
 [[ $EUID -ne 0 ]] && fail "Run as root: sudo bash install-client.sh ..."
 
 INSTALL_DIR="/opt/tunnelvault-client"
 CONFIG_DIR="/etc/tunnelvault"
 SERVICE_NAME="tunnelvault-client"
 
+# ── Upgrade mode: load existing config ───────────────────────
+if $UPGRADE; then
+  TOTAL_STEPS=4
+  if [[ ! -d "$INSTALL_DIR" ]]; then
+    warn "No existing installation found — performing fresh install instead"
+    UPGRADE=false
+  else
+    # Load existing config so we don't need --server/--token on upgrade
+    if [[ -f "${CONFIG_DIR}/config.json" ]]; then
+      SERVER_URL=$(python3 -c "import json,sys; d=json.load(open('${CONFIG_DIR}/config.json')); print(d.get('server',''))" 2>/dev/null || true)
+      AUTH_TOKEN=$(python3 -c "import json,sys; d=json.load(open('${CONFIG_DIR}/config.json')); print(d.get('auth_token',''))" 2>/dev/null || true)
+    fi
+    info "Upgrade mode: preserving existing config"
+  fi
+fi
+
+if ! $UPGRADE; then
+  [[ -z "$SERVER_URL" ]] && fail "--server is required (e.g. ws://1.2.3.4:4000)"
+  [[ -z "$AUTH_TOKEN" ]] && fail "--token is required (get it from the dashboard)"
+fi
+
 echo ""
 echo -e "${BOLD}${CYAN}  TunnelVault Client Installer${NC}"
+if $UPGRADE; then
+  echo -e "  ${DIM}Mode: UPGRADE (preserving config)${NC}"
+else
+  echo -e "  ${DIM}Mode: Fresh install${NC}"
+fi
 echo ""
 
 # ── Step 1: Node.js ──────────────────────────────────────────
@@ -75,33 +103,44 @@ else
 fi
 
 # ── Step 2: Copy client files ────────────────────────────────
-step "Installing TunnelVault client"
+step "Updating TunnelVault client files"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ ! -d "${SCRIPT_DIR}/client" ]]; then
   fail "client/ directory not found. Run this script from the TunnelVault project root."
 fi
+
+# Stop service before updating files (only if running)
+if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+  systemctl stop "$SERVICE_NAME"
+  info "Service stopped for update"
+fi
+
 mkdir -p "$INSTALL_DIR"
-# Exclude node_modules from the copy to avoid stale/conflicting dependencies
 rsync -a --exclude='node_modules' "${SCRIPT_DIR}/client/" "$INSTALL_DIR/" 2>/dev/null \
   || { cp -r "${SCRIPT_DIR}/client/." "$INSTALL_DIR/"; rm -rf "${INSTALL_DIR}/node_modules"; }
+
 cd "$INSTALL_DIR"
 echo -e "  ${DIM}Running npm install...${NC}"
 if ! npm install --omit=dev 2>&1; then
   fail "npm install failed — see output above"
 fi
 chmod +x "${INSTALL_DIR}/bin/tunnelvault.js"
-# Create a wrapper script
+
 cat > /usr/local/bin/tunnelvault <<WRAPEOF
 #!/bin/bash
 exec node ${INSTALL_DIR}/bin/tunnelvault.js "\$@"
 WRAPEOF
 chmod +x /usr/local/bin/tunnelvault
-info "tunnelvault CLI installed to /usr/local/bin/tunnelvault"
+info "tunnelvault CLI updated at /usr/local/bin/tunnelvault"
 
-# ── Step 3: Write config ─────────────────────────────────────
-step "Writing configuration"
-mkdir -p "$CONFIG_DIR"
-cat > "${CONFIG_DIR}/config.json" <<CFGEOF
+# ── Step 3: Write config (skipped on upgrade) ────────────────
+if $UPGRADE; then
+  step "Configuration (preserved)"
+  skipped "Config unchanged at ${CONFIG_DIR}/config.json"
+else
+  step "Writing configuration"
+  mkdir -p "$CONFIG_DIR"
+  cat > "${CONFIG_DIR}/config.json" <<CFGEOF
 {
   "server": "${SERVER_URL}",
   "auth_token": "${AUTH_TOKEN}",
@@ -109,23 +148,24 @@ cat > "${CONFIG_DIR}/config.json" <<CFGEOF
   "port": ${LOCAL_PORT}
 }
 CFGEOF
-chmod 600 "${CONFIG_DIR}/config.json"
-info "Config written to ${CONFIG_DIR}/config.json"
+  chmod 600 "${CONFIG_DIR}/config.json"
+  info "Config written to ${CONFIG_DIR}/config.json"
 
-# Also write to the service user's home config (for manual use)
-if id "$SERVICE_USER" &>/dev/null; then
-  USER_HOME=$(getent passwd "$SERVICE_USER" | cut -d: -f6)
-  if [[ -n "$USER_HOME" && -d "$USER_HOME" ]]; then
-    mkdir -p "${USER_HOME}/.tunnelvault"
-    cp "${CONFIG_DIR}/config.json" "${USER_HOME}/.tunnelvault/config.json"
-    chown -R "${SERVICE_USER}:${SERVICE_USER}" "${USER_HOME}/.tunnelvault"
-    info "Config also written to ${USER_HOME}/.tunnelvault/config.json"
+  if id "$SERVICE_USER" &>/dev/null; then
+    USER_HOME=$(getent passwd "$SERVICE_USER" | cut -d: -f6)
+    if [[ -n "$USER_HOME" && -d "$USER_HOME" ]]; then
+      mkdir -p "${USER_HOME}/.tunnelvault"
+      cp "${CONFIG_DIR}/config.json" "${USER_HOME}/.tunnelvault/config.json"
+      chown -R "${SERVICE_USER}:${SERVICE_USER}" "${USER_HOME}/.tunnelvault"
+      info "Config also written to ${USER_HOME}/.tunnelvault/config.json"
+    fi
   fi
 fi
 
-# ── Step 4: Create systemd service ──────────────────────────
-step "Creating systemd service"
-cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<SVCEOF
+# ── Step 4: Create / reload systemd service ──────────────────
+step "Starting service"
+if ! $UPGRADE; then
+  cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<SVCEOF
 [Unit]
 Description=TunnelVault Client — SSH tunnel to server
 After=network-online.target
@@ -144,10 +184,13 @@ SyslogIdentifier=tunnelvault-client
 [Install]
 WantedBy=multi-user.target
 SVCEOF
+  systemctl daemon-reload
+  systemctl enable "$SERVICE_NAME"
+  info "Service file created and enabled"
+fi
 
-systemctl daemon-reload
-systemctl enable --now "$SERVICE_NAME"
-info "Service enabled and started"
+systemctl start "$SERVICE_NAME"
+info "Service started"
 
 # ── Step 5: Verify service ──────────────────────────────────
 step "Verifying"
@@ -161,20 +204,18 @@ fi
 
 # ── Summary ─────────────────────────────────────────────────
 echo ""
-echo -e "${BOLD}${GREEN}  TunnelVault Client Installation Complete!${NC}"
-echo ""
-echo -e "  ${BOLD}Config${NC}"
-echo -e "  ────────────────────────────────────────────────────"
-echo -e "  Server:    ${CYAN}${SERVER_URL}${NC}"
-echo -e "  Protocol:  ${CYAN}${PROTOCOL}${NC}"
-echo -e "  Port:      ${CYAN}${LOCAL_PORT}${NC}"
-echo -e "  Service:   ${CYAN}${SERVICE_NAME}${NC}"
+if $UPGRADE; then
+  echo -e "${BOLD}${GREEN}  TunnelVault Client Upgrade Complete!${NC}"
+else
+  echo -e "${BOLD}${GREEN}  TunnelVault Client Installation Complete!${NC}"
+fi
 echo ""
 echo -e "  ${BOLD}Useful Commands${NC}"
 echo -e "  ────────────────────────────────────────────────────"
 echo -e "  ${DIM}View logs:${NC}      journalctl -u ${SERVICE_NAME} -f"
 echo -e "  ${DIM}Restart:${NC}        systemctl restart ${SERVICE_NAME}"
 echo -e "  ${DIM}Stop:${NC}           systemctl stop ${SERVICE_NAME}"
+echo -e "  ${DIM}Upgrade next time:${NC} git pull && sudo bash install-client.sh --upgrade"
 echo ""
 echo -e "  ${DIM}Once connected, the SSH port will be shown in the dashboard.${NC}"
 echo ""
