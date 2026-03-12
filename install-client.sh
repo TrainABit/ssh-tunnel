@@ -17,7 +17,7 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
 
 step_num=0
-TOTAL_STEPS=6
+TOTAL_STEPS=5
 step() { step_num=$((step_num + 1)); echo ""; echo -e "${BOLD}${BLUE}[${step_num}/${TOTAL_STEPS}]${NC} ${BOLD}$*${NC}"; echo -e "${DIM}$(printf '%.0s─' {1..60})${NC}"; }
 info()    { echo -e "  ${GREEN}✓${NC} $*"; }
 warn()    { echo -e "  ${YELLOW}⚠${NC} $*"; }
@@ -109,10 +109,12 @@ if [[ ! -d "${SCRIPT_DIR}/client" ]]; then
   fail "client/ directory not found. Run this script from the TunnelVault project root."
 fi
 
-# Stop service before updating files (only if running)
+# Check if we're likely running over a tunnel (service is active)
+# If so, do NOT stop first — copy files while old process runs, then schedule restart
+TUNNEL_ACTIVE=false
 if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
-  systemctl stop "$SERVICE_NAME"
-  info "Service stopped for update"
+  TUNNEL_ACTIVE=true
+  warn "Tunnel service is running — files will be updated live, restart scheduled after"
 fi
 
 mkdir -p "$INSTALL_DIR"
@@ -163,7 +165,7 @@ CFGEOF
 fi
 
 # ── Step 4: Create / reload systemd service ──────────────────
-step "Starting service"
+step "Configuring service"
 if ! $UPGRADE; then
   cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<SVCEOF
 [Unit]
@@ -189,17 +191,34 @@ SVCEOF
   info "Service file created and enabled"
 fi
 
-systemctl start "$SERVICE_NAME"
-info "Service started"
+# ── Step 5: Start / schedule restart ────────────────────────
+step "Applying update"
 
-# ── Step 5: Verify service ──────────────────────────────────
-step "Verifying"
-sleep 3
-STATUS=$(systemctl is-active "$SERVICE_NAME" 2>/dev/null || echo "unknown")
-if [[ "$STATUS" == "active" ]]; then
-  info "Service is running"
+RESTART_DELAY=30
+
+if $TUNNEL_ACTIVE; then
+  # Running over a live tunnel — schedule restart in background so this SSH
+  # session can exit cleanly before the tunnel drops.
+  # shellcheck disable=SC2064
+  (sleep $RESTART_DELAY && systemctl restart "$SERVICE_NAME") &
+  disown
+
+  echo ""
+  echo -e "  ${BOLD}${YELLOW}⚠  Your SSH session will disconnect in ~${RESTART_DELAY} seconds${NC}"
+  echo -e "  ${DIM}The tunnel service is restarting to apply the update.${NC}"
+  echo -e "  ${DIM}After it reconnects, SSH in again normally.${NC}"
+  echo ""
 else
-  warn "Service status: $STATUS — check with: journalctl -u ${SERVICE_NAME} -f"
+  # Not running over a tunnel (or fresh install) — restart immediately
+  systemctl daemon-reload
+  systemctl restart "$SERVICE_NAME" 2>/dev/null || systemctl start "$SERVICE_NAME"
+  sleep 3
+  STATUS=$(systemctl is-active "$SERVICE_NAME" 2>/dev/null || echo "unknown")
+  if [[ "$STATUS" == "active" ]]; then
+    info "Service is running"
+  else
+    warn "Service status: $STATUS — check with: journalctl -u ${SERVICE_NAME} -f"
+  fi
 fi
 
 # ── Summary ─────────────────────────────────────────────────
