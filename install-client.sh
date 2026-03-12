@@ -81,9 +81,14 @@ if [[ ! -d "${SCRIPT_DIR}/client" ]]; then
   fail "client/ directory not found. Run this script from the TunnelVault project root."
 fi
 mkdir -p "$INSTALL_DIR"
-cp -r "${SCRIPT_DIR}/client/." "$INSTALL_DIR/"
+# Exclude node_modules from the copy to avoid stale/conflicting dependencies
+rsync -a --exclude='node_modules' "${SCRIPT_DIR}/client/" "$INSTALL_DIR/" 2>/dev/null \
+  || { cp -r "${SCRIPT_DIR}/client/." "$INSTALL_DIR/"; rm -rf "${INSTALL_DIR}/node_modules"; }
 cd "$INSTALL_DIR"
-npm install --omit=dev --quiet 2>&1 | tail -3
+echo -e "  ${DIM}Running npm install...${NC}"
+if ! npm install --omit=dev 2>&1; then
+  fail "npm install failed — see output above"
+fi
 chmod +x "${INSTALL_DIR}/bin/tunnelvault.js"
 # Create a wrapper script
 cat > /usr/local/bin/tunnelvault <<WRAPEOF
