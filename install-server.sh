@@ -248,18 +248,16 @@ if [[ -f "${SCRIPT_DIR}/backend/package-lock.json" ]]; then
 fi
 info "Package manifests copied"
 
-# Frontend
-if [[ ! -d "${SCRIPT_DIR}/frontend/dist" ]]; then
-    echo -e "  ${DIM}Building frontend...${NC}"
-    cd "${SCRIPT_DIR}/frontend"
-    if npm install --quiet 2>&1 | tail -3 && npm run build 2>&1 | tail -5; then
-        info "Frontend built successfully"
-    else
-        warn "Frontend build failed — Dashboard UI may be unavailable"
-        warn "Run manually: cd ${SCRIPT_DIR}/frontend && npm install && npm run build"
-    fi
-    cd "$SCRIPT_DIR"
+# Frontend (always rebuild so --upgrade picks up UI changes)
+echo -e "  ${DIM}Building frontend...${NC}"
+cd "${SCRIPT_DIR}/frontend"
+if npm install --quiet 2>&1 | tail -3 && npm run build 2>&1 | tail -5; then
+    info "Frontend built successfully"
+else
+    warn "Frontend build failed — Dashboard UI may be unavailable"
+    warn "Run manually: cd ${SCRIPT_DIR}/frontend && npm install && npm run build"
 fi
+cd "$SCRIPT_DIR"
 
 if [[ -d "${SCRIPT_DIR}/frontend/dist" ]]; then
     rm -rf "${INSTALL_DIR}/frontend/dist"
