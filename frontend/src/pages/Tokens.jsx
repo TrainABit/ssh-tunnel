@@ -42,40 +42,30 @@ function formatDuration(start, end) {
   return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`;
 }
 
-function SshConfigBlock({ token, gatewayHost }) {
+function InstallCommandBlock({ server, token }) {
   const [copied, setCopied] = useState(false);
-  const config = `Host my-server\n    HostName ${gatewayHost}\n    User gw-${token}\n    IdentityFile ~/.ssh/id_rsa`;
+  const cmd = `sudo bash install-client.sh --server ${server} --token ${token}`;
 
   const handleCopy = () => {
-    navigator.clipboard?.writeText(config);
+    navigator.clipboard?.writeText(cmd);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
   return (
-    <div className="relative rounded-lg border border-gray-700/60 bg-[#08080d] p-4 font-mono text-[13px] leading-relaxed">
+    <div className="relative rounded-lg border border-gray-700/60 bg-[#08080d] p-4 font-mono text-xs leading-relaxed break-all">
       <button
         onClick={handleCopy}
         className="absolute top-2 right-2 rounded-md border border-gray-700 bg-gray-800/60 p-1.5 text-gray-400 transition-colors hover:border-gray-600 hover:text-white"
       >
         {copied ? <Check size={12} className="text-emerald-400" /> : <Copy size={12} />}
       </button>
-      <div>
-        <span className="text-[#38b6ff]">Host</span>{'          '}
-        <span className="text-emerald-400">my-server</span>
-      </div>
-      <div>
-        {'    '}<span className="text-[#38b6ff]">HostName</span>{'  '}
-        <span className="text-emerald-400">{gatewayHost}</span>
-      </div>
-      <div>
-        {'    '}<span className="text-[#38b6ff]">User</span>{'      '}
-        <span className="text-emerald-400">gw-{token}</span>
-      </div>
-      <div>
-        {'    '}<span className="text-[#38b6ff]">IdentityFile</span>{' '}
-        <span className="text-emerald-400">~/.ssh/id_rsa</span>
-      </div>
+      <span className="text-gray-500">$ </span>
+      <span className="text-emerald-400">sudo bash install-client.sh</span>
+      {' '}
+      <span className="text-[#38b6ff]">--server</span> <span className="text-white">{server}</span>
+      {' '}
+      <span className="text-[#38b6ff]">--token</span> <span className="text-white">{token}</span>
     </div>
   );
 }
@@ -114,12 +104,13 @@ function CreateModal({ onClose, onCreate }) {
                 Token <span className="font-mono text-[#38b6ff]">{result.token}</span> created successfully
               </div>
             </div>
-            <div className="space-y-3 text-sm text-gray-300">
-              <p>Add to <code className="text-[#38b6ff]">~/.tunnelvault/config.json</code> on the client device:</p>
-              <div className="rounded-lg border border-gray-700/60 bg-[#08080d] p-3 font-mono text-xs">
-                {`{\n  "server": "ws://${window.location.hostname}:4000",\n  "auth_token": "${result.token}"\n}`}
-              </div>
-              <p className="text-xs text-gray-500">Then run: <code className="text-[#38b6ff]">tunnelvault connect 22 --protocol tcp</code></p>
+            <div className="space-y-2">
+              <p className="text-xs font-semibold uppercase tracking-wider text-gray-500">Run on the client device</p>
+              <InstallCommandBlock
+                server={`ws://${window.location.hostname}:4000`}
+                token={result.token}
+              />
+              <p className="text-xs text-gray-600">Installs the client and starts it as a systemd service automatically.</p>
             </div>
             <button
               onClick={onClose}
@@ -242,12 +233,15 @@ function DetailModal({ token, onClose, onToggle, onDelete }) {
           </div>
         </div>
 
-        {/* SSH Config */}
+        {/* Install command */}
         <div className="mb-5">
           <p className="mb-2 text-[9px] font-semibold uppercase tracking-widest text-gray-600">
-            ~/.ssh/config for Client
+            Client Install Command
           </p>
-          <SshConfigBlock token={detail.token} gatewayHost={gatewayHost} />
+          <InstallCommandBlock
+            server={`ws://${gatewayHost}:4000`}
+            token={detail.token}
+          />
         </div>
 
         {/* Recent Sessions */}
