@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { Plus, Copy, Trash2, Power, X, Check, RefreshCw, ArrowRight } from 'lucide-react';
-import { getTunnels, createTunnel, deleteTunnel, toggleTunnel } from '../services/api';
+import { Copy, Trash2, Power, Check, RefreshCw, ArrowRight } from 'lucide-react';
+import { getTunnels, deleteTunnel, toggleTunnel } from '../services/api';
 import { copyToClipboard } from '../utils/clipboard';
 
 const btnStyle = {
@@ -11,76 +11,8 @@ const btnStyle = {
     cursor: 'pointer', transition: 'all .15s', background: 'transparent',
     borderColor: 'var(--border2)', color: 'var(--text-mid)',
   },
-  primary: {
-    display: 'inline-flex', alignItems: 'center', gap: '6px',
-    padding: '5px 12px', fontFamily: 'inherit', fontSize: '10px',
-    letterSpacing: '.09em', textTransform: 'uppercase', border: '1px solid',
-    cursor: 'pointer', transition: 'all .15s',
-    background: 'var(--green)', borderColor: 'var(--green)', color: '#040d0a', fontWeight: 600,
-  },
 };
 
-function CreateModal({ onClose, onCreate }) {
-  const [form, setForm] = useState({ name: '', localPort: '', subdomain: '' });
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState('');
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    if (!form.name || !form.localPort) return;
-    setSubmitting(true);
-    setError('');
-    const result = await onCreate({ ...form, localPort: Number(form.localPort) });
-    if (result?.error) setError(result.error);
-    else onClose();
-    setSubmitting(false);
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.75)' }}>
-      <div className="w-full max-w-md" style={{ background: 'var(--surface)', border: '1px solid var(--border2)' }}>
-        <div className="flex items-center justify-between px-5 py-3.5" style={{ borderBottom: '1px solid var(--border)' }}>
-          <span className="text-[11px] uppercase tracking-[0.1em]" style={{ color: 'var(--text)' }}>Create Tunnel</span>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', fontSize: '18px', lineHeight: 1 }}>×</button>
-        </div>
-        <form onSubmit={handleSubmit} className="p-5 space-y-4">
-          {[
-            { id: 'name', label: 'Tunnel Name', placeholder: 'my-raspi', required: true },
-            { id: 'localPort', label: 'Local Port', placeholder: '22', required: true, type: 'number' },
-            { id: 'subdomain', label: 'Subdomain (optional)', placeholder: 'my-raspi' },
-          ].map(f => (
-            <div key={f.id}>
-              <label className="block text-[9.5px] uppercase tracking-[0.15em] mb-1.5" style={{ color: 'var(--text-dim)' }}>
-                {f.label}
-              </label>
-              <input
-                type={f.type || 'text'}
-                value={form[f.id]}
-                onChange={e => setForm({ ...form, [f.id]: e.target.value })}
-                placeholder={f.placeholder}
-                required={f.required}
-                style={{
-                  width: '100%', background: 'var(--bg)', border: '1px solid var(--border2)',
-                  color: 'var(--text)', fontFamily: 'inherit', fontSize: '12px',
-                  padding: '8px 10px', outline: 'none', boxSizing: 'border-box',
-                }}
-                onFocus={e => e.target.style.borderColor = 'var(--green-dim)'}
-                onBlur={e => e.target.style.borderColor = 'var(--border2)'}
-              />
-            </div>
-          ))}
-          {error && <p className="text-[11px]" style={{ color: 'var(--red)' }}>{error}</p>}
-          <div className="flex justify-end gap-2 pt-1">
-            <button type="button" onClick={onClose} style={btnStyle.ghost}>Cancel</button>
-            <button type="submit" disabled={submitting} style={{ ...btnStyle.primary, opacity: submitting ? 0.6 : 1 }}>
-              {submitting ? 'Creating…' : 'Create'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  );
-}
 
 function TunnelCard({ tunnel, onDelete, onToggle, onCopy }) {
   const isActive = tunnel.status === 'active';
@@ -209,7 +141,6 @@ function TunnelCard({ tunnel, onDelete, onToggle, onCopy }) {
 export default function Tunnels() {
   const [tunnels, setTunnels] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [showModal, setShowModal] = useState(false);
   const [copied, setCopied] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const intervalRef = useRef(null);
@@ -253,26 +184,15 @@ export default function Tunnels() {
             Active tunnel endpoints — auto-refreshes every 5s
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => load(true)}
-            style={btnStyle.ghost}
-            onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--green-dim)'; e.currentTarget.style.color = 'var(--text)'; }}
-            onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border2)'; e.currentTarget.style.color = 'var(--text-mid)'; }}
-          >
-            <RefreshCw size={11} className={refreshing ? 'animate-spin' : ''} />
-            Refresh
-          </button>
-          <button
-            onClick={() => setShowModal(true)}
-            style={btnStyle.primary}
-            onMouseEnter={e => e.currentTarget.style.background = '#00f599'}
-            onMouseLeave={e => e.currentTarget.style.background = 'var(--green)'}
-          >
-            <Plus size={11} />
-            New Tunnel
-          </button>
-        </div>
+        <button
+          onClick={() => load(true)}
+          style={btnStyle.ghost}
+          onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--green-dim)'; e.currentTarget.style.color = 'var(--text)'; }}
+          onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border2)'; e.currentTarget.style.color = 'var(--text-mid)'; }}
+        >
+          <RefreshCw size={11} className={refreshing ? 'animate-spin' : ''} />
+          Refresh
+        </button>
       </div>
 
       {/* Copied toast */}
@@ -287,14 +207,8 @@ export default function Tunnels() {
 
       {tunnels.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16" style={{ border: '1px dashed var(--border2)' }}>
-          <p className="text-[11.5px]" style={{ color: 'var(--text-dim)' }}>No tunnels yet</p>
-          <button
-            onClick={() => setShowModal(true)}
-            className="mt-3 text-[11px] uppercase tracking-[0.09em]"
-            style={{ color: 'var(--green)', background: 'none', border: 'none', cursor: 'pointer' }}
-          >
-            + Create your first tunnel
-          </button>
+          <p className="text-[11.5px]" style={{ color: 'var(--text-dim)' }}>No active tunnels</p>
+          <p className="mt-1 text-[10.5px]" style={{ color: 'var(--text-dim)' }}>Tunnels appear automatically when a client connects</p>
         </div>
       ) : (
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -310,16 +224,6 @@ export default function Tunnels() {
         </div>
       )}
 
-      {showModal && (
-        <CreateModal
-          onClose={() => setShowModal(false)}
-          onCreate={async (form) => {
-            const result = await createTunnel(form);
-            await load();
-            return result;
-          }}
-        />
-      )}
     </div>
   );
 }
