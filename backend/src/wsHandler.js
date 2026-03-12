@@ -149,6 +149,13 @@ function initWebSocket(server, tunnelManager, connectionTracker, db, tcpProxy) {
             }
             const tunnel = tunnelManager.getTunnel(msg.tunnelId);
 
+            // Tunnel was manually paused — hold the WS in standby, don't start TCP
+            if (tunnel.status === 'paused') {
+              ws.send(JSON.stringify({ type: 'standby', tunnelId: msg.tunnelId }));
+              log.info('Tunnel in standby (manually paused)', { tunnelId: msg.tunnelId });
+              break;
+            }
+
             // For TCP tunnels: restart the TCP listener if it's not already running
             let allocatedPort = tunnel.allocatedPort;
             if (tunnel.protocol === 'tcp' && tcpProxy && !tcpProxy.servers.has(msg.tunnelId)) {

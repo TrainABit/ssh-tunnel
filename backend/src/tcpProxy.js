@@ -4,9 +4,10 @@ const { createLogger } = require('./logger');
 const log = createLogger('tcp-proxy');
 
 class TcpProxy {
-  constructor(connectionTracker, db) {
+  constructor(connectionTracker, db, tunnelManager) {
     this.connectionTracker = connectionTracker || null;
     this.db = db || null;
+    this.tunnelManager = tunnelManager || null;
     this.servers = new Map();    // tunnelId -> { server, port, connections: Map<connId, socket> }
     this.connTunnel = new Map(); // connId -> tunnelId
     this.connMeta = new Map();   // connId -> { trackId, sessionId }
@@ -39,24 +40,30 @@ class TcpProxy {
       connections.set(connId, socket);
       this.connTunnel.set(connId, tunnelId);
 
-      // Track in ConnectionTracker
+      // Track in ConnectionTracker and tunnel stats
       const trackId = this.connectionTracker
         ? this.connectionTracker.startConnection(tunnelId, socket.remoteAddress)
         : null;
+      if (this.tunnelManager) {
+        this.tunnelManager.incrementConnections(tunnelId);
+      }
 
-      // Create a DB session record if we have a per-client token
+      // Create a DB session record for every TCP connection
       let sessionId = null;
-      if (this.db && tokenRecord && tokenRecord.token) {
+      if (this.db) {
         try {
+          const token = tokenRecord?.token || null;
           const result = this.db.run(
             `INSERT INTO sessions (token, client_ip, target_ip, target_port) VALUES (?, ?, ?, ?)`,
-            [tokenRecord.token, socket.remoteAddress || 'unknown', '127.0.0.1', localPort]
+            [token, socket.remoteAddress || 'unknown', '127.0.0.1', localPort]
           );
           sessionId = Number(result.lastInsertRowid);
-          this.db.run(
-            `UPDATE tokens SET last_seen = datetime('now') WHERE token = ?`,
-            [tokenRecord.token]
-          );
+          if (token) {
+            this.db.run(
+              `UPDATE tokens SET last_seen = datetime('now') WHERE token = ?`,
+              [token]
+            );
+          }
         } catch (err) {
           log.warn('Failed to create session record', { error: err.message });
         }
@@ -70,9 +77,11 @@ class TcpProxy {
       ws.send(JSON.stringify({ type: 'tcp-open', connId, tunnelId, localPort }));
 
       socket.on('data', (chunk) => {
-        // Track bytes incoming from external SSH client
         if (this.connectionTracker && trackId) {
           this.connectionTracker.updateBytes(trackId, chunk.length, 0);
+        }
+        if (this.tunnelManager) {
+          this.tunnelManager.addBytes(tunnelId, chunk.length);
         }
         if (ws.readyState === 1) {
           ws.send(JSON.stringify({ type: 'tcp-data', connId, data: chunk.toString('base64') }));

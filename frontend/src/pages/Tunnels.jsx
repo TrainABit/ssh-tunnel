@@ -85,13 +85,14 @@ function CreateModal({ onClose, onCreate }) {
 function TunnelCard({ tunnel, onDelete, onToggle, onCopy }) {
   const isActive = tunnel.status === 'active';
   const isInactive = tunnel.status === 'inactive';
+  const isPaused = tunnel.status === 'paused';
 
   return (
     <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', position: 'relative', overflow: 'hidden' }}>
       {/* Status top bar */}
       <div style={{
         position: 'absolute', top: 0, left: 0, right: 0, height: '2px',
-        background: isActive ? 'var(--green)' : isInactive ? 'var(--border2)' : 'var(--red)',
+        background: isActive ? 'var(--green)' : isPaused ? 'var(--amber)' : isInactive ? 'var(--border2)' : 'var(--red)',
         opacity: isActive ? 1 : 0.5,
       }} />
 
@@ -101,16 +102,16 @@ function TunnelCard({ tunnel, onDelete, onToggle, onCopy }) {
           <div className="flex items-center gap-2">
             <div
               className={`h-2 w-2 rounded-full ${isActive ? 'pulse-dot' : ''}`}
-              style={{ background: isActive ? 'var(--green)' : isInactive ? 'var(--border2)' : '#e84040' }}
+              style={{ background: isActive ? 'var(--green)' : isPaused ? 'var(--amber)' : isInactive ? 'var(--border2)' : '#e84040' }}
             />
             <span className="text-[12px] font-normal" style={{ color: 'var(--text)' }}>{tunnel.name}</span>
           </div>
           <span
             className="border px-2 py-0.5 text-[9px] uppercase tracking-[0.08em]"
             style={{
-              color: isActive ? 'var(--green)' : 'var(--text-dim)',
-              borderColor: isActive ? 'var(--green-dim)' : 'var(--border2)',
-              background: isActive ? 'var(--green-bg)' : 'transparent',
+              color: isActive ? 'var(--green)' : isPaused ? 'var(--amber)' : 'var(--text-dim)',
+              borderColor: isActive ? 'var(--green-dim)' : isPaused ? '#4a3000' : 'var(--border2)',
+              background: isActive ? 'var(--green-bg)' : isPaused ? 'rgba(240,165,0,0.07)' : 'transparent',
             }}
           >
             {isInactive ? 'disconnected' : tunnel.status}
@@ -188,7 +189,7 @@ function TunnelCard({ tunnel, onDelete, onToggle, onCopy }) {
               onClick={() => onToggle(tunnel.id)}
               style={{ ...btnStyle.ghost, borderColor: 'var(--green-dim)', color: 'var(--green)', padding: '4px 10px', fontSize: '9.5px' }}
             >
-              <Power size={10} /> Start
+              <Power size={10} /> {isPaused ? 'Resume' : 'Start'}
             </button>
           )}
 

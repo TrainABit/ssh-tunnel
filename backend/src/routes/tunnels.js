@@ -51,23 +51,24 @@ function tunnelsRouter(tunnelManager) {
     }
 
     if (tunnel.status === 'active' || tunnel.status === 'simulated') {
-      // Deactivate: close WS if present, mark inactive
+      // Stop: close WS, mark paused (so client reconnects but stays in standby)
       if (tunnel.clientWs && tunnel.clientWs.readyState <= 1) {
-        try {
-          tunnel.clientWs.close(1000, 'Tunnel toggled off');
-        } catch (err) {
-          // ignore close errors
-        }
+        try { tunnel.clientWs.close(1000, 'Tunnel paused'); } catch (_) {}
       }
       tunnel.clientWs = null;
-      tunnel.status = 'inactive';
+      tunnel.status = 'paused';
+    } else if (tunnel.status === 'paused') {
+      // Start from paused: close standby WS to force a fresh reconnect as active
+      if (tunnel.clientWs && tunnel.clientWs.readyState <= 1) {
+        try { tunnel.clientWs.close(1000, 'Tunnel resumed'); } catch (_) {}
+        tunnel.clientWs = null;
+      }
+      tunnel.status = 'inactive'; // client will reconnect → reconnect() activates it
     } else {
-      // Activate: only mark active if WS is actually connected
-      // If not connected, keep as inactive — client will reconnect automatically
+      // Already inactive: activate if WS present, else wait for client to reconnect
       if (tunnel.clientWs && tunnel.clientWs.readyState <= 1) {
         tunnel.status = 'active';
       }
-      // else: leave status as 'inactive' — do not set to 'simulated'
     }
 
     // Persist status to DB

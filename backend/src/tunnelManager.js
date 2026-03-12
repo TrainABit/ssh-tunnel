@@ -57,7 +57,7 @@ class TunnelManager extends EventEmitter {
     // Remove any inactive tunnels with the same subdomain to prevent
     // stale entries from shadowing new registrations
     for (const [existingId, existing] of this.tunnels.entries()) {
-      if (existing.subdomain === subdomain && existing.status === 'inactive') {
+      if (existing.subdomain === subdomain && (existing.status === 'inactive' || existing.status === 'paused')) {
         this.tunnels.delete(existingId);
         if (this.db) {
           try {
@@ -263,15 +263,18 @@ class TunnelManager extends EventEmitter {
       return;
     }
 
-    t.status = 'inactive';
-    t.clientWs = null;
-    if (this.db) {
-      try {
-        this.db.run("UPDATE tunnels SET status = 'inactive' WHERE id = ?", [id]);
-      } catch (err) {
-        log.warn('DB error in markDisconnected', { error: err, tunnelId: id });
+    // Don't overwrite 'paused' — tunnel was manually stopped
+    if (t.status !== 'paused') {
+      t.status = 'inactive';
+      if (this.db) {
+        try {
+          this.db.run("UPDATE tunnels SET status = 'inactive' WHERE id = ?", [id]);
+        } catch (err) {
+          log.warn('DB error in markDisconnected', { error: err, tunnelId: id });
+        }
       }
     }
+    t.clientWs = null;
     this.emit('tunnel:disconnected', { id });
   }
 
@@ -296,6 +299,12 @@ class TunnelManager extends EventEmitter {
     }
 
     t.clientWs = ws;
+
+    // If manually paused, keep paused — don't activate
+    if (t.status === 'paused') {
+      return true;
+    }
+
     t.status = 'active';
     if (this.db) {
       try {
