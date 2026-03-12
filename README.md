@@ -14,7 +14,7 @@ Self-hosted tunneling service with SSH gateway routing, WebSocket tunnels, and a
 
 **1. Deploy the server** (on your EC2 instance):
 ```bash
-git clone https://github.com/florianhengross/sshtunel.git ~/tunnelvault
+git clone https://github.com/florianhengross/sshtunnel.git ~/tunnelvault
 cd ~/tunnelvault
 sudo bash install-server.sh --domain tunnel.yourdomain.com
 ```
