@@ -8,7 +8,7 @@ set -euo pipefail
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
 
-step_num=0; TOTAL_STEPS=7
+step_num=0; TOTAL_STEPS=8
 step()  { step_num=$((step_num + 1)); echo ""; echo -e "${BOLD}${BLUE}[${step_num}/${TOTAL_STEPS}]${NC} ${BOLD}$*${NC}"; echo -e "${DIM}$(printf '%.0s─' {1..60})${NC}"; }
 info()  { echo -e "  ${GREEN}✓${NC} $*"; }
 warn()  { echo -e "  ${YELLOW}⚠${NC} $*"; }
@@ -106,6 +106,18 @@ if command -v ufw &>/dev/null && ufw status | grep -q "Status: active"; then
     ufw delete allow 10000:10999/tcp > /dev/null 2>&1 && info "Removed rule: 10000-10999/tcp" || skipped "Rule 10000-10999/tcp not found"
 else
     skipped "ufw not active"
+fi
+
+# ── Step 8: Remove source directory ─────────────────────────
+step "Removing source/repo directory"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+echo -e "  Source directory: ${CYAN}${SCRIPT_DIR}${NC}"
+read -r -p "  Delete this directory? [y/N] " rm_src
+if [[ "${rm_src,,}" == "y" ]]; then
+    cd / && rm -rf "$SCRIPT_DIR"
+    info "Removed ${SCRIPT_DIR}"
+else
+    skipped "Source directory kept"
 fi
 
 # ── Done ────────────────────────────────────────────────────

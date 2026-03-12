@@ -8,7 +8,7 @@ set -euo pipefail
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
 
-step_num=0; TOTAL_STEPS=4
+step_num=0; TOTAL_STEPS=5
 step()    { step_num=$((step_num + 1)); echo ""; echo -e "${BOLD}${BLUE}[${step_num}/${TOTAL_STEPS}]${NC} ${BOLD}$*${NC}"; echo -e "${DIM}$(printf '%.0s─' {1..60})${NC}"; }
 info()    { echo -e "  ${GREEN}✓${NC} $*"; }
 skipped() { echo -e "  ${DIM}– $* (skipped)${NC}"; }
@@ -78,6 +78,18 @@ for user_home in "$HOME" "/home/pi" "/home/ubuntu"; do
         info "Removed ${config_dir}"
     fi
 done
+
+# ── Step 5: Remove source directory ─────────────────────────
+step "Removing source/repo directory"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+echo -e "  Source directory: ${CYAN}${SCRIPT_DIR}${NC}"
+read -r -p "  Delete this directory? [y/N] " rm_src
+if [[ "${rm_src,,}" == "y" ]]; then
+    cd / && rm -rf "$SCRIPT_DIR"
+    info "Removed ${SCRIPT_DIR}"
+else
+    skipped "Source directory kept"
+fi
 
 # ── Done ────────────────────────────────────────────────────
 echo ""
