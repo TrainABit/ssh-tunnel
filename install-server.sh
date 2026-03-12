@@ -512,9 +512,9 @@ Description=TunnelVault Auto-Update Timer
 Requires=tunnelvault-autoupdate.service
 
 [Timer]
-OnBootSec=2min
-OnUnitActiveSec=5min
-AccuracySec=30s
+OnBootSec=5min
+OnUnitActiveSec=12h
+AccuracySec=5min
 Persistent=true
 
 [Install]
@@ -523,7 +523,7 @@ EOF
 
 systemctl daemon-reload
 systemctl enable --now tunnelvault-autoupdate.timer
-info "Auto-updater timer enabled (checks every 5 min)"
+info "Auto-updater timer enabled (checks every 12h)"
 
 # ================================================================
 # STEP 12 — Configure Firewall (ufw)
@@ -732,7 +732,7 @@ fi
 echo -e "  Proxy Port:      ${CYAN}${PROXY_PORT}${NC}"
 echo -e "  SSH Gateway:     ${CYAN}Port 22${NC}"
 echo -e "  Service Status:  ${STATUS_COLOR}${STATUS_TEXT}${NC}"
-echo -e "  Auto-Updater:    ${GREEN}every 5 min (git pull)${NC}"
+echo -e "  Auto-Updater:    ${GREEN}every 12h (git pull)${NC}"
 echo ""
 echo -e "  ${BOLD}${YELLOW}Auth Token (save this — it won't be shown again):${NC}"
 echo -e "  ────────────────────────────────────────────────────"

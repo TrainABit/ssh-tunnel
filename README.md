@@ -140,7 +140,7 @@ sudo bash install-server.sh --domain tunnel.yourdomain.com
 | `--upgrade` | Upgrade existing install (preserves DB and config), rebuilds frontend | — |
 | `--tls` | Set up Nginx + Let's Encrypt automatically | — |
 
-After a successful install, the server auto-updates itself every 5 minutes by checking for new commits on `origin/main`. Logs: `tail -f /opt/tunnelvault/logs/auto-update.log`. Force update: `sudo /opt/tunnelvault/auto-update.sh`.
+After a successful install, the server auto-updates itself every 12 hours by checking for new commits on `origin/main`. Logs: `tail -f /opt/tunnelvault/logs/auto-update.log`. Force update: `sudo /opt/tunnelvault/auto-update.sh`.
 
 ### EC2 Requirements
 
