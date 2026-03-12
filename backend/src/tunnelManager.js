@@ -28,6 +28,8 @@ class TunnelManager extends EventEmitter {
             bytesTransferred: row.bytes_transferred,
             protocol: row.protocol || 'http',
             allocatedPort: row.allocated_port || null,
+            ownerSecret: row.owner_secret || null,
+            preferredPort: row.preferred_port || null,
           };
           this.tunnels.set(tunnel.id, tunnel);
         }
@@ -90,6 +92,7 @@ class TunnelManager extends EventEmitter {
       ownerSecret,
       protocol,
       allocatedPort: config.allocatedPort || null,
+      preferredPort: null, // Set after TCP listener allocates a port
       clientToken: config.clientToken || null,
     };
 
@@ -99,9 +102,9 @@ class TunnelManager extends EventEmitter {
     if (this.db) {
       try {
         this.db.run(
-          `INSERT INTO tunnels (id, name, subdomain, local_port, public_url, status, created_at, connections, bytes_transferred, protocol, allocated_port)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [tunnel.id, tunnel.name, tunnel.subdomain, tunnel.localPort, tunnel.publicUrl, tunnel.status, tunnel.createdAt, tunnel.connections, tunnel.bytesTransferred, tunnel.protocol, tunnel.allocatedPort]
+          `INSERT INTO tunnels (id, name, subdomain, local_port, public_url, status, created_at, connections, bytes_transferred, protocol, allocated_port, owner_secret)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [tunnel.id, tunnel.name, tunnel.subdomain, tunnel.localPort, tunnel.publicUrl, tunnel.status, tunnel.createdAt, tunnel.connections, tunnel.bytesTransferred, tunnel.protocol, tunnel.allocatedPort, tunnel.ownerSecret]
         );
       } catch (err) {
         log.error('Failed to persist tunnel to DB', { error: err, tunnelId: tunnel.id });
@@ -114,15 +117,20 @@ class TunnelManager extends EventEmitter {
 
   /**
    * Update the allocated TCP port for a tunnel and persist to DB.
+   * Also saves it as the preferred_port so future reconnects reuse the same port.
    */
   setAllocatedPort(id, port) {
     const t = this.tunnels.get(id);
     if (!t) return;
     t.allocatedPort = port;
+    t.preferredPort = port;
     t.publicUrl = `tcp:${port}`;
     if (this.db) {
       try {
-        this.db.run('UPDATE tunnels SET allocated_port = ?, public_url = ? WHERE id = ?', [port, t.publicUrl, id]);
+        this.db.run(
+          'UPDATE tunnels SET allocated_port = ?, preferred_port = ?, public_url = ? WHERE id = ?',
+          [port, port, t.publicUrl, id]
+        );
       } catch (err) {
         log.warn('DB error in setAllocatedPort', { error: err, tunnelId: id });
       }

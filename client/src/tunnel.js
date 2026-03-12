@@ -1,11 +1,34 @@
 import WebSocket from 'ws';
 import http from 'node:http';
 import net from 'node:net';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { homedir } from 'node:os';
 import { Display } from './display.js';
 
 const INITIAL_RECONNECT_DELAY = 1000;
 const MAX_RECONNECT_DELAY = 30000;
 const HEARTBEAT_TIMEOUT = 35000;
+
+const STATE_DIR = join(homedir(), '.tunnelvault');
+const STATE_FILE = join(STATE_DIR, 'state.json');
+
+function loadState() {
+  try {
+    return JSON.parse(readFileSync(STATE_FILE, 'utf-8'));
+  } catch {
+    return {};
+  }
+}
+
+function saveState(state) {
+  try {
+    mkdirSync(STATE_DIR, { recursive: true });
+    writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), 'utf-8');
+  } catch {
+    // Non-fatal — state persistence is best-effort
+  }
+}
 
 export class TunnelClient {
   constructor(options) {
@@ -23,6 +46,11 @@ export class TunnelClient {
     this.publicUrl = '';
     this.protocol = options.protocol || 'http';
     this.tcpConns = new Map();
+
+    // Persistent tunnel identity — reused across reconnects and reboots
+    const state = loadState();
+    this.tunnelId = state.tunnelId || null;
+    this.ownerSecret = state.ownerSecret || null;
   }
 
   connect() {
@@ -52,14 +80,23 @@ export class TunnelClient {
       this.reconnectAttempt = 0;
       this._resetHeartbeat();
 
-      // Send registration message
-      this.ws.send(JSON.stringify({
-        type: 'register',
-        name: this.name,
-        localPort: this.localPort,
-        subdomain: this.subdomain,
-        protocol: this.protocol,
-      }));
+      // If we have a saved tunnel identity, try to reconnect to the same tunnel
+      // (preserves port assignment); otherwise register fresh
+      if (this.tunnelId && this.ownerSecret) {
+        this.ws.send(JSON.stringify({
+          type: 'reconnect',
+          tunnelId: this.tunnelId,
+          ownerSecret: this.ownerSecret,
+        }));
+      } else {
+        this.ws.send(JSON.stringify({
+          type: 'register',
+          name: this.name,
+          localPort: this.localPort,
+          subdomain: this.subdomain,
+          protocol: this.protocol,
+        }));
+      }
     });
 
     this.ws.on('message', (data) => {
@@ -100,7 +137,20 @@ export class TunnelClient {
     switch (msg.type) {
       case 'registered':
         this.publicUrl = msg.publicUrl;
+        // Persist tunnel identity so we can reconnect to the same tunnel after reboot
+        this.tunnelId = msg.tunnelId;
+        this.ownerSecret = msg.ownerSecret;
+        saveState({ tunnelId: this.tunnelId, ownerSecret: this.ownerSecret });
         if (msg.protocol === 'tcp' && msg.allocatedPort) {
+          this.display.setConnected(`SSH port ${msg.allocatedPort}`, `localhost:${this.localPort}`);
+        } else {
+          this.display.setConnected(msg.publicUrl, `http://localhost:${this.localPort}`);
+        }
+        break;
+
+      case 'reconnected':
+        this.publicUrl = msg.publicUrl;
+        if (msg.allocatedPort) {
           this.display.setConnected(`SSH port ${msg.allocatedPort}`, `localhost:${this.localPort}`);
         } else {
           this.display.setConnected(msg.publicUrl, `http://localhost:${this.localPort}`);
@@ -128,8 +178,27 @@ export class TunnelClient {
         this._closeTcpConn(msg.connId);
         break;
 
+      case 'standby':
+        // Tunnel is manually paused — hold connection, don't show as connected
+        this.display.setDisconnected('paused (resume from dashboard)');
+        break;
+
       case 'error':
-        this.display.stopSpinner(false, `Server error: ${msg.message}`);
+        if (msg.message === 'Tunnel not found for reconnect') {
+          // Stale state — server doesn't know this tunnel (wiped DB?); re-register fresh
+          this.tunnelId = null;
+          this.ownerSecret = null;
+          saveState({});
+          this.ws.send(JSON.stringify({
+            type: 'register',
+            name: this.name,
+            localPort: this.localPort,
+            subdomain: this.subdomain,
+            protocol: this.protocol,
+          }));
+        } else {
+          this.display.stopSpinner(false, `Server error: ${msg.message}`);
+        }
         break;
 
       default:

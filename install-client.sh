@@ -17,7 +17,7 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
 
 step_num=0
-TOTAL_STEPS=5
+TOTAL_STEPS=6
 step() { step_num=$((step_num + 1)); echo ""; echo -e "${BOLD}${BLUE}[${step_num}/${TOTAL_STEPS}]${NC} ${BOLD}$*${NC}"; echo -e "${DIM}$(printf '%.0s─' {1..60})${NC}"; }
 info()    { echo -e "  ${GREEN}✓${NC} $*"; }
 warn()    { echo -e "  ${YELLOW}⚠${NC} $*"; }
@@ -52,7 +52,7 @@ SERVICE_NAME="tunnelvault-client"
 
 # ── Upgrade mode: load existing config ───────────────────────
 if $UPGRADE; then
-  TOTAL_STEPS=4
+  TOTAL_STEPS=6
   if [[ ! -d "$INSTALL_DIR" ]]; then
     warn "No existing installation found — performing fresh install instead"
     UPGRADE=false
@@ -209,7 +209,56 @@ SVCEOF
   info "Service file created and enabled"
 fi
 
-# ── Step 5: Start / schedule restart ────────────────────────
+# ── Step 5: Install auto-updater ─────────────────────────────
+step "Installing auto-updater (checks for updates every 12h)"
+
+AUTO_UPDATE_SCRIPT="${INSTALL_DIR}/auto-update-client.sh"
+AUTOUPDATE_SRC="${SCRIPT_DIR}/auto-update-client.sh"
+
+if [[ ! -f "$AUTOUPDATE_SRC" ]]; then
+  warn "auto-update-client.sh not found — skipping auto-updater install"
+else
+  # Substitute SOURCE_DIR placeholder with the actual source path
+  sed "s|__SOURCE_DIR__|${SCRIPT_DIR}|g" "$AUTOUPDATE_SRC" > "$AUTO_UPDATE_SCRIPT"
+  chmod +x "$AUTO_UPDATE_SCRIPT"
+
+  # Systemd service unit for auto-updater
+  cat > /etc/systemd/system/tunnelvault-client-autoupdate.service <<AUTOSVCEOF
+[Unit]
+Description=TunnelVault Client Auto-Updater
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=$AUTO_UPDATE_SCRIPT
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tunnelvault-client-autoupdate
+EOF
+AUTOSVCEOF
+
+  # Systemd timer — runs every 12 hours
+  cat > /etc/systemd/system/tunnelvault-client-autoupdate.timer <<AUTOTIMEREOF
+[Unit]
+Description=TunnelVault Client Auto-Updater Timer
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=12h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+AUTOTIMEREOF
+
+  systemctl daemon-reload
+  systemctl enable tunnelvault-client-autoupdate.timer
+  systemctl start tunnelvault-client-autoupdate.timer
+  info "Auto-updater installed (12h interval)"
+  info "Logs: journalctl -u tunnelvault-client-autoupdate -f"
+fi
+
+# ── Step 6: Start / schedule restart ────────────────────────
 step "Applying update"
 
 RESTART_DELAY=30
@@ -253,6 +302,7 @@ echo -e "  ${DIM}View logs:${NC}      journalctl -u ${SERVICE_NAME} -f"
 echo -e "  ${DIM}Restart:${NC}        systemctl restart ${SERVICE_NAME}"
 echo -e "  ${DIM}Stop:${NC}           systemctl stop ${SERVICE_NAME}"
 echo -e "  ${DIM}Upgrade next time:${NC} git pull && sudo bash install-client.sh --upgrade"
+echo -e "  ${DIM}Update logs:${NC}    journalctl -u tunnelvault-client-autoupdate -f"
 echo ""
 echo -e "  ${DIM}Once connected, the SSH port will be shown in the dashboard.${NC}"
 echo ""

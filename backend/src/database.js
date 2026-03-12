@@ -60,6 +60,8 @@ try { db.exec(`ALTER TABLE tunnels ADD COLUMN protocol TEXT NOT NULL DEFAULT 'ht
 try { db.exec(`ALTER TABLE tunnels ADD COLUMN allocated_port INTEGER`); } catch {}
 try { db.exec(`ALTER TABLE sessions ADD COLUMN target_ip TEXT`); } catch {}
 try { db.exec(`ALTER TABLE sessions ADD COLUMN target_port INTEGER`); } catch {}
+try { db.exec(`ALTER TABLE tunnels ADD COLUMN owner_secret TEXT`); } catch {}
+try { db.exec(`ALTER TABLE tunnels ADD COLUMN preferred_port INTEGER`); } catch {}
 
 // ─── Helper functions ─────────────────────────────────────
 

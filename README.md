@@ -5,9 +5,13 @@ Self-hosted tunneling service with TCP/SSH tunneling, WebSocket HTTP tunnels, an
 - **TCP Tunneling** — expose any TCP port (e.g. SSH on port 22) through the server; connect with a plain `ssh` command
 - **HTTP Tunnels** — expose local HTTP services via persistent WebSocket connections
 - **Named Client Tokens** — create per-device tokens in the dashboard; clients identify themselves automatically by token
+- **Fixed TCP Ports** — each tunnel reuses the same port across reconnects and server restarts
 - **Auto-connect Service** — client runs as a systemd service, reconnects on boot without manual commands
-- **Auto-Updater** — server checks for new Git commits every 5 minutes and redeploys automatically
+- **Auto-Updater (server)** — server checks for new Git commits every 72h and redeploys automatically
+- **Auto-Updater (client)** — client checks for updates every 12h; safe over live tunnels
+- **Webhook Notifications** — push alerts when tunnels connect/disconnect (ntfy, Slack, Discord, or generic JSON)
 - **Web Dashboard** — real-time monitoring of tunnels, tokens, sessions, and connections
+- **Sessions Log** — searchable, filterable history with CSV export
 - **CLI Client** — lightweight command-line tool (`connect`, `list`, `status`)
 - **Built-in Security** — per-client token auth, rate limiting, input validation, security headers
 
@@ -370,12 +374,27 @@ All configuration is via environment variables in `backend/.env`:
 | `TCP_PORT_MIN` | `10000` | Start of TCP tunnel port range |
 | `TCP_PORT_MAX` | `10999` | End of TCP tunnel port range |
 | `ALLOWED_ORIGINS` | — | Comma-separated CORS origins (unset = allow all) |
+| `WEBHOOK_URL` | — | URL to POST tunnel events to (see Webhooks below) |
+| `WEBHOOK_TYPE` | `json` | Webhook format: `ntfy`, `slack`, `discord`, or `json` |
 
 Generate a secure token:
 
 ```bash
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
+
+### Webhooks
+
+Set `WEBHOOK_URL` and `WEBHOOK_TYPE` in `backend/.env` to receive push notifications when tunnels connect or disconnect.
+
+| Type | How to use |
+|------|------------|
+| `ntfy` | `WEBHOOK_URL=https://ntfy.sh/your-topic` |
+| `slack` | `WEBHOOK_URL=<Incoming Webhook URL>` |
+| `discord` | `WEBHOOK_URL=<Discord Webhook URL>` |
+| `json` | `WEBHOOK_URL=https://your-endpoint.com/hook` — receives `{ event, text, tunnelName, tunnelId, allocatedPort, timestamp }` |
+
+Restart the server after changing `.env`: `sudo systemctl restart tunnelvault`
 
 ---
 

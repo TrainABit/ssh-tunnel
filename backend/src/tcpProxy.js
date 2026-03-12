@@ -16,7 +16,12 @@ class TcpProxy {
     this.portMax = parseInt(process.env.TCP_PORT_MAX, 10) || 10999;
   }
 
-  _allocatePort() {
+  _allocatePort(preferred) {
+    // Try the preferred port first (e.g., previously used port for this tunnel)
+    if (preferred && preferred >= this.portMin && preferred <= this.portMax && !this.usedPorts.has(preferred)) {
+      this.usedPorts.add(preferred);
+      return preferred;
+    }
     for (let p = this.portMin; p <= this.portMax; p++) {
       if (!this.usedPorts.has(p)) {
         this.usedPorts.add(p);
@@ -26,8 +31,8 @@ class TcpProxy {
     return null;
   }
 
-  startListener(tunnelId, ws, localPort, tokenRecord) {
-    const port = this._allocatePort();
+  async startListener(tunnelId, ws, localPort, tokenRecord, preferredPort) {
+    const port = this._allocatePort(preferredPort || null);
     if (port === null) {
       log.error('No TCP ports available', { tunnelId });
       return null;
@@ -137,12 +142,32 @@ class TcpProxy {
       });
     });
 
-    server.listen(port, () => log.info('TCP listener started', { tunnelId, port }));
+    // Wrap listen in a promise so callers can await and handle EADDRINUSE
+    try {
+      await new Promise((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(port, () => {
+          server.removeListener('error', reject);
+          resolve();
+        });
+      });
+    } catch (err) {
+      this.usedPorts.delete(port);
+      // If the preferred port was already in use on the OS, retry with any free port
+      if (err.code === 'EADDRINUSE' && preferredPort && port === preferredPort) {
+        log.warn('Preferred port in use, falling back to dynamic allocation', { tunnelId, preferredPort });
+        return this.startListener(tunnelId, ws, localPort, tokenRecord, null);
+      }
+      log.error('TCP server error on listen', { tunnelId, port, error: err.message });
+      return null;
+    }
+
     server.on('error', (err) => {
       log.error('TCP server error', { tunnelId, port, error: err.message });
       this.stopListener(tunnelId);
     });
 
+    log.info('TCP listener started', { tunnelId, port });
     this.servers.set(tunnelId, { server, port, connections });
     return port;
   }

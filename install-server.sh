@@ -335,6 +335,10 @@ LOG_FILE=${LOG_DIR}/tunnelvault.log
 # TLS (optional — set if using built-in HTTPS instead of Nginx)
 # TLS_CERT=/path/to/fullchain.pem
 # TLS_KEY=/path/to/privkey.pem
+
+# Webhook notifications (optional — fires when tunnels connect/disconnect)
+# WEBHOOK_URL=https://ntfy.sh/your-topic
+# WEBHOOK_TYPE=ntfy   # ntfy | slack | discord | json (default: json)
 ENVEOF
 
     # Add active TLS env vars when --tls is used

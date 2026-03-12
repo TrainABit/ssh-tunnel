@@ -11,8 +11,24 @@ function sessionsRouter(db) {
   // GET /api/sessions — list sessions with token label and target info
   router.get('/', (req, res) => {
     const activeOnly = req.query.active === '1';
+    const days = parseInt(req.query.days, 10) || 0;
+    const limit = Math.min(parseInt(req.query.limit, 10) || 500, 2000);
 
-    let sql = `
+    const conditions = [];
+    const params = [];
+
+    if (activeOnly) {
+      conditions.push('s.disconnected_at IS NULL');
+    }
+
+    if (days > 0) {
+      conditions.push(`s.connected_at >= datetime('now', ?)`)
+      params.push(`-${days} days`);
+    }
+
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    const sql = `
       SELECT
         s.id, s.token, s.client_ip,
         s.target_ip, s.target_port,
@@ -20,15 +36,11 @@ function sessionsRouter(db) {
         t.label AS token_label
       FROM sessions s
       LEFT JOIN tokens t ON t.token = s.token
+      ${where}
+      ORDER BY s.connected_at DESC LIMIT ${limit}
     `;
 
-    if (activeOnly) {
-      sql += ' WHERE s.disconnected_at IS NULL';
-    }
-
-    sql += ' ORDER BY s.connected_at DESC LIMIT 200';
-
-    const sessions = db.query(sql);
+    const sessions = db.query(sql, params);
     res.json({ sessions });
   });
 
