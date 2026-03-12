@@ -1,0 +1,43 @@
+# TunnelVault SSH Gateway – Client Setup
+# =========================================
+# This file goes on the CLIENT machine (not on the gateway server)
+
+# ── Step 1: Generate SSH key (one-time) ───────────────────
+# If you don't have a key pair yet:
+#
+#   ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa
+#   cat ~/.ssh/id_rsa.pub   # <-- send this to the admin
+
+# ── Step 2: Add to ~/.ssh/config ──────────────────────────
+# Replace <VALUES> with your token assignment:
+
+# Simple connection (gateway routes automatically to target server):
+Host my-server
+    HostName     <GATEWAY_PUBLIC_IP>   # e.g. 54.123.45.67
+    User         gw-<YOUR_TOKEN>       # e.g. gw-xK9mQpR3vL2n
+    IdentityFile ~/.ssh/id_rsa
+
+# ── Step 3: Connect ──────────────────────────────────────
+#
+#   ssh my-server
+#
+# That's it. The gateway identifies you by your key, reads the
+# assigned token from the DB, and routes you to the same target
+# server – regardless of restarts or IP changes.
+
+# ── Optional: SCP / SFTP / Port Forwarding ───────────────
+#
+#   scp file.txt my-server:/home/ubuntu/
+#   sftp my-server
+#   ssh -L 8080:localhost:8080 my-server   # port forwarding
+
+# ── Multiple target servers (different tokens) ───────────
+Host server-dev
+    HostName     54.123.45.67
+    User         gw-TokenForDevServer
+    IdentityFile ~/.ssh/id_rsa
+
+Host server-prod
+    HostName     54.123.45.67
+    User         gw-TokenForProdServer
+    IdentityFile ~/.ssh/id_rsa

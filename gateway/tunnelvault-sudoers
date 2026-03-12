@@ -1,0 +1,1 @@
+tunnelvault ALL=(root) NOPASSWD: /opt/tunnelvault/manage-user.sh
