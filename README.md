@@ -10,6 +10,32 @@ Self-hosted tunneling service with SSH gateway routing, WebSocket tunnels, and a
 
 ---
 
+## TL;DR — Get Running in 3 Steps
+
+**1. Deploy the server** (on your EC2 instance):
+```bash
+git clone https://github.com/florianhengross/sshtunel.git ~/tunnelvault
+cd ~/tunnelvault
+sudo bash install-server.sh --domain tunnel.yourdomain.com
+```
+Save the auth token printed at the end.
+
+**2. Install the client** (on your local machine):
+```bash
+bash install-client.sh --server ws://YOUR-EC2-IP:4000 --auth-token YOUR_TOKEN
+```
+
+**3. Expose a local port:**
+```bash
+tunnelvault connect 3000
+```
+
+Open the dashboard at `http://YOUR-EC2-IP:4000`.
+
+> Make sure your EC2 security group allows inbound TCP on ports **22**, **4000**, and **4001**.
+
+---
+
 ## Architecture
 
 ```
@@ -87,8 +113,8 @@ npm run dev
 
 ```bash
 # On your EC2 instance:
-git clone <repo> /opt/tunnelvault-src
-cd /opt/tunnelvault-src
+git clone <repo> ~/tunnelvault
+cd ~/tunnelvault
 sudo bash install-server.sh --domain tunnel.yourdomain.com
 ```
 
@@ -101,6 +127,7 @@ sudo bash install-server.sh --domain tunnel.yourdomain.com
 | `--port PORT` | API server port | `4000` |
 | `--proxy-port PORT` | Proxy server port | `4001` |
 | `--upgrade` | Upgrade existing install (preserves DB and config) | — |
+| `--tls` | Set up Nginx + Let's Encrypt automatically | — |
 
 ### EC2 Requirements
 
@@ -201,7 +228,7 @@ ssh my-server
 ### Register a Token via CLI
 
 ```bash
-sudo bash /opt/tunnelvault/gateway/register_token.sh \
+sudo bash /opt/tunnelvault/register_token.sh \
   --token   myToken123 \
   --ip      10.0.1.42 \
   --label   "My Server" \
