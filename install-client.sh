@@ -156,68 +156,38 @@ check_node() {
             return 1
         fi
     else
-        warn "Node.js not found"
         return 1
     fi
 }
 
-install_node_prompt() {
-    printf "\n"
-    printf "  Node.js >= 18 is required. Would you like to install it?\n"
-    printf "\n"
-    printf "  ${DIM}[1]${RESET} Install via package manager (apt/brew)\n"
-    printf "  ${DIM}[2]${RESET} Install via nvm (recommended)\n"
-    printf "  ${DIM}[3]${RESET} Skip (I'll install it myself)\n"
-    printf "\n"
-    printf "  Choice [1/2/3]: "
-    read -r choice
-
-    case "$choice" in
-        1)
-            if [ "$OS" = "macos" ]; then
-                if command -v brew &>/dev/null; then
-                    info "Installing Node.js via Homebrew..."
-                    brew install node
-                else
-                    fail "Homebrew not found. Install it from https://brew.sh or choose option 2."
-                fi
-            else
-                info "Installing Node.js via apt..."
-                if command -v apt-get &>/dev/null; then
-                    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-                    sudo apt-get install -y nodejs
-                elif command -v dnf &>/dev/null; then
-                    sudo dnf install -y nodejs
-                elif command -v pacman &>/dev/null; then
-                    sudo pacman -S --noconfirm nodejs npm
-                else
-                    fail "Could not detect package manager. Please install Node.js >= 18 manually."
-                fi
-            fi
-            ;;
-        2)
-            info "Installing nvm..."
-            curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
-            export NVM_DIR="$HOME/.nvm"
-            # shellcheck source=/dev/null
-            [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-            nvm install 20
-            nvm use 20
-            ;;
-        3)
-            fail "Node.js >= 18 is required. Install it and re-run this script."
-            ;;
-        *)
-            fail "Invalid choice."
-            ;;
-    esac
+install_node() {
+    info "Node.js >= 18 not found — installing Node.js 20.x..."
+    if [ "$OS" = "macos" ]; then
+        if command -v brew &>/dev/null; then
+            brew install node
+        else
+            fail "Homebrew not found. Install it from https://brew.sh then re-run this script."
+        fi
+    elif command -v apt-get &>/dev/null; then
+        curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+            | sudo gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg 2>/dev/null
+        echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
+            | sudo tee /etc/apt/sources.list.d/nodesource.list > /dev/null
+        sudo apt-get update -qq > /dev/null 2>&1
+        sudo apt-get install -y nodejs > /dev/null 2>&1
+    elif command -v dnf &>/dev/null; then
+        sudo dnf install -y nodejs
+    elif command -v pacman &>/dev/null; then
+        sudo pacman -S --noconfirm nodejs npm
+    else
+        fail "Could not detect a supported package manager. Please install Node.js >= 18 manually."
+    fi
 }
 
 if ! check_node; then
-    install_node_prompt
-    # Verify again
+    install_node
     if ! check_node; then
-        fail "Node.js >= 18 still not available. Please install it and retry."
+        fail "Node.js >= 18 still not available after install. Please install it manually and retry."
     fi
 fi
 
@@ -225,7 +195,7 @@ fi
 if command -v npm &>/dev/null; then
     success "npm $(npm -v) found"
 else
-    fail "npm not found. Please install Node.js with npm and retry."
+    fail "npm not found. Try running: sudo apt-get install -y npm"
 fi
 
 # ─── Step 2: Install client ───────────────────────────────────────────────────
