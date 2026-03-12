@@ -23,6 +23,7 @@ function statsRouter(tunnelManager, connectionTracker, startTime, db) {
 
     const result = {
       activeTunnels: tunnelStats.activeTunnels,
+      activeConnections: connStats.activeConnections,
       totalConnections: connStats.totalConnections,
       bytesTransferred: connStats.bytesTransferred + tunnelStats.bytesTransferred,
       uptime: `${hours}h ${minutes}m ${seconds}s`,
@@ -52,7 +53,11 @@ function statsRouter(tunnelManager, connectionTracker, startTime, db) {
 
       // Recent sessions for the activity feed
       result.recent_sessions = db.query(`
-        SELECT s.*, t.target_ip, t.target_port
+        SELECT
+          s.id, s.token, s.client_ip,
+          s.target_ip, s.target_port,
+          s.connected_at, s.disconnected_at,
+          t.label AS token_label
         FROM sessions s
         LEFT JOIN tokens t ON t.token = s.token
         ORDER BY s.connected_at DESC

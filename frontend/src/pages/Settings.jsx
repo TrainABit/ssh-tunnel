@@ -1,42 +1,39 @@
 import { useState, useEffect } from 'react';
-import {
-  Server,
-  Key,
-  Globe,
-  Copy,
-  Eye,
-  EyeOff,
-  Save,
-  Check,
-  LogOut,
-} from 'lucide-react';
+import { Copy, Eye, EyeOff, Save, Check, LogOut } from 'lucide-react';
 import { getAuthToken, setAuthToken, clearAuthToken } from '../services/api';
 import { copyToClipboard } from '../utils/clipboard';
 
-function Section({ icon: Icon, title, children }) {
+function Card({ title, children }) {
   return (
-    <div className="rounded-xl border border-gray-800/60 bg-gray-900">
-      <div className="flex items-center gap-3 border-b border-gray-800/60 px-5 py-4">
-        <div className="rounded-lg bg-emerald-500/10 p-2 text-emerald-400">
-          <Icon size={16} />
-        </div>
-        <h2 className="text-sm font-semibold text-white">{title}</h2>
+    <div style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+      <div className="px-4 py-3" style={{ borderBottom: '1px solid var(--border)' }}>
+        <span className="text-[10px] uppercase tracking-[0.15em]" style={{ color: 'var(--text-mid)' }}>{title}</span>
       </div>
-      <div className="p-5">{children}</div>
+      <div className="p-4">{children}</div>
     </div>
   );
 }
 
-function ConfigRow({ label, value, mono }) {
+function Row({ label, value }) {
   return (
-    <div className="flex items-center justify-between py-2.5">
-      <span className="text-sm text-gray-400">{label}</span>
-      <span className={`text-sm text-gray-200 ${mono ? 'font-mono' : ''}`}>
-        {value}
-      </span>
+    <div className="flex items-center justify-between py-2" style={{ borderBottom: '1px solid var(--border)' }}>
+      <span className="text-[11px]" style={{ color: 'var(--text-dim)' }}>{label}</span>
+      <span className="text-[11px]" style={{ color: 'var(--text)' }}>{value}</span>
     </div>
   );
 }
+
+const btnStyle = (variant = 'ghost') => ({
+  display: 'inline-flex', alignItems: 'center', gap: '6px',
+  padding: '6px 14px', fontFamily: 'inherit', fontSize: '10px',
+  letterSpacing: '.09em', textTransform: 'uppercase', border: '1px solid',
+  cursor: 'pointer', transition: 'all .15s', background: 'transparent',
+  ...(variant === 'primary'
+    ? { background: 'var(--green)', borderColor: 'var(--green)', color: '#040d0a', fontWeight: 600 }
+    : variant === 'danger'
+    ? { borderColor: '#2a1212', color: 'var(--red)' }
+    : { borderColor: 'var(--border2)', color: 'var(--text-mid)' }),
+});
 
 export default function Settings() {
   const [showToken, setShowToken] = useState(false);
@@ -44,117 +41,77 @@ export default function Settings() {
   const [saved, setSaved] = useState(false);
   const [authToken, setAuthTokenLocal] = useState('');
 
-  useEffect(() => {
-    setAuthTokenLocal(getAuthToken());
-  }, []);
+  useEffect(() => { setAuthTokenLocal(getAuthToken()); }, []);
 
-  const handleCopy = () => {
-    copyToClipboard(authToken);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
-  const handleSaveToken = () => {
-    setAuthToken(authToken);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
-    // Reload to re-fetch data with new token
-    window.location.reload();
-  };
-
-  const handleLogout = () => {
-    clearAuthToken();
-    window.location.reload();
-  };
+  const handleCopy = () => { copyToClipboard(authToken); setCopied(true); setTimeout(() => setCopied(false), 2000); };
+  const handleSave = () => { setAuthToken(authToken); setSaved(true); setTimeout(() => { setSaved(false); window.location.reload(); }, 800); };
+  const handleLogout = () => { clearAuthToken(); window.location.reload(); };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       <div>
-        <h1 className="text-2xl font-bold text-white">Settings</h1>
-        <p className="text-sm text-gray-400">
+        <h1 className="text-[16px] font-normal tracking-[0.06em]" style={{ color: 'var(--text)' }}>
+          Settings <span style={{ color: 'var(--green)' }}>//</span> Config
+        </h1>
+        <p className="mt-0.5 text-[10.5px]" style={{ color: 'var(--text-dim)' }}>
           Server configuration and authentication
         </p>
       </div>
 
-      <div className="grid gap-6 xl:grid-cols-2">
+      <div className="grid gap-4 xl:grid-cols-2">
         {/* Auth Token */}
-        <Section icon={Key} title="API Authentication Token">
-          <p className="mb-4 text-xs text-gray-500">
-            Enter the AUTH_TOKEN from your server&apos;s .env file to authenticate
-            API requests from this dashboard.
+        <Card title="API Authentication">
+          <p className="mb-3 text-[10.5px]" style={{ color: 'var(--text-dim)' }}>
+            Enter the AUTH_TOKEN from your server&apos;s .env file.
           </p>
-          <div className="mb-4 flex items-center gap-2 rounded-lg border border-gray-700 bg-gray-800/60 px-3 py-2.5">
+          <div className="flex items-center gap-2 mb-3 px-3 py-2" style={{ background: 'var(--bg)', border: '1px solid var(--border2)' }}>
             <input
               type={showToken ? 'text' : 'password'}
               value={authToken}
-              onChange={(e) => setAuthTokenLocal(e.target.value)}
+              onChange={e => setAuthTokenLocal(e.target.value)}
               placeholder="Enter your AUTH_TOKEN..."
-              className="flex-1 truncate bg-transparent font-mono text-sm text-gray-200 placeholder-gray-600 outline-none"
+              style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', fontFamily: 'inherit', fontSize: '12px', color: 'var(--text)' }}
             />
-            <button
-              onClick={() => setShowToken(!showToken)}
-              className="shrink-0 text-gray-400 transition-colors hover:text-white"
-            >
-              {showToken ? <EyeOff size={14} /> : <Eye size={14} />}
+            <button onClick={() => setShowToken(!showToken)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-dim)', display: 'flex' }}>
+              {showToken ? <EyeOff size={13} /> : <Eye size={13} />}
             </button>
-            <button
-              onClick={handleCopy}
-              className="shrink-0 text-gray-400 transition-colors hover:text-white"
-            >
-              {copied ? (
-                <Check size={14} className="text-emerald-400" />
-              ) : (
-                <Copy size={14} />
-              )}
+            <button onClick={handleCopy} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-dim)', display: 'flex' }}>
+              {copied ? <Check size={13} style={{ color: 'var(--green)' }} /> : <Copy size={13} />}
             </button>
           </div>
           <div className="flex gap-2">
-            <button
-              onClick={handleSaveToken}
-              className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-medium text-white transition-all hover:bg-emerald-500"
-            >
-              {saved ? (
-                <>
-                  <Check size={12} /> Saved
-                </>
-              ) : (
-                <>
-                  <Save size={12} /> Save & Reconnect
-                </>
-              )}
+            <button onClick={handleSave} style={btnStyle('primary')}>
+              {saved ? <><Check size={11} /> Saved</> : <><Save size={11} /> Save & Reconnect</>}
             </button>
             {getAuthToken() && (
-              <button
-                onClick={handleLogout}
-                className="inline-flex items-center gap-2 rounded-lg border border-gray-700 px-4 py-2 text-xs text-gray-400 transition-colors hover:border-red-500/50 hover:text-red-400"
-              >
-                <LogOut size={12} /> Clear Token
+              <button onClick={handleLogout} style={btnStyle('danger')}>
+                <LogOut size={11} /> Clear
               </button>
             )}
           </div>
-        </Section>
+        </Card>
 
         {/* Server Config */}
-        <Section icon={Server} title="Server Configuration">
-          <div className="divide-y divide-gray-800/40">
-            <ConfigRow label="API Port" value="4000" mono />
-            <ConfigRow label="Proxy Port" value="4001" mono />
-            <ConfigRow label="WebSocket" value="ws://localhost:4000/ws" mono />
-            <ConfigRow label="Protocol" value="SSH / HTTP / WS" />
+        <Card title="Server Configuration">
+          <div>
+            <Row label="API Port" value="4000" />
+            <Row label="Proxy Port" value="4001" />
+            <Row label="WebSocket" value="ws://<host>:4000/ws" />
+            <Row label="TCP Tunnel Ports" value="10000 – 10999" />
           </div>
-        </Section>
+        </Card>
 
         {/* Server Info */}
-        <Section icon={Globe} title="Server Information">
-          <div className="divide-y divide-gray-800/40">
-            <ConfigRow label="Domain" value="Configured in backend .env" />
-            <ConfigRow label="TLS" value="Managed by Nginx / Let's Encrypt" />
-            <ConfigRow label="Database" value="SQLite (data/tunnelvault.db)" />
+        <Card title="Server Information">
+          <div>
+            <Row label="Database" value="SQLite (data/tunnelvault.db)" />
+            <Row label="Domain" value="Set via DOMAIN in .env" />
+            <Row label="TLS" value="Managed by Nginx" />
           </div>
-          <p className="mt-3 text-xs text-gray-600">
+          <p className="mt-3 text-[10.5px]" style={{ color: 'var(--text-dim)' }}>
             To change server settings, edit the .env file on the server and restart the service.
           </p>
-        </Section>
+        </Card>
       </div>
     </div>
   );

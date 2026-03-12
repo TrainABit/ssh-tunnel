@@ -123,7 +123,7 @@ function initWebSocket(server, tunnelManager, connectionTracker, db, tcpProxy) {
           // For TCP tunnels: start TCP listener
           let allocatedPort = null;
           if (protocol === 'tcp' && tcpProxy) {
-            allocatedPort = tcpProxy.startListener(tunnel.id, ws, config.localPort);
+            allocatedPort = tcpProxy.startListener(tunnel.id, ws, config.localPort, ws.clientToken);
             if (allocatedPort !== null) {
               tunnelManager.setAllocatedPort(tunnel.id, allocatedPort);
             }
@@ -148,12 +148,23 @@ function initWebSocket(server, tunnelManager, connectionTracker, db, tcpProxy) {
               clientTunnelIds.push(msg.tunnelId);
             }
             const tunnel = tunnelManager.getTunnel(msg.tunnelId);
+
+            // For TCP tunnels: restart the TCP listener if it's not already running
+            let allocatedPort = tunnel.allocatedPort;
+            if (tunnel.protocol === 'tcp' && tcpProxy && !tcpProxy.servers.has(msg.tunnelId)) {
+              allocatedPort = tcpProxy.startListener(msg.tunnelId, ws, tunnel.localPort, ws.clientToken);
+              if (allocatedPort !== null) {
+                tunnelManager.setAllocatedPort(msg.tunnelId, allocatedPort);
+              }
+            }
+
             ws.send(JSON.stringify({
               type: 'reconnected',
               tunnelId: msg.tunnelId,
               publicUrl: tunnel.publicUrl,
+              allocatedPort,
             }));
-            log.info('Tunnel reconnected', { tunnelId: msg.tunnelId });
+            log.info('Tunnel reconnected', { tunnelId: msg.tunnelId, allocatedPort });
           } else {
             ws.send(JSON.stringify({ type: 'error', message: 'Tunnel not found for reconnect' }));
           }

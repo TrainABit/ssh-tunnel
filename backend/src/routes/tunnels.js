@@ -63,12 +63,11 @@ function tunnelsRouter(tunnelManager) {
       tunnel.status = 'inactive';
     } else {
       // Activate: only mark active if WS is actually connected
+      // If not connected, keep as inactive — client will reconnect automatically
       if (tunnel.clientWs && tunnel.clientWs.readyState <= 1) {
         tunnel.status = 'active';
-      } else {
-        // No WS connection — mark as simulated (API-only tunnel)
-        tunnel.status = 'simulated';
       }
+      // else: leave status as 'inactive' — do not set to 'simulated'
     }
 
     // Persist status to DB

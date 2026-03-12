@@ -1,83 +1,81 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import {
-  Plus,
-  Copy,
-  Trash2,
-  Power,
-  X,
-  Check,
-  Globe,
-  ArrowRight,
-  RefreshCw,
-} from 'lucide-react';
+import { Plus, Copy, Trash2, Power, X, Check, RefreshCw, ArrowRight } from 'lucide-react';
 import { getTunnels, createTunnel, deleteTunnel, toggleTunnel } from '../services/api';
 import { copyToClipboard } from '../utils/clipboard';
+
+const btnStyle = {
+  ghost: {
+    display: 'inline-flex', alignItems: 'center', gap: '6px',
+    padding: '5px 12px', fontFamily: 'inherit', fontSize: '10px',
+    letterSpacing: '.09em', textTransform: 'uppercase', border: '1px solid',
+    cursor: 'pointer', transition: 'all .15s', background: 'transparent',
+    borderColor: 'var(--border2)', color: 'var(--text-mid)',
+  },
+  primary: {
+    display: 'inline-flex', alignItems: 'center', gap: '6px',
+    padding: '5px 12px', fontFamily: 'inherit', fontSize: '10px',
+    letterSpacing: '.09em', textTransform: 'uppercase', border: '1px solid',
+    cursor: 'pointer', transition: 'all .15s',
+    background: 'var(--green)', borderColor: 'var(--green)', color: '#040d0a', fontWeight: 600,
+  },
+};
 
 function CreateModal({ onClose, onCreate }) {
   const [form, setForm] = useState({ name: '', localPort: '', subdomain: '' });
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!form.name || !form.localPort) return;
     setSubmitting(true);
-    await onCreate({ ...form, localPort: Number(form.localPort) });
+    setError('');
+    const result = await onCreate({ ...form, localPort: Number(form.localPort) });
+    if (result?.error) setError(result.error);
+    else onClose();
     setSubmitting(false);
-    onClose();
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/70 " onClick={onClose} />
-      <div className="relative w-full max-w-md rounded-2xl border border-gray-700/60 bg-[#0f0f18] p-6 shadow-2xl">
-        <div className="mb-5 flex items-center justify-between">
-          <h2 className="text-lg font-bold text-white">Create New Tunnel</h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-white">
-            <X size={20} />
-          </button>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.75)' }}>
+      <div className="w-full max-w-md" style={{ background: 'var(--surface)', border: '1px solid var(--border2)' }}>
+        <div className="flex items-center justify-between px-5 py-3.5" style={{ borderBottom: '1px solid var(--border)' }}>
+          <span className="text-[11px] uppercase tracking-[0.1em]" style={{ color: 'var(--text)' }}>Create Tunnel</span>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', fontSize: '18px', lineHeight: 1 }}>×</button>
         </div>
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="mb-1.5 block text-sm text-gray-400">Tunnel Name</label>
-            <input
-              type="text"
-              value={form.name}
-              onChange={(e) => setForm({ ...form, name: e.target.value })}
-              placeholder="my-service"
-              className="w-full rounded-lg border border-gray-700 bg-gray-800/60 px-3 py-2.5 font-mono text-sm text-white placeholder-gray-500 outline-none transition-colors focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/20"
-              required
-            />
+        <form onSubmit={handleSubmit} className="p-5 space-y-4">
+          {[
+            { id: 'name', label: 'Tunnel Name', placeholder: 'my-raspi', required: true },
+            { id: 'localPort', label: 'Local Port', placeholder: '22', required: true, type: 'number' },
+            { id: 'subdomain', label: 'Subdomain (optional)', placeholder: 'my-raspi' },
+          ].map(f => (
+            <div key={f.id}>
+              <label className="block text-[9.5px] uppercase tracking-[0.15em] mb-1.5" style={{ color: 'var(--text-dim)' }}>
+                {f.label}
+              </label>
+              <input
+                type={f.type || 'text'}
+                value={form[f.id]}
+                onChange={e => setForm({ ...form, [f.id]: e.target.value })}
+                placeholder={f.placeholder}
+                required={f.required}
+                style={{
+                  width: '100%', background: 'var(--bg)', border: '1px solid var(--border2)',
+                  color: 'var(--text)', fontFamily: 'inherit', fontSize: '12px',
+                  padding: '8px 10px', outline: 'none', boxSizing: 'border-box',
+                }}
+                onFocus={e => e.target.style.borderColor = 'var(--green-dim)'}
+                onBlur={e => e.target.style.borderColor = 'var(--border2)'}
+              />
+            </div>
+          ))}
+          {error && <p className="text-[11px]" style={{ color: 'var(--red)' }}>{error}</p>}
+          <div className="flex justify-end gap-2 pt-1">
+            <button type="button" onClick={onClose} style={btnStyle.ghost}>Cancel</button>
+            <button type="submit" disabled={submitting} style={{ ...btnStyle.primary, opacity: submitting ? 0.6 : 1 }}>
+              {submitting ? 'Creating…' : 'Create'}
+            </button>
           </div>
-          <div>
-            <label className="mb-1.5 block text-sm text-gray-400">Local Port</label>
-            <input
-              type="number"
-              value={form.localPort}
-              onChange={(e) => setForm({ ...form, localPort: e.target.value })}
-              placeholder="3000"
-              className="w-full rounded-lg border border-gray-700 bg-gray-800/60 px-3 py-2.5 font-mono text-sm text-white placeholder-gray-500 outline-none transition-colors focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/20"
-              required
-            />
-          </div>
-          <div>
-            <label className="mb-1.5 block text-sm text-gray-400">
-              Subdomain <span className="text-gray-600">(optional)</span>
-            </label>
-            <input
-              type="text"
-              value={form.subdomain}
-              onChange={(e) => setForm({ ...form, subdomain: e.target.value })}
-              placeholder="custom-name"
-              className="w-full rounded-lg border border-gray-700 bg-gray-800/60 px-3 py-2.5 font-mono text-sm text-white placeholder-gray-500 outline-none transition-colors focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/20"
-            />
-          </div>
-          <button
-            type="submit"
-            disabled={submitting}
-            className="w-full rounded-lg bg-emerald-600 py-2.5 text-sm font-medium text-white shadow-lg shadow-emerald-500/20 transition-all hover:bg-emerald-500 disabled:opacity-50"
-          >
-            {submitting ? 'Creating...' : 'Create Tunnel'}
-          </button>
         </form>
       </div>
     </div>
@@ -86,63 +84,77 @@ function CreateModal({ onClose, onCreate }) {
 
 function TunnelCard({ tunnel, onDelete, onToggle, onCopy }) {
   const isActive = tunnel.status === 'active';
+  const isInactive = tunnel.status === 'inactive';
 
   return (
-    <div className="group relative overflow-hidden rounded-xl border border-gray-800/60 bg-gray-900 p-5  transition-all duration-300 hover:border-gray-700/80 hover:bg-gray-900">
-      <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/[0.02] to-transparent opacity-0 transition-opacity group-hover:opacity-100" />
-      <div className="relative">
+    <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', position: 'relative', overflow: 'hidden' }}>
+      {/* Status top bar */}
+      <div style={{
+        position: 'absolute', top: 0, left: 0, right: 0, height: '2px',
+        background: isActive ? 'var(--green)' : isInactive ? 'var(--border2)' : 'var(--red)',
+        opacity: isActive ? 1 : 0.5,
+      }} />
+
+      <div className="p-4 pt-5">
         {/* Header */}
-        <div className="mb-4 flex items-start justify-between">
-          <div className="flex items-center gap-3">
+        <div className="mb-3 flex items-center justify-between">
+          <div className="flex items-center gap-2">
             <div
-              className={`h-2.5 w-2.5 rounded-full ${
-                isActive ? 'bg-emerald-500 pulse-dot' : 'bg-red-500/80'
-              }`}
+              className={`h-2 w-2 rounded-full ${isActive ? 'pulse-dot' : ''}`}
+              style={{ background: isActive ? 'var(--green)' : isInactive ? 'var(--border2)' : '#e84040' }}
             />
-            <h3 className="font-semibold text-white">{tunnel.name}</h3>
+            <span className="text-[12px] font-normal" style={{ color: 'var(--text)' }}>{tunnel.name}</span>
           </div>
           <span
-            className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
-              isActive
-                ? 'bg-emerald-500/10 text-emerald-400'
-                : 'bg-red-500/10 text-red-400'
-            }`}
+            className="border px-2 py-0.5 text-[9px] uppercase tracking-[0.08em]"
+            style={{
+              color: isActive ? 'var(--green)' : 'var(--text-dim)',
+              borderColor: isActive ? 'var(--green-dim)' : 'var(--border2)',
+              background: isActive ? 'var(--green-bg)' : 'transparent',
+            }}
           >
-            {tunnel.status}
+            {isInactive ? 'disconnected' : tunnel.status}
           </span>
         </div>
 
-        {/* URL mapping */}
+        {/* Routing */}
         {tunnel.protocol === 'tcp' ? (
-          <div className="mb-4 space-y-2">
-            <div className="flex items-center gap-2 rounded-lg bg-gray-800/50 px-3 py-2">
-              <span className="font-mono text-xs text-emerald-400">SSH port {tunnel.allocatedPort ?? '—'}</span>
-              <ArrowRight size={12} className="shrink-0 text-gray-500" />
-              <span className="font-mono text-xs text-gray-400">localhost:{tunnel.localPort}</span>
+          <div className="mb-3 space-y-1.5">
+            <div className="flex items-center gap-2 px-3 py-2 text-[11px]" style={{ background: 'var(--bg)', border: '1px solid var(--border)' }}>
+              <span style={{ color: 'var(--green)' }}>:{tunnel.allocatedPort ?? '—'}</span>
+              <ArrowRight size={11} style={{ color: 'var(--text-dim)', flexShrink: 0 }} />
+              <span style={{ color: 'var(--text-mid)' }}>localhost:{tunnel.localPort}</span>
             </div>
             {tunnel.allocatedPort && (
-              <div className="rounded-lg bg-gray-800/30 px-3 py-2 font-mono text-xs text-gray-400">
+              <div className="px-3 py-1.5 text-[10.5px]" style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text-dim)' }}>
                 ssh user@{window.location.hostname} -p {tunnel.allocatedPort}
               </div>
             )}
           </div>
         ) : (
-          <div className="mb-4 flex items-center gap-2 rounded-lg bg-gray-800/50 px-3 py-2">
-            <span className="truncate font-mono text-xs text-emerald-400">{tunnel.publicUrl}</span>
-            <ArrowRight size={12} className="shrink-0 text-gray-500" />
-            <span className="truncate font-mono text-xs text-gray-400">localhost:{tunnel.localPort}</span>
+          <div className="mb-3 flex items-center gap-2 px-3 py-2 text-[11px]" style={{ background: 'var(--bg)', border: '1px solid var(--border)' }}>
+            <span className="truncate" style={{ color: 'var(--green)' }}>{tunnel.publicUrl}</span>
+            <ArrowRight size={11} style={{ color: 'var(--text-dim)', flexShrink: 0 }} />
+            <span style={{ color: 'var(--text-mid)' }}>:{tunnel.localPort}</span>
           </div>
         )}
 
         {/* Stats */}
-        <div className="mb-4 grid grid-cols-2 gap-3">
+        <div className="mb-3 grid grid-cols-2 gap-3">
           <div>
-            <p className="text-xs text-gray-500">Connections</p>
-            <p className="font-mono text-sm text-gray-200">{tunnel.connections}</p>
+            <p className="text-[9px] uppercase tracking-[0.15em] mb-1" style={{ color: 'var(--text-dim)' }}>Connections</p>
+            <p className="text-[13px]" style={{ color: 'var(--text)' }}>{tunnel.connections}</p>
           </div>
           <div>
-            <p className="text-xs text-gray-500">Data Transferred</p>
-            <p className="font-mono text-sm text-gray-200">{tunnel.bytesTransferred != null ? (tunnel.bytesTransferred > 1e9 ? (tunnel.bytesTransferred / 1e9).toFixed(2) + ' GB' : tunnel.bytesTransferred > 1e6 ? (tunnel.bytesTransferred / 1e6).toFixed(1) + ' MB' : tunnel.bytesTransferred > 1e3 ? (tunnel.bytesTransferred / 1e3).toFixed(0) + ' KB' : tunnel.bytesTransferred + ' B') : '0 B'}</p>
+            <p className="text-[9px] uppercase tracking-[0.15em] mb-1" style={{ color: 'var(--text-dim)' }}>Data</p>
+            <p className="text-[13px]" style={{ color: 'var(--text)' }}>
+              {tunnel.bytesTransferred != null
+                ? tunnel.bytesTransferred > 1e9 ? (tunnel.bytesTransferred / 1e9).toFixed(2) + ' GB'
+                : tunnel.bytesTransferred > 1e6 ? (tunnel.bytesTransferred / 1e6).toFixed(1) + ' MB'
+                : tunnel.bytesTransferred > 1e3 ? (tunnel.bytesTransferred / 1e3).toFixed(0) + ' KB'
+                : tunnel.bytesTransferred + ' B'
+                : '0 B'}
+            </p>
           </div>
         </div>
 
@@ -154,25 +166,38 @@ function TunnelCard({ tunnel, onDelete, onToggle, onCopy }) {
                 ? `ssh user@${window.location.hostname} -p ${tunnel.allocatedPort}`
                 : tunnel.publicUrl
             )}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-700 bg-gray-800/50 px-3 py-1.5 text-xs text-gray-300 transition-colors hover:border-gray-600 hover:text-white"
+            style={{ ...btnStyle.ghost, padding: '4px 10px', fontSize: '9.5px' }}
           >
-            <Copy size={12} /> {tunnel.protocol === 'tcp' ? 'Copy SSH' : 'Copy URL'}
+            <Copy size={10} /> {tunnel.protocol === 'tcp' ? 'Copy SSH' : 'Copy URL'}
           </button>
-          <button
-            onClick={() => onToggle(tunnel.id)}
-            className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs transition-colors ${
-              isActive
-                ? 'border-amber-500/30 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20'
-                : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20'
-            }`}
-          >
-            <Power size={12} /> {isActive ? 'Stop' : 'Start'}
-          </button>
+
+          {isActive ? (
+            <button
+              onClick={() => onToggle(tunnel.id)}
+              style={{ ...btnStyle.ghost, borderColor: '#3a2800', color: 'var(--amber)', padding: '4px 10px', fontSize: '9.5px' }}
+            >
+              <Power size={10} /> Stop
+            </button>
+          ) : isInactive ? (
+            <span className="flex items-center gap-1.5 border px-2.5 py-1 text-[9.5px]" style={{ borderColor: 'var(--border)', color: 'var(--text-dim)' }}>
+              <span className="h-1.5 w-1.5 rounded-full animate-pulse" style={{ background: 'var(--text-dim)' }} />
+              Reconnecting…
+            </span>
+          ) : (
+            <button
+              onClick={() => onToggle(tunnel.id)}
+              style={{ ...btnStyle.ghost, borderColor: 'var(--green-dim)', color: 'var(--green)', padding: '4px 10px', fontSize: '9.5px' }}
+            >
+              <Power size={10} /> Start
+            </button>
+          )}
+
           <button
             onClick={() => onDelete(tunnel.id)}
-            className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-1.5 text-xs text-red-400 transition-colors hover:bg-red-500/15"
+            className="ml-auto"
+            style={{ ...btnStyle.ghost, borderColor: '#2a1212', color: 'var(--red)', padding: '4px 10px', fontSize: '9.5px' }}
           >
-            <Trash2 size={12} /> Delete
+            <Trash2 size={10} />
           </button>
         </div>
       </div>
@@ -202,21 +227,6 @@ export default function Tunnels() {
     return () => clearInterval(intervalRef.current);
   }, [load]);
 
-  const handleCreate = async (form) => {
-    await createTunnel(form);
-    await load();
-  };
-
-  const handleDelete = async (id) => {
-    await deleteTunnel(id);
-    await load();
-  };
-
-  const handleToggle = async (id) => {
-    await toggleTunnel(id);
-    await load();
-  };
-
   const handleCopy = (url) => {
     copyToClipboard(url);
     setCopied(url);
@@ -226,65 +236,73 @@ export default function Tunnels() {
   if (loading) {
     return (
       <div className="flex h-64 items-center justify-center">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-emerald-500 border-t-transparent" />
+        <div className="h-6 w-6 animate-spin rounded-full border-2 border-t-transparent" style={{ borderColor: 'var(--green)', borderTopColor: 'transparent' }} />
       </div>
     );
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+    <div className="space-y-5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-white">Tunnels</h1>
-          <p className="text-sm text-gray-400">
-            Manage your SSH tunnel endpoints{' '}
-            <span className="text-gray-600">(auto-refreshes every 5s)</span>
+          <h1 className="text-[16px] font-normal tracking-[0.06em]" style={{ color: 'var(--text)' }}>
+            Tunnels <span style={{ color: 'var(--green)' }}>//</span> Manage
+          </h1>
+          <p className="mt-0.5 text-[10.5px]" style={{ color: 'var(--text-dim)' }}>
+            Active tunnel endpoints — auto-refreshes every 5s
           </p>
         </div>
         <div className="flex items-center gap-2">
           <button
             onClick={() => load(true)}
-            className="inline-flex items-center gap-2 rounded-lg border border-gray-700 bg-gray-800/50 px-4 py-2.5 text-sm text-gray-300 transition-colors hover:border-gray-600 hover:text-white"
+            style={btnStyle.ghost}
+            onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--green-dim)'; e.currentTarget.style.color = 'var(--text)'; }}
+            onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border2)'; e.currentTarget.style.color = 'var(--text-mid)'; }}
           >
-            <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
+            <RefreshCw size={11} className={refreshing ? 'animate-spin' : ''} />
             Refresh
           </button>
           <button
             onClick={() => setShowModal(true)}
-            className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-medium text-white shadow-lg shadow-emerald-500/20 transition-all hover:bg-emerald-500 hover:shadow-emerald-500/30"
+            style={btnStyle.primary}
+            onMouseEnter={e => e.currentTarget.style.background = '#00f599'}
+            onMouseLeave={e => e.currentTarget.style.background = 'var(--green)'}
           >
-            <Plus size={16} />
-            Create Tunnel
+            <Plus size={11} />
+            New Tunnel
           </button>
         </div>
       </div>
 
       {/* Copied toast */}
       {copied && (
-        <div className="fixed bottom-6 right-6 z-50 flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-gray-900/95 px-4 py-2.5 text-sm text-emerald-400 shadow-xl ">
-          <Check size={14} /> Copied to clipboard
+        <div
+          className="fixed bottom-5 right-5 z-50 flex items-center gap-2 px-4 py-2.5 text-[11.5px]"
+          style={{ background: 'var(--surface2)', border: '1px solid var(--green-dim)', color: 'var(--green)' }}
+        >
+          <Check size={12} /> Copied to clipboard
         </div>
       )}
 
       {tunnels.length === 0 ? (
-        <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-gray-700 py-16">
-          <Globe size={40} className="mb-3 text-gray-600" />
-          <p className="text-gray-400">No tunnels yet</p>
+        <div className="flex flex-col items-center justify-center py-16" style={{ border: '1px dashed var(--border2)' }}>
+          <p className="text-[11.5px]" style={{ color: 'var(--text-dim)' }}>No tunnels yet</p>
           <button
             onClick={() => setShowModal(true)}
-            className="mt-4 text-sm text-emerald-400 hover:text-emerald-300"
+            className="mt-3 text-[11px] uppercase tracking-[0.09em]"
+            style={{ color: 'var(--green)', background: 'none', border: 'none', cursor: 'pointer' }}
           >
-            Create your first tunnel
+            + Create your first tunnel
           </button>
         </div>
       ) : (
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
           {tunnels.map((tunnel) => (
             <TunnelCard
               key={tunnel.id}
               tunnel={tunnel}
-              onDelete={handleDelete}
-              onToggle={handleToggle}
+              onDelete={async (id) => { await deleteTunnel(id); load(); }}
+              onToggle={async (id) => { await toggleTunnel(id); load(); }}
               onCopy={handleCopy}
             />
           ))}
@@ -292,7 +310,14 @@ export default function Tunnels() {
       )}
 
       {showModal && (
-        <CreateModal onClose={() => setShowModal(false)} onCreate={handleCreate} />
+        <CreateModal
+          onClose={() => setShowModal(false)}
+          onCreate={async (form) => {
+            const result = await createTunnel(form);
+            await load();
+            return result;
+          }}
+        />
       )}
     </div>
   );

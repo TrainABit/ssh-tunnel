@@ -55,7 +55,7 @@ function safeTokenCompare(a, b) {
 // ─── Core services ───────────────────────────────────────
 const tunnelManager = new TunnelManager(db);
 const connectionTracker = new ConnectionTracker();
-const tcpProxy = new TcpProxy();
+const tcpProxy = new TcpProxy(connectionTracker, db);
 
 // ─── Express app (API) ──────────────────────────────────
 const app = express();

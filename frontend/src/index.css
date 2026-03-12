@@ -1,43 +1,74 @@
 @import "tailwindcss";
 
 @theme {
-  --font-mono: 'IBM Plex Mono', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', ui-monospace, monospace;
+  --font-mono: 'IBM Plex Mono', 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+}
+
+/* ── Color tokens matching reference terminal aesthetic ── */
+:root {
+  --bg:         #080c0d;
+  --surface:    #0e1416;
+  --surface2:   #131b1d;
+  --border:     #1a2426;
+  --border2:    #223033;
+  --green:      #00d47e;
+  --green-dim:  #007a49;
+  --green-glow: rgba(0,212,126,0.07);
+  --green-bg:   rgba(0,212,126,0.05);
+  --amber:      #f0a500;
+  --red:        #e84040;
+  --blue:       #38b6ff;
+  --text:       #b8ceca;
+  --text-dim:   #44605a;
+  --text-mid:   #7a9e98;
 }
 
 body {
   margin: 0;
-  background-color: #0a0a0f;
-  color: #e5e7eb;
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.6;
 }
 
-@keyframes pulse-glow {
-  0%, 100% { opacity: 1; box-shadow: 0 0 4px #10b981; }
-  50% { opacity: 0.6; box-shadow: 0 0 8px #10b981; }
+/* Scanline overlay */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0,0,0,0.022) 2px,
+    rgba(0,0,0,0.022) 4px
+  );
+  pointer-events: none;
+  z-index: 9998;
 }
 
-.pulse-dot {
-  animation: pulse-glow 2s ease-in-out infinite;
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border2); }
+
+/* ── Pulse animations ── */
+@keyframes pulse-green {
+  0%, 100% { opacity: 1; box-shadow: 0 0 5px var(--green); }
+  50%       { opacity: 0.5; box-shadow: none; }
 }
+.pulse-dot { animation: pulse-green 2s ease-in-out infinite; }
 
 @keyframes pulse-amber {
-  0%, 100% { opacity: 1; box-shadow: 0 0 4px #f59e0b; }
-  50% { opacity: 0.5; box-shadow: 0 0 10px #f59e0b; }
+  0%, 100% { opacity: 1; box-shadow: 0 0 5px var(--amber); }
+  50%       { opacity: 0.4; box-shadow: none; }
 }
+.pulse-amber { animation: pulse-amber 2s ease-in-out infinite; }
 
-.pulse-amber {
-  animation: pulse-amber 2s ease-in-out infinite;
+/* ── Stat card top bar ── */
+@keyframes pulse-bar {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.3; }
 }
-
-/* Scanline overlay — disabled for performance on low-power devices */
-/* .scanline-overlay::after { ... } */
-
-::-webkit-scrollbar {
-  width: 6px;
-}
-::-webkit-scrollbar-track {
-  background: #0a0a0f;
-}
-::-webkit-scrollbar-thumb {
-  background: #374151;
-  border-radius: 3px;
-}
+.stat-bar-live { animation: pulse-bar 2s infinite; }

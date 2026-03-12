@@ -14,10 +14,10 @@ function sessionsRouter(db) {
 
     let sql = `
       SELECT
-        s.*,
-        t.label AS token_label,
-        t.target_ip,
-        t.target_port
+        s.id, s.token, s.client_ip,
+        s.target_ip, s.target_port,
+        s.connected_at, s.disconnected_at,
+        t.label AS token_label
       FROM sessions s
       LEFT JOIN tokens t ON t.token = s.token
     `;

@@ -1,72 +1,46 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import {
-  Plus,
-  Copy,
-  Trash2,
-  Power,
-  X,
-  Check,
-  Key,
-  Search,
-  Eye,
-  Radio,
-  RefreshCw,
-} from 'lucide-react';
-import {
-  getTokens,
-  createToken,
-  getTokenDetail,
-  updateToken,
-  deleteToken,
-} from '../services/api';
+import { Plus, Copy, Trash2, Power, X, Check, Search, RefreshCw } from 'lucide-react';
+import { getTokens, createToken, getTokenDetail, updateToken, deleteToken } from '../services/api';
 import { copyToClipboard } from '../utils/clipboard';
 
 function formatTimestamp(ts) {
-  if (!ts || typeof ts !== 'string') return '\u2013';
+  if (!ts || typeof ts !== 'string') return '–';
   const d = new Date(ts.endsWith('Z') ? ts : ts + 'Z');
-  return d.toLocaleString('en-US', {
-    month: 'short',
-    day: '2-digit',
-    year: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  return d.toLocaleString('en-US', { month: 'short', day: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
-function formatDuration(start, end) {
-  if (!start || typeof start !== 'string') return '\u2013';
-  const s = new Date(start.endsWith('Z') ? start : start + 'Z');
-  const e = end && typeof end === 'string' ? new Date(end.endsWith('Z') ? end : end + 'Z') : new Date();
-  const sec = Math.floor((e - s) / 1000);
-  if (sec < 60) return `${sec}s`;
-  if (sec < 3600) return `${Math.floor(sec / 60)}m`;
-  return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`;
-}
+const btnStyle = (variant = 'ghost') => ({
+  display: 'inline-flex', alignItems: 'center', gap: '5px',
+  padding: '5px 12px', fontFamily: 'inherit', fontSize: '10px',
+  letterSpacing: '.09em', textTransform: 'uppercase', border: '1px solid',
+  cursor: 'pointer', transition: 'all .15s', background: 'transparent',
+  ...(variant === 'primary'
+    ? { background: 'var(--green)', borderColor: 'var(--green)', color: '#040d0a', fontWeight: 600 }
+    : variant === 'danger'
+    ? { borderColor: '#2a1212', color: 'var(--red)' }
+    : variant === 'amber'
+    ? { borderColor: '#3a2800', color: 'var(--amber)' }
+    : { borderColor: 'var(--border2)', color: 'var(--text-mid)' }),
+});
 
 function InstallCommandBlock({ server, token }) {
   const [copied, setCopied] = useState(false);
   const cmd = `sudo bash install-client.sh --server ${server} --token ${token}`;
 
-  const handleCopy = () => {
-    copyToClipboard(cmd);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
   return (
-    <div className="relative rounded-lg border border-gray-700/60 bg-[#08080d] p-4 font-mono text-xs leading-relaxed break-all">
+    <div style={{ position: 'relative', background: 'var(--bg)', border: '1px solid var(--border2)', padding: '12px 14px', fontFamily: 'inherit', fontSize: '11.5px', wordBreak: 'break-all' }}>
       <button
-        onClick={handleCopy}
-        className="absolute top-2 right-2 rounded-md border border-gray-700 bg-gray-800/60 p-1.5 text-gray-400 transition-colors hover:border-gray-600 hover:text-white"
+        onClick={() => { copyToClipboard(cmd); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
+        style={{ position: 'absolute', top: '8px', right: '8px', background: 'var(--surface)', border: '1px solid var(--border2)', cursor: 'pointer', padding: '4px 6px', color: 'var(--text-dim)', display: 'flex', alignItems: 'center' }}
       >
-        {copied ? <Check size={12} className="text-emerald-400" /> : <Copy size={12} />}
+        {copied ? <Check size={11} style={{ color: 'var(--green)' }} /> : <Copy size={11} />}
       </button>
-      <span className="text-gray-500">$ </span>
-      <span className="text-emerald-400">sudo bash install-client.sh</span>
+      <span style={{ color: 'var(--text-dim)' }}>$ </span>
+      <span style={{ color: 'var(--green)' }}>sudo bash install-client.sh</span>
       {' '}
-      <span className="text-[#38b6ff]">--server</span> <span className="text-white">{server}</span>
+      <span style={{ color: 'var(--blue)' }}>--server</span> <span style={{ color: 'var(--text)' }}>{server}</span>
       {' '}
-      <span className="text-[#38b6ff]">--token</span> <span className="text-white">{token}</span>
+      <span style={{ color: 'var(--blue)' }}>--token</span> <span style={{ color: 'var(--text)' }}>{token}</span>
     </div>
   );
 }
@@ -85,74 +59,57 @@ function CreateModal({ onClose, onCreate }) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/70 " onClick={onClose} />
-      <div className="relative w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl border border-gray-700/60 bg-[#0f0f18] p-6 shadow-2xl">
-        <div className="mb-5 flex items-center justify-between">
-          <h2 className="text-lg font-bold text-white">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.75)' }}>
+      <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto" style={{ background: 'var(--surface)', border: '1px solid var(--border2)' }}>
+        <div className="flex items-center justify-between px-5 py-3.5" style={{ borderBottom: '1px solid var(--border)' }}>
+          <span className="text-[11px] uppercase tracking-[0.1em]" style={{ color: 'var(--text)' }}>
             {result ? 'Token Created' : 'Create New Token'}
-          </h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-white">
-            <X size={20} />
-          </button>
+          </span>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', fontSize: '18px', lineHeight: 1 }}>×</button>
         </div>
 
-        {result ? (
-          <div className="space-y-4">
-            <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3">
-              <div className="flex items-center gap-2 text-sm text-emerald-400">
-                <Check size={16} />
-                Token <span className="font-mono text-[#38b6ff]">{result.token}</span> created successfully
+        <div className="p-5">
+          {result ? (
+            <div className="space-y-4">
+              <div className="flex items-center gap-2 border px-3 py-2.5 text-[11.5px]" style={{ borderColor: 'var(--green-dim)', background: 'var(--green-bg)', color: 'var(--green)' }}>
+                <Check size={14} />
+                Token <span style={{ color: 'var(--blue)' }}>{result.token}</span> created
               </div>
+              <div>
+                <p className="mb-2 text-[9.5px] uppercase tracking-[0.18em]" style={{ color: 'var(--text-dim)' }}>Run on the client device</p>
+                <InstallCommandBlock server={`ws://${window.location.hostname}:4000`} token={result.token} />
+                <p className="mt-2 text-[10px]" style={{ color: 'var(--text-dim)' }}>Installs the client and starts it as a systemd service automatically.</p>
+              </div>
+              <button onClick={onClose} style={btnStyle()}>Close</button>
             </div>
-            <div className="space-y-2">
-              <p className="text-xs font-semibold uppercase tracking-wider text-gray-500">Run on the client device</p>
-              <InstallCommandBlock
-                server={`ws://${window.location.hostname}:4000`}
-                token={result.token}
-              />
-              <p className="text-xs text-gray-600">Installs the client and starts it as a systemd service automatically.</p>
-            </div>
-            <button
-              onClick={onClose}
-              className="w-full rounded-lg border border-gray-700 bg-gray-800/50 py-2.5 text-sm text-gray-300 transition-colors hover:border-gray-600 hover:text-white"
-            >
-              Close
-            </button>
-          </div>
-        ) : (
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <label className="mb-1.5 block text-sm text-gray-400">
-                Token <span className="text-gray-600">(optional)</span>
-              </label>
-              <input
-                type="text"
-                value={form.token}
-                onChange={(e) => setForm({ ...form, token: e.target.value })}
-                placeholder="auto-generated if empty"
-                className="w-full rounded-lg border border-gray-700 bg-gray-800/60 px-3 py-2.5 font-mono text-sm text-white placeholder-gray-500 outline-none transition-colors focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/20"
-              />
-            </div>
-            <div>
-              <label className="mb-1.5 block text-sm text-gray-400">Label</label>
-              <input
-                type="text"
-                value={form.label}
-                onChange={(e) => setForm({ ...form, label: e.target.value })}
-                placeholder="Dev Server - Berlin"
-                className="w-full rounded-lg border border-gray-700 bg-gray-800/60 px-3 py-2.5 font-mono text-sm text-white placeholder-gray-500 outline-none transition-colors focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/20"
-              />
-            </div>
-            <button
-              type="submit"
-              disabled={submitting}
-              className="w-full rounded-lg bg-emerald-600 py-2.5 text-sm font-medium text-white shadow-lg shadow-emerald-500/20 transition-all hover:bg-emerald-500 disabled:opacity-50"
-            >
-              {submitting ? 'Creating...' : 'Create Token'}
-            </button>
-          </form>
-        )}
+          ) : (
+            <form onSubmit={handleSubmit} className="space-y-4">
+              {[
+                { id: 'token', label: 'Token (optional)', placeholder: 'auto-generated if empty' },
+                { id: 'label', label: 'Label', placeholder: 'e.g. Raspberry Pi Berlin' },
+              ].map(f => (
+                <div key={f.id}>
+                  <label className="block text-[9.5px] uppercase tracking-[0.15em] mb-1.5" style={{ color: 'var(--text-dim)' }}>{f.label}</label>
+                  <input
+                    type="text"
+                    value={form[f.id]}
+                    onChange={e => setForm({ ...form, [f.id]: e.target.value })}
+                    placeholder={f.placeholder}
+                    style={{ width: '100%', background: 'var(--bg)', border: '1px solid var(--border2)', color: 'var(--text)', fontFamily: 'inherit', fontSize: '12px', padding: '8px 10px', outline: 'none', boxSizing: 'border-box' }}
+                    onFocus={e => e.target.style.borderColor = 'var(--green-dim)'}
+                    onBlur={e => e.target.style.borderColor = 'var(--border2)'}
+                  />
+                </div>
+              ))}
+              <div className="flex justify-end gap-2 pt-1">
+                <button type="button" onClick={onClose} style={btnStyle()}>Cancel</button>
+                <button type="submit" disabled={submitting} style={{ ...btnStyle('primary'), opacity: submitting ? 0.6 : 1 }}>
+                  {submitting ? 'Creating…' : 'Create Token'}
+                </button>
+              </div>
+            </form>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -162,187 +119,111 @@ function DetailModal({ token, onClose, onToggle, onDelete }) {
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(true);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const gatewayHost = window.location.hostname;
 
   useEffect(() => {
-    getTokenDetail(token).then((d) => {
-      setDetail(d);
-      setLoading(false);
-    });
+    getTokenDetail(token).then(d => { setDetail(d); setLoading(false); });
   }, [token]);
-
-  const gatewayHost = window.location.hostname || 'gateway-ip';
 
   if (loading || !detail) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-        <div className="absolute inset-0 bg-black/70 " onClick={onClose} />
-        <div className="relative rounded-2xl border border-gray-700/60 bg-[#0f0f18] p-8 shadow-2xl">
-          <div className="h-8 w-8 animate-spin rounded-full border-2 border-emerald-500 border-t-transparent" />
-        </div>
+      <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.75)' }}>
+        <div style={{ width: '24px', height: '24px', borderRadius: '50%', border: '2px solid var(--green)', borderTopColor: 'transparent', animation: 'spin 0.8s linear infinite' }} />
       </div>
     );
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/70 " onClick={onClose} />
-      <div className="relative w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-2xl border border-gray-700/60 bg-[#0f0f18] p-6 shadow-2xl">
-        <div className="mb-5 flex items-center justify-between">
-          <h2 className="text-lg font-bold text-white">Token Details</h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-white">
-            <X size={20} />
-          </button>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.75)' }} onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto" style={{ background: 'var(--surface)', border: '1px solid var(--border2)' }}>
+        <div className="flex items-center justify-between px-5 py-3.5" style={{ borderBottom: '1px solid var(--border)' }}>
+          <span className="text-[11px] uppercase tracking-[0.1em]" style={{ color: 'var(--text)' }}>Token Details</span>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', fontSize: '18px', lineHeight: 1 }}>×</button>
         </div>
 
-        {/* Detail grid */}
-        <div className="mb-5 grid grid-cols-2 gap-3">
-          <div className="rounded-lg border border-gray-800/60 bg-gray-900 p-3">
-            <p className="text-[9px] font-semibold uppercase tracking-widest text-gray-600">Token</p>
-            <p className="mt-1 break-all font-mono text-sm text-[#38b6ff]">{detail.token}</p>
+        <div className="p-5 space-y-5">
+          {/* Detail grid */}
+          <div className="grid grid-cols-2 gap-2.5">
+            {[
+              { label: 'Token', value: detail.token, blue: true },
+              { label: 'Label', value: detail.label || '–' },
+              { label: 'Status', value: detail.active ? 'active' : 'inactive', green: detail.active },
+              { label: 'Last Seen', value: formatTimestamp(detail.last_seen) },
+              { label: 'Target', value: detail.target_ip ? `${detail.target_ip}:${detail.target_port}` : '–', blue: !!detail.target_ip },
+              { label: 'Linux User', value: detail.linux_user, blue: true },
+            ].map(({ label, value, blue, green }) => (
+              <div key={label} className="p-3" style={{ background: 'var(--surface2)', border: '1px solid var(--border)' }}>
+                <p className="text-[9px] uppercase tracking-[0.18em] mb-1" style={{ color: 'var(--text-dim)' }}>{label}</p>
+                <p className="text-[12px] break-all" style={{ color: blue ? 'var(--blue)' : green ? 'var(--green)' : 'var(--text)' }}>{value}</p>
+              </div>
+            ))}
           </div>
-          <div className="rounded-lg border border-gray-800/60 bg-gray-900 p-3">
-            <p className="text-[9px] font-semibold uppercase tracking-widest text-gray-600">Linux User</p>
-            <p className="mt-1 font-mono text-sm text-[#38b6ff]">{detail.linux_user}</p>
+
+          {/* Install command */}
+          <div>
+            <p className="mb-2 text-[9.5px] uppercase tracking-[0.15em]" style={{ color: 'var(--text-dim)' }}>Client Install Command</p>
+            <InstallCommandBlock server={`ws://${gatewayHost}:4000`} token={detail.token} />
           </div>
-          <div className="rounded-lg border border-gray-800/60 bg-gray-900 p-3">
-            <p className="text-[9px] font-semibold uppercase tracking-widest text-gray-600">Label</p>
-            <p className="mt-1 text-sm text-gray-200">{detail.label || '\u2013'}</p>
-          </div>
-          <div className="rounded-lg border border-gray-800/60 bg-gray-900 p-3">
-            <p className="text-[9px] font-semibold uppercase tracking-widest text-gray-600">Status</p>
-            <p className="mt-1">
-              <span
-                className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                  detail.active
-                    ? 'bg-emerald-500/10 text-emerald-400'
-                    : 'bg-gray-700/30 text-gray-500'
-                }`}
-              >
-                {detail.active ? 'active' : 'inactive'}
-              </span>
+
+          {/* Recent Sessions */}
+          <div>
+            <p className="mb-2 text-[9.5px] uppercase tracking-[0.15em]" style={{ color: 'var(--text-dim)' }}>
+              Recent Sessions ({detail.sessions?.length || 0})
             </p>
-          </div>
-          <div className="rounded-lg border border-gray-800/60 bg-gray-900 p-3">
-            <p className="text-[9px] font-semibold uppercase tracking-widest text-gray-600">Target</p>
-            <p className="mt-1 font-mono text-sm text-[#38b6ff]">
-              {detail.target_ip}:{detail.target_port}
-            </p>
-          </div>
-          <div className="rounded-lg border border-gray-800/60 bg-gray-900 p-3">
-            <p className="text-[9px] font-semibold uppercase tracking-widest text-gray-600">Last Seen</p>
-            <p className="mt-1 text-sm text-gray-400">{formatTimestamp(detail.last_seen)}</p>
-          </div>
-        </div>
-
-        {/* Install command */}
-        <div className="mb-5">
-          <p className="mb-2 text-[9px] font-semibold uppercase tracking-widest text-gray-600">
-            Client Install Command
-          </p>
-          <InstallCommandBlock
-            server={`ws://${gatewayHost}:4000`}
-            token={detail.token}
-          />
-        </div>
-
-        {/* Recent Sessions */}
-        <div className="mb-5">
-          <p className="mb-2 text-[9px] font-semibold uppercase tracking-widest text-gray-600">
-            Recent Sessions ({detail.sessions?.length || 0})
-          </p>
-          <div className="overflow-hidden rounded-lg border border-gray-800/60 bg-gray-900">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-gray-800/60">
-                  <th className="px-4 py-2 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                    Client IP
-                  </th>
-                  <th className="px-4 py-2 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                    Connected
-                  </th>
-                  <th className="px-4 py-2 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                    Disconnected
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-800/40">
-                {detail.sessions && detail.sessions.length > 0 ? (
-                  detail.sessions.map((s) => (
-                    <tr key={s.id} className="transition-colors hover:bg-gray-800/30">
-                      <td className="whitespace-nowrap px-4 py-2 font-mono text-xs text-gray-300">
-                        {s.client_ip || '\u2013'}
-                      </td>
-                      <td className="whitespace-nowrap px-4 py-2 text-xs text-gray-400">
-                        {formatTimestamp(s.connected_at)}
-                      </td>
-                      <td className="whitespace-nowrap px-4 py-2 text-xs">
+            <div style={{ border: '1px solid var(--border)' }}>
+              <table className="w-full" style={{ borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                    {['From IP', 'Connected', 'Disconnected'].map(h => (
+                      <th key={h} className="px-3 py-2 text-left text-[9px] uppercase tracking-[0.18em] font-normal" style={{ color: 'var(--text-dim)' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {detail.sessions?.length > 0 ? detail.sessions.map(s => (
+                    <tr key={s.id} style={{ borderBottom: '1px solid var(--border)' }}>
+                      <td className="px-3 py-2 text-[11px]" style={{ color: 'var(--text-mid)' }}>{s.client_ip || '–'}</td>
+                      <td className="px-3 py-2 text-[10.5px]" style={{ color: 'var(--text-dim)' }}>{formatTimestamp(s.connected_at)}</td>
+                      <td className="px-3 py-2 text-[10.5px]">
                         {s.disconnected_at ? (
-                          <span className="text-gray-400">{formatTimestamp(s.disconnected_at)}</span>
+                          <span style={{ color: 'var(--text-dim)' }}>{formatTimestamp(s.disconnected_at)}</span>
                         ) : (
-                          <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-amber-400">
-                            <span className="h-1.5 w-1.5 rounded-full bg-amber-500 pulse-amber" />
-                            live
-                          </span>
+                          <span className="border px-2 py-0.5 text-[9.5px]" style={{ color: 'var(--amber)', borderColor: '#4a3000', background: 'rgba(240,165,0,0.07)' }}>● live</span>
                         )}
                       </td>
                     </tr>
-                  ))
-                ) : (
-                  <tr>
-                    <td colSpan={3} className="px-4 py-6 text-center text-xs text-gray-600">
-                      No sessions
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        {/* Actions */}
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => {
-              onToggle(detail.token, detail.active);
-              onClose();
-            }}
-            className={`inline-flex items-center gap-1.5 rounded-lg border px-4 py-2 text-xs font-medium transition-colors ${
-              detail.active
-                ? 'border-amber-500/30 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20'
-                : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20'
-            }`}
-          >
-            <Power size={12} />
-            {detail.active ? 'Deactivate' : 'Activate'}
-          </button>
-          {confirmDelete ? (
-            <div className="ml-auto flex items-center gap-2">
-              <span className="text-xs text-red-400">Confirm delete?</span>
-              <button
-                onClick={() => {
-                  onDelete(detail.token);
-                  onClose();
-                }}
-                className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400 transition-colors hover:bg-red-500/20"
-              >
-                Yes, Delete
-              </button>
-              <button
-                onClick={() => setConfirmDelete(false)}
-                className="rounded-lg border border-gray-700 bg-gray-800/50 px-3 py-2 text-xs text-gray-400 transition-colors hover:text-white"
-              >
-                Cancel
-              </button>
+                  )) : (
+                    <tr>
+                      <td colSpan={3} className="px-3 py-5 text-center text-[11px]" style={{ color: 'var(--text-dim)' }}>No sessions</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
             </div>
-          ) : (
+          </div>
+
+          {/* Actions */}
+          <div className="flex items-center gap-2 flex-wrap">
             <button
-              onClick={() => setConfirmDelete(true)}
-              className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-red-500/20 bg-red-500/5 px-4 py-2 text-xs text-red-400 transition-colors hover:bg-red-500/15"
+              onClick={() => { onToggle(detail.token, detail.active); onClose(); }}
+              style={detail.active ? btnStyle('amber') : btnStyle('ghost')}
             >
-              <Trash2 size={12} />
-              Delete Token
+              <Power size={11} />
+              {detail.active ? 'Deactivate' : 'Activate'}
             </button>
-          )}
+
+            {confirmDelete ? (
+              <div className="ml-auto flex items-center gap-2">
+                <span className="text-[11px]" style={{ color: 'var(--red)' }}>Confirm delete?</span>
+                <button onClick={() => { onDelete(detail.token); onClose(); }} style={btnStyle('danger')}>Yes, Delete</button>
+                <button onClick={() => setConfirmDelete(false)} style={btnStyle()}>Cancel</button>
+              </div>
+            ) : (
+              <button onClick={() => setConfirmDelete(true)} className="ml-auto" style={btnStyle('danger')}>
+                <Trash2 size={11} /> Delete Token
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -396,215 +277,171 @@ export default function Tokens() {
   };
 
   const filtered = searchQuery
-    ? tokens.filter(
-        (t) =>
-          (t.token + t.label + t.target_ip)
-            .toLowerCase()
-            .includes(searchQuery.toLowerCase())
-      )
+    ? tokens.filter(t => (t.token + t.label + t.target_ip).toLowerCase().includes(searchQuery.toLowerCase()))
     : tokens;
 
   if (loading) {
     return (
       <div className="flex h-64 items-center justify-center">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-emerald-500 border-t-transparent" />
+        <div className="h-6 w-6 animate-spin rounded-full border-2 border-t-transparent" style={{ borderColor: 'var(--green)', borderTopColor: 'transparent' }} />
       </div>
     );
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+    <div className="space-y-5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-white">Tokens</h1>
-          <p className="text-sm text-gray-400">
-            Manage SSH routing tokens{' '}
-            <span className="text-gray-600">(auto-refreshes every 15s)</span>
+          <h1 className="text-[16px] font-normal tracking-[0.06em]" style={{ color: 'var(--text)' }}>
+            Tokens <span style={{ color: 'var(--green)' }}>//</span> Clients
+          </h1>
+          <p className="mt-0.5 text-[10.5px]" style={{ color: 'var(--text-dim)' }}>
+            Manage client authentication tokens
           </p>
         </div>
         <div className="flex items-center gap-2">
           <button
             onClick={() => load(true)}
-            className="inline-flex items-center gap-2 rounded-lg border border-gray-700 bg-gray-800/50 px-4 py-2.5 text-sm text-gray-300 transition-colors hover:border-gray-600 hover:text-white"
+            style={btnStyle()}
+            onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--green-dim)'; e.currentTarget.style.color = 'var(--text)'; }}
+            onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border2)'; e.currentTarget.style.color = 'var(--text-mid)'; }}
           >
-            <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
-            Refresh
+            <RefreshCw size={11} className={refreshing ? 'animate-spin' : ''} />
           </button>
           <button
             onClick={() => setShowCreate(true)}
-            className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-medium text-white shadow-lg shadow-emerald-500/20 transition-all hover:bg-emerald-500 hover:shadow-emerald-500/30"
+            style={btnStyle('primary')}
+            onMouseEnter={e => e.currentTarget.style.background = '#00f599'}
+            onMouseLeave={e => e.currentTarget.style.background = 'var(--green)'}
           >
-            <Plus size={16} />
-            New Token
+            <Plus size={11} /> New Token
           </button>
         </div>
       </div>
 
       {/* Search */}
-      <div className="relative">
-        <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+      <div style={{ position: 'relative' }}>
+        <Search size={12} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-dim)' }} />
         <input
           type="text"
           value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="Search tokens, labels, IPs..."
-          className="w-full rounded-lg border border-gray-800/60 bg-gray-900 py-2.5 pl-9 pr-4 font-mono text-sm text-white placeholder-gray-600 outline-none transition-colors focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/20 sm:max-w-sm"
+          onChange={e => setSearchQuery(e.target.value)}
+          placeholder="Search tokens, labels..."
+          style={{
+            background: 'var(--surface)', border: '1px solid var(--border2)',
+            color: 'var(--text)', fontFamily: 'inherit', fontSize: '11.5px',
+            padding: '7px 10px 7px 30px', outline: 'none', width: '100%', maxWidth: '280px',
+          }}
+          onFocus={e => e.target.style.borderColor = 'var(--green-dim)'}
+          onBlur={e => e.target.style.borderColor = 'var(--border2)'}
         />
       </div>
 
       {/* Copied toast */}
       {copied && (
-        <div className="fixed bottom-6 right-6 z-50 flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-gray-900/95 px-4 py-2.5 text-sm text-emerald-400 shadow-xl ">
-          <Check size={14} /> Copied to clipboard
+        <div
+          className="fixed bottom-5 right-5 z-50 flex items-center gap-2 px-4 py-2.5 text-[11.5px]"
+          style={{ background: 'var(--surface2)', border: '1px solid var(--green-dim)', color: 'var(--green)' }}
+        >
+          <Check size={12} /> Copied to clipboard
         </div>
       )}
 
-      {/* Token Table */}
-      <div className="overflow-hidden rounded-xl border border-gray-800/60 bg-gray-900 ">
+      {/* Table */}
+      <div style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
         <div className="overflow-x-auto">
-          <table className="w-full">
+          <table className="w-full" style={{ borderCollapse: 'collapse' }}>
             <thead>
-              <tr className="border-b border-gray-800/60">
-                <th className="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                  Token
-                </th>
-                <th className="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                  Label
-                </th>
-                <th className="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                  Target
-                </th>
-                <th className="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                  Sessions
-                </th>
-                <th className="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                  Last Seen
-                </th>
-                <th className="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                  Status
-                </th>
-                <th className="px-5 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">
-                  Actions
-                </th>
+              <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                {['Token', 'Label', 'Sessions', 'Last Seen', 'Status', ''].map(h => (
+                  <th key={h} className="px-4 py-2.5 text-left text-[9px] uppercase tracking-[0.18em] font-normal whitespace-nowrap" style={{ color: 'var(--text-dim)' }}>
+                    {h}
+                  </th>
+                ))}
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-800/40">
+            <tbody>
               {filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-5 py-12 text-center">
-                    <Key size={32} className="mx-auto mb-2 text-gray-600" />
-                    <p className="text-sm text-gray-500">
-                      {searchQuery ? 'No matching tokens' : 'No tokens yet'}
-                    </p>
-                    {!searchQuery && (
-                      <button
-                        onClick={() => setShowCreate(true)}
-                        className="mt-4 text-sm text-emerald-400 hover:text-emerald-300"
-                      >
-                        Create your first token
-                      </button>
+                  <td colSpan={6} className="px-4 py-12 text-center text-[11px]" style={{ color: 'var(--text-dim)' }}>
+                    {searchQuery ? 'No matching tokens' : (
+                      <>
+                        No tokens yet.{' '}
+                        <button
+                          onClick={() => setShowCreate(true)}
+                          style={{ background: 'none', border: 'none', color: 'var(--green)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 'inherit' }}
+                        >
+                          Create one →
+                        </button>
+                      </>
                     )}
                   </td>
                 </tr>
-              ) : (
-                filtered.map((t) => (
-                  <tr
-                    key={t.token}
-                    className="cursor-pointer transition-colors hover:bg-gray-800/30"
-                    onClick={() => setDetailToken(t.token)}
-                  >
-                    <td className="whitespace-nowrap px-5 py-3.5">
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-sm text-[#38b6ff]">
-                          {t.token.length > 12 ? t.token.slice(0, 12) + '\u2026' : t.token}
-                        </span>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleCopyToken(t.token);
-                          }}
-                          className="text-gray-600 transition-colors hover:text-gray-300"
-                        >
-                          <Copy size={12} />
-                        </button>
-                      </div>
-                    </td>
-                    <td className="whitespace-nowrap px-5 py-3.5 text-sm text-gray-300">
-                      {t.label || <span className="text-gray-600">{'\u2013'}</span>}
-                    </td>
-                    <td className="whitespace-nowrap px-5 py-3.5 font-mono text-sm text-gray-400">
-                      {t.target_ip}:{t.target_port}
-                    </td>
-                    <td className="whitespace-nowrap px-5 py-3.5">
-                      <span className="inline-flex items-center gap-1.5 text-sm text-gray-400">
-                        <Radio size={12} />
-                        {t.session_count || 0}
+              ) : filtered.map(t => (
+                <tr
+                  key={t.token}
+                  style={{ borderBottom: '1px solid var(--border)', cursor: 'pointer' }}
+                  onClick={() => setDetailToken(t.token)}
+                  onMouseEnter={e => e.currentTarget.style.background = 'var(--green-bg)'}
+                  onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                >
+                  <td className="px-4 py-2.5">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[11.5px]" style={{ color: 'var(--blue)' }}>
+                        {t.token.length > 12 ? t.token.slice(0, 12) + '…' : t.token}
                       </span>
-                    </td>
-                    <td className="whitespace-nowrap px-5 py-3.5 text-sm text-gray-500">
-                      {formatTimestamp(t.last_seen)}
-                    </td>
-                    <td className="whitespace-nowrap px-5 py-3.5">
-                      <span
-                        className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                          t.active
-                            ? 'bg-emerald-500/10 text-emerald-400'
-                            : 'bg-gray-700/30 text-gray-500'
-                        }`}
+                      <button
+                        onClick={e => { e.stopPropagation(); handleCopyToken(t.token); }}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-dim)', display: 'flex', padding: 0 }}
                       >
-                        {t.active ? 'active' : 'inactive'}
-                      </span>
-                    </td>
-                    <td className="whitespace-nowrap px-5 py-3.5 text-right">
-                      <div className="flex items-center justify-end gap-2">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleToggle(t.token, t.active);
-                          }}
-                          className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs transition-colors ${
-                            t.active
-                              ? 'border-amber-500/30 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20'
-                              : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20'
-                          }`}
-                        >
-                          <Power size={11} />
-                          {t.active ? 'Stop' : 'Start'}
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDelete(t.token);
-                          }}
-                          className="inline-flex items-center gap-1 rounded-lg border border-red-500/20 bg-red-500/5 px-2.5 py-1.5 text-xs text-red-400 transition-colors hover:bg-red-500/15"
-                        >
-                          <Trash2 size={11} />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))
-              )}
+                        <Copy size={11} />
+                      </button>
+                    </div>
+                  </td>
+                  <td className="px-4 py-2.5 text-[11.5px]" style={{ color: 'var(--text)' }}>
+                    {t.label || <span style={{ color: 'var(--text-dim)' }}>–</span>}
+                  </td>
+                  <td className="px-4 py-2.5 text-[11.5px]" style={{ color: 'var(--text-mid)' }}>
+                    {t.session_count || 0}
+                  </td>
+                  <td className="px-4 py-2.5 text-[10.5px] whitespace-nowrap" style={{ color: 'var(--text-dim)' }}>
+                    {formatTimestamp(t.last_seen)}
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <span className="border px-2 py-0.5 text-[9.5px]" style={{
+                      color: t.active ? 'var(--green)' : 'var(--text-dim)',
+                      borderColor: t.active ? 'var(--green-dim)' : 'var(--border2)',
+                      background: t.active ? 'var(--green-bg)' : 'transparent',
+                    }}>
+                      {t.active ? 'active' : 'inactive'}
+                    </span>
+                  </td>
+                  <td className="px-4 py-2.5 text-right whitespace-nowrap">
+                    <div className="flex items-center justify-end gap-2">
+                      <button
+                        onClick={e => { e.stopPropagation(); handleToggle(t.token, t.active); }}
+                        style={t.active ? btnStyle('amber') : btnStyle('ghost')}
+                      >
+                        <Power size={10} />
+                        {t.active ? 'Stop' : 'Start'}
+                      </button>
+                      <button
+                        onClick={e => { e.stopPropagation(); handleDelete(t.token); }}
+                        style={{ ...btnStyle('danger'), padding: '5px 8px' }}
+                      >
+                        <Trash2 size={10} />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
       </div>
 
-      {showCreate && (
-        <CreateModal
-          onClose={() => setShowCreate(false)}
-          onCreate={handleCreate}
-        />
-      )}
-
-      {detailToken && (
-        <DetailModal
-          token={detailToken}
-          onClose={() => setDetailToken(null)}
-          onToggle={handleToggle}
-          onDelete={handleDelete}
-        />
-      )}
+      {showCreate && <CreateModal onClose={() => setShowCreate(false)} onCreate={handleCreate} />}
+      {detailToken && <DetailModal token={detailToken} onClose={() => setDetailToken(null)} onToggle={handleToggle} onDelete={handleDelete} />}
     </div>
   );
 }

@@ -11,7 +11,8 @@ import {
   Menu,
   X,
 } from 'lucide-react';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { getStats } from '../services/api';
 
 const NAV_MAIN = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard },
@@ -20,7 +21,7 @@ const NAV_MAIN = [
   { to: '/settings', label: 'Settings', icon: Settings },
 ];
 
-const NAV_SSH = [
+const NAV_CLIENTS = [
   { to: '/tokens', label: 'Tokens', icon: Key },
   { to: '/sessions', label: 'Sessions', icon: Radio },
   { to: '/setup', label: 'Setup Guide', icon: BookOpen },
@@ -33,14 +34,14 @@ function NavItem({ to, label, icon: Icon, onClick }) {
       end={to === '/'}
       onClick={onClick}
       className={({ isActive }) =>
-        `flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all duration-200 ${
+        `flex items-center gap-2.5 border-l-2 px-4 py-2 text-[11.5px] uppercase tracking-widest transition-all duration-150 ${
           isActive
-            ? 'bg-emerald-500/10 text-emerald-400 shadow-[inset_0_0_20px_rgba(16,185,129,0.05)]'
-            : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
+            ? 'border-[var(--green)] bg-[var(--green-bg)] text-[var(--green)]'
+            : 'border-transparent text-[var(--text-mid)] hover:bg-[var(--green-glow)] hover:text-[var(--text)]'
         }`
       }
     >
-      <Icon size={18} />
+      <Icon size={13} strokeWidth={1.5} />
       {label}
     </NavLink>
   );
@@ -48,9 +49,24 @@ function NavItem({ to, label, icon: Icon, onClick }) {
 
 export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [headerStats, setHeaderStats] = useState({ activeTunnels: 0, liveSessions: 0, activeTokens: 0 });
+
+  useEffect(() => {
+    const load = async () => {
+      const s = await getStats();
+      setHeaderStats({
+        activeTunnels: s.activeTunnels ?? 0,
+        liveSessions: s.liveSessions ?? 0,
+        activeTokens: s.activeTokens ?? 0,
+      });
+    };
+    load();
+    const iv = setInterval(load, 15000);
+    return () => clearInterval(iv);
+  }, []);
 
   return (
-    <div className="scanline-overlay flex h-screen overflow-hidden bg-[#0a0a0f]">
+    <div className="flex h-screen overflow-hidden" style={{ background: 'var(--bg)', color: 'var(--text)' }}>
       {/* Mobile overlay */}
       {sidebarOpen && (
         <div
@@ -61,64 +77,101 @@ export default function Layout() {
 
       {/* Sidebar */}
       <aside
-        className={`fixed inset-y-0 left-0 z-40 flex w-64 flex-col border-r border-gray-800/60 bg-[#0c0c14]  transition-transform duration-300 lg:static lg:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-40 flex w-56 flex-col transition-transform duration-300 lg:static lg:translate-x-0 ${
           sidebarOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
+        style={{ background: 'var(--surface)', borderRight: '1px solid var(--border)' }}
       >
         {/* Logo */}
-        <div className="flex h-16 items-center gap-3 border-b border-gray-800/60 px-6">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-400">
-            <Shield size={20} />
+        <div
+          className="flex h-14 items-center gap-3 px-5"
+          style={{ borderBottom: '1px solid var(--border)' }}
+        >
+          <div
+            className="flex h-8 w-8 items-center justify-center"
+            style={{ border: '1.5px solid var(--green)', color: 'var(--green)', fontSize: '14px' }}
+          >
+            <Shield size={14} strokeWidth={1.5} />
           </div>
-          <span className="text-lg font-bold tracking-tight text-white">
-            Tunnel<span className="text-emerald-400">Vault</span>
-          </span>
+          <div>
+            <div className="text-[11px] uppercase tracking-[0.18em]" style={{ color: 'var(--text)' }}>
+              TunnelVault
+            </div>
+            <div className="text-[9px] uppercase tracking-[0.1em]" style={{ color: 'var(--text-dim)' }}>
+              v0.1.0
+            </div>
+          </div>
           <button
-            className="ml-auto text-gray-400 lg:hidden"
+            className="ml-auto lg:hidden"
+            style={{ color: 'var(--text-dim)' }}
             onClick={() => setSidebarOpen(false)}
           >
-            <X size={20} />
+            <X size={16} />
           </button>
         </div>
 
         {/* Nav */}
-        <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-4">
+        <nav className="flex-1 overflow-y-auto py-4">
+          <div className="mb-1.5 px-4 text-[9px] uppercase tracking-[0.22em]" style={{ color: 'var(--text-dim)' }}>
+            Overview
+          </div>
           {NAV_MAIN.map((item) => (
             <NavItem key={item.to} {...item} onClick={() => setSidebarOpen(false)} />
           ))}
 
-          {/* SSH Gateway section */}
-          <div className="mt-5 mb-2 px-3">
-            <span className="text-[10px] font-semibold uppercase tracking-widest text-gray-600">
-              SSH Gateway
-            </span>
+          <div
+            className="my-3 mx-4"
+            style={{ borderTop: '1px solid var(--border)' }}
+          />
+
+          <div className="mb-1.5 px-4 text-[9px] uppercase tracking-[0.22em]" style={{ color: 'var(--text-dim)' }}>
+            Clients
           </div>
-          {NAV_SSH.map((item) => (
+          {NAV_CLIENTS.map((item) => (
             <NavItem key={item.to} {...item} onClick={() => setSidebarOpen(false)} />
           ))}
         </nav>
 
-        {/* Footer */}
-        <div className="border-t border-gray-800/60 px-4 py-4">
-          <div className="flex items-center gap-2 text-xs text-gray-500">
-            <div className="h-2 w-2 rounded-full bg-emerald-500 pulse-dot" />
-            Server online
-          </div>
+        {/* Footer status */}
+        <div
+          className="flex items-center gap-2 px-4 py-3 text-[10px]"
+          style={{ borderTop: '1px solid var(--border)', color: 'var(--text-dim)' }}
+        >
+          <div className="h-1.5 w-1.5 rounded-full pulse-dot" style={{ background: 'var(--green)' }} />
+          Server online
         </div>
       </aside>
 
       {/* Main */}
       <div className="flex flex-1 flex-col overflow-hidden">
         {/* Top bar */}
-        <header className="flex h-16 items-center border-b border-gray-800/60 bg-[#0c0c14] px-4  lg:px-8">
+        <header
+          className="flex h-14 items-center px-4 lg:px-6"
+          style={{ background: 'var(--surface)', borderBottom: '1px solid var(--border)' }}
+        >
           <button
-            className="mr-4 text-gray-400 hover:text-white lg:hidden"
+            className="mr-4 lg:hidden"
+            style={{ color: 'var(--text-dim)' }}
             onClick={() => setSidebarOpen(true)}
           >
-            <Menu size={22} />
+            <Menu size={18} />
           </button>
-          <div className="ml-auto flex items-center gap-3">
-            <span className="font-mono text-xs text-gray-500">v0.1.0</span>
+
+          {/* Header stats (like reference) */}
+          <div className="ml-auto flex items-center gap-6 text-[11px]">
+            <div className="flex items-center gap-2" style={{ color: 'var(--text-dim)' }}>
+              <div className="h-1.5 w-1.5 rounded-full pulse-dot" style={{ background: 'var(--green)' }} />
+              <span style={{ color: 'var(--green)', fontWeight: 600 }}>{headerStats.liveSessions}</span>
+              {' '}Live
+            </div>
+            <div className="flex items-center gap-1.5 hidden sm:flex" style={{ color: 'var(--text-dim)' }}>
+              <span style={{ color: 'var(--green)', fontWeight: 600 }}>{headerStats.activeTunnels}</span>
+              {' '}Tunnels
+            </div>
+            <div className="flex items-center gap-1.5 hidden sm:flex" style={{ color: 'var(--text-dim)' }}>
+              <span style={{ color: 'var(--green)', fontWeight: 600 }}>{headerStats.activeTokens}</span>
+              {' '}Tokens
+            </div>
           </div>
         </header>
 

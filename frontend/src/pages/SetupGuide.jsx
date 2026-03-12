@@ -2,94 +2,63 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { copyToClipboard } from '../utils/clipboard';
 import {
-  Copy,
-  Check,
-  Terminal,
-  Server,
-  Key,
-  Shield,
-  Globe,
-  Cpu,
-  AlertCircle,
-  BookOpen,
-  ChevronDown,
-  ChevronRight,
-  ExternalLink,
+  Copy, Check, Terminal, Server, Key, Shield, Globe,
+  Cpu, AlertCircle, BookOpen, ChevronDown, ChevronRight, ExternalLink,
 } from 'lucide-react';
-
-/* ─── Shared sub-components ─────────────────────────────────────── */
 
 function CodeBlock({ children, copyText }) {
   const [copied, setCopied] = useState(false);
-
   const handleCopy = () => {
-    const text =
-      copyText ||
-      (typeof children === 'string'
-        ? children
-        : '');
-    if (text) {
-      copyToClipboard(text);
-    }
+    const text = copyText || (typeof children === 'string' ? children : '');
+    if (text) copyToClipboard(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
-
   return (
-    <div className="group relative mt-3 rounded-lg border border-gray-700/60 bg-gray-950 p-4 font-mono text-[13px] leading-relaxed">
+    <div style={{ position: 'relative', marginTop: '10px', background: 'var(--bg)', border: '1px solid var(--border2)', padding: '12px 14px', fontFamily: 'inherit', fontSize: '11.5px', lineHeight: 1.7 }}
+      className="group">
       <button
         onClick={handleCopy}
-        className="absolute top-2 right-2 rounded-md border border-gray-700 bg-gray-800/60 p-1.5 text-gray-500 opacity-0 transition-all hover:border-gray-600 hover:text-white group-hover:opacity-100"
+        style={{ position: 'absolute', top: '8px', right: '8px', background: 'var(--surface)', border: '1px solid var(--border2)', cursor: 'pointer', padding: '4px 6px', display: 'flex', alignItems: 'center', color: 'var(--text-dim)', opacity: 0, transition: 'opacity .15s' }}
+        className="group-hover:opacity-100"
+        onMouseEnter={e => e.currentTarget.style.opacity = 1}
+        onMouseLeave={e => e.currentTarget.style.opacity = 0}
       >
-        {copied ? (
-          <Check size={12} className="text-emerald-400" />
-        ) : (
-          <Copy size={12} />
-        )}
+        {copied ? <Check size={11} style={{ color: 'var(--green)' }} /> : <Copy size={11} />}
       </button>
-      <div className="overflow-x-auto text-gray-400">{children}</div>
+      <div style={{ overflowX: 'auto', color: 'var(--text-dim)' }}>{children}</div>
     </div>
   );
 }
 
-function Kw({ children }) {
-  return <span className="text-blue-400">{children}</span>;
-}
-
-function Val({ children }) {
-  return <span className="text-emerald-400">{children}</span>;
-}
-
-function Comment({ children }) {
-  return <span className="text-gray-600">{children}</span>;
-}
+function Kw({ children }) { return <span style={{ color: 'var(--blue)' }}>{children}</span>; }
+function Val({ children }) { return <span style={{ color: 'var(--green)' }}>{children}</span>; }
+function Cmt({ children }) { return <span style={{ color: 'var(--border2)' }}>{children}</span>; }
 
 function SectionCard({ icon: Icon, title, id, children }) {
   return (
-    <div id={id} className="rounded-xl border border-gray-800/60 bg-gray-900 p-6">
-      <div className="mb-4 flex items-center gap-3">
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-400">
-          <Icon size={16} />
-        </div>
-        <h2 className="text-lg font-semibold text-white">{title}</h2>
+    <div id={id} style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+      <div className="px-4 py-3 flex items-center gap-3" style={{ borderBottom: '1px solid var(--border)' }}>
+        <Icon size={13} style={{ color: 'var(--green)' }} />
+        <span className="text-[10px] uppercase tracking-[0.15em]" style={{ color: 'var(--text-mid)' }}>{title}</span>
       </div>
-      {children}
+      <div className="p-4 space-y-3">{children}</div>
     </div>
   );
 }
 
-function StepIndicator({ number, title, children }) {
+function Step({ number, title, children }) {
   return (
     <div className="flex gap-4">
       <div className="flex flex-col items-center">
-        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-emerald-500/20 font-mono text-xs font-bold text-emerald-400">
+        <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '22px', height: '22px', border: '1px solid var(--green-dim)', color: 'var(--green)', fontSize: '10px', flexShrink: 0 }}>
           {number}
         </span>
-        <div className="mt-2 flex-1 w-px bg-gray-800/60" />
+        <div style={{ flex: 1, width: '1px', background: 'var(--border)', marginTop: '4px' }} />
       </div>
-      <div className="pb-6 flex-1 min-w-0">
-        <h3 className="mb-2 text-sm font-semibold text-white">{title}</h3>
-        <div className="text-sm leading-relaxed text-gray-400">{children}</div>
+      <div className="pb-5 flex-1 min-w-0">
+        <p className="text-[11.5px] mb-1" style={{ color: 'var(--text)' }}>{title}</p>
+        <div className="text-[11px] space-y-1" style={{ color: 'var(--text-dim)' }}>{children}</div>
       </div>
     </div>
   );
@@ -98,21 +67,19 @@ function StepIndicator({ number, title, children }) {
 function TroubleshootItem({ question, children }) {
   const [open, setOpen] = useState(false);
   return (
-    <div className="border-b border-gray-800/40 last:border-0">
+    <div style={{ borderBottom: '1px solid var(--border)' }} className="last:border-0">
       <button
         onClick={() => setOpen(!open)}
-        className="flex w-full items-center gap-3 py-3 text-left text-sm font-medium text-gray-300 transition-colors hover:text-white"
+        style={{ display: 'flex', width: '100%', alignItems: 'center', gap: '8px', padding: '10px 0', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left' }}
       >
-        {open ? (
-          <ChevronDown size={14} className="shrink-0 text-emerald-400" />
-        ) : (
-          <ChevronRight size={14} className="shrink-0 text-gray-500" />
-        )}
-        <AlertCircle size={14} className="shrink-0 text-amber-400/70" />
-        <span>{question}</span>
+        {open
+          ? <ChevronDown size={11} style={{ color: 'var(--green)', flexShrink: 0 }} />
+          : <ChevronRight size={11} style={{ color: 'var(--text-dim)', flexShrink: 0 }} />}
+        <AlertCircle size={11} style={{ color: 'var(--amber)', flexShrink: 0 }} />
+        <span className="text-[11px]" style={{ color: 'var(--text-mid)' }}>{question}</span>
       </button>
       {open && (
-        <div className="pb-3 pl-11 text-sm leading-relaxed text-gray-400">
+        <div className="pb-3 text-[11px] leading-relaxed" style={{ paddingLeft: '31px', color: 'var(--text-dim)' }}>
           {children}
         </div>
       )}
@@ -120,157 +87,145 @@ function TroubleshootItem({ question, children }) {
   );
 }
 
-function TableWrapper({ children }) {
+function DataTable({ headers, rows }) {
   return (
-    <div className="mt-3 overflow-x-auto rounded-lg border border-gray-800/60">
-      <table className="w-full">{children}</table>
+    <div style={{ marginTop: '8px', border: '1px solid var(--border)', overflowX: 'auto' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <thead>
+          <tr style={{ borderBottom: '1px solid var(--border)' }}>
+            {headers.map(h => (
+              <th key={h} className="px-3 py-2 text-left text-[9px] uppercase tracking-[0.18em] font-normal" style={{ color: 'var(--text-dim)' }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, i) => (
+            <tr key={i} style={{ borderBottom: i < rows.length - 1 ? '1px solid var(--border)' : 'none' }}>
+              {row.map((cell, j) => (
+                <td key={j} className="px-3 py-2 text-[11px]" style={{ color: cell.color || 'var(--text-dim)', fontFamily: cell.mono ? 'inherit' : undefined }}>
+                  {cell.text}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
 
-function Th({ children }) {
+function InlineCode({ children }) {
   return (
-    <th className="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
+    <code style={{ background: 'var(--bg)', border: '1px solid var(--border2)', padding: '1px 6px', fontSize: '10.5px', color: 'var(--blue)' }}>
       {children}
-    </th>
+    </code>
   );
 }
 
-function Td({ children, mono, accent }) {
-  const cls = [
-    'px-4 py-2 text-xs',
-    mono ? 'font-mono' : '',
-    accent === 'emerald'
-      ? 'text-emerald-400'
-      : accent === 'blue'
-        ? 'text-blue-400'
-        : accent === 'amber'
-          ? 'text-amber-400'
-          : 'text-gray-300',
-  ].join(' ');
-  return <td className={cls}>{children}</td>;
+function Label({ children }) {
+  return <p className="text-[9.5px] uppercase tracking-[0.15em] mb-1 mt-4" style={{ color: 'var(--text-dim)' }}>{children}</p>;
 }
 
-/* ─── Main page ─────────────────────────────────────────────────── */
+const tocItems = [
+  { href: '#server-install', label: 'Server Install', icon: Server },
+  { href: '#client-install', label: 'Client Install', icon: Terminal },
+  { href: '#quick-start', label: 'Quick Start', icon: Cpu },
+  { href: '#ssh-gateway', label: 'SSH Gateway', icon: Key },
+  { href: '#cli-commands', label: 'CLI Reference', icon: Terminal },
+  { href: '#api-endpoints', label: 'API Endpoints', icon: Globe },
+  { href: '#security', label: 'Security', icon: Shield },
+  { href: '#troubleshooting', label: 'Troubleshooting', icon: AlertCircle },
+];
 
 export default function SetupGuide() {
   const navigate = useNavigate();
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       {/* Header */}
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-white">Setup Guide</h1>
-          <p className="text-sm text-gray-400">
-            Comprehensive deployment, configuration, and usage reference
+          <h1 className="text-[16px] font-normal tracking-[0.06em]" style={{ color: 'var(--text)' }}>
+            Setup Guide <span style={{ color: 'var(--green)' }}>//</span> Docs
+          </h1>
+          <p className="mt-0.5 text-[10.5px]" style={{ color: 'var(--text-dim)' }}>
+            Deployment, configuration, and usage reference
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <BookOpen size={16} className="text-emerald-400" />
-          <span className="font-mono text-xs text-gray-500">TunnelVault Docs</span>
+          <BookOpen size={12} style={{ color: 'var(--green)' }} />
+          <span className="text-[10px] uppercase tracking-[0.12em]" style={{ color: 'var(--text-dim)' }}>TunnelVault Docs</span>
         </div>
       </div>
 
       {/* Table of Contents */}
-      <div className="rounded-xl border border-gray-800/60 bg-gray-900 p-5">
-        <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-gray-500">
-          Contents
-        </p>
-        <div className="grid gap-1 sm:grid-cols-2 lg:grid-cols-4">
-          {[
-            { href: '#server-install', label: 'Server Installation', icon: Server },
-            { href: '#client-install', label: 'Client Installation', icon: Terminal },
-            { href: '#quick-start', label: 'Quick Start', icon: Cpu },
-            { href: '#ssh-gateway', label: 'SSH Gateway Usage', icon: Key },
-            { href: '#cli-commands', label: 'CLI Commands', icon: Terminal },
-            { href: '#api-endpoints', label: 'API Endpoints', icon: Globe },
-            { href: '#security', label: 'Security Checklist', icon: Shield },
-            { href: '#troubleshooting', label: 'Troubleshooting', icon: AlertCircle },
-          ].map(({ href, label, icon: Icon }) => (
+      <div style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+        <div className="px-4 py-3" style={{ borderBottom: '1px solid var(--border)' }}>
+          <span className="text-[10px] uppercase tracking-[0.15em]" style={{ color: 'var(--text-mid)' }}>Contents</span>
+        </div>
+        <div className="p-4 grid gap-1 sm:grid-cols-2 lg:grid-cols-4">
+          {tocItems.map(({ href, label, icon: Icon }) => (
             <a
               key={href}
               href={href}
-              className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-gray-400 transition-colors hover:bg-gray-800/60 hover:text-white"
+              style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 8px', color: 'var(--text-dim)', textDecoration: 'none', fontSize: '11px', transition: 'color .15s' }}
+              onMouseEnter={e => { e.currentTarget.style.color = 'var(--text)'; }}
+              onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-dim)'; }}
             >
-              <Icon size={14} className="shrink-0 text-emerald-400/60" />
+              <Icon size={11} style={{ color: 'var(--green)', flexShrink: 0 }} />
               {label}
             </a>
           ))}
         </div>
       </div>
 
-      <div className="max-w-4xl space-y-8">
-        {/* ────────────────────────────────────────────────────────── */}
-        {/* 1. Server Installation                                    */}
-        {/* ────────────────────────────────────────────────────────── */}
+      <div className="max-w-4xl space-y-5">
+
+        {/* 1. Server Installation */}
         <SectionCard icon={Server} title="Server Installation" id="server-install">
-          <p className="mb-2 text-sm text-gray-400">
-            Deploy TunnelVault on an EC2 instance (Ubuntu 22.04 recommended). The
-            install script sets up Node.js, builds the frontend, configures the SSH
-            gateway, and creates systemd services.
+          <p className="text-[11px]" style={{ color: 'var(--text-dim)' }}>
+            Deploy TunnelVault on an EC2 instance (Ubuntu 22.04 recommended). The install script sets up Node.js, builds the frontend, and creates systemd services.
           </p>
 
-          <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
-            Prerequisites
-          </p>
-          <ul className="mb-4 space-y-1 text-sm text-gray-400">
-            <li className="flex items-start gap-2">
-              <span className="mt-0.5 text-emerald-400">&#8226;</span>
-              EC2 instance: t3.micro minimum (1 vCPU, 1 GB RAM)
-            </li>
-            <li className="flex items-start gap-2">
-              <span className="mt-0.5 text-emerald-400">&#8226;</span>
-              Ubuntu 22.04 LTS (x86_64 or ARM)
-            </li>
-            <li className="flex items-start gap-2">
-              <span className="mt-0.5 text-emerald-400">&#8226;</span>
-              Security group: ports 22, 4000, 4001 open
-            </li>
-            <li className="flex items-start gap-2">
-              <span className="mt-0.5 text-emerald-400">&#8226;</span>
-              Public IP or Elastic IP assigned
-            </li>
+          <Label>Prerequisites</Label>
+          <ul className="space-y-1 text-[11px]" style={{ color: 'var(--text-dim)' }}>
+            {[
+              'EC2 instance: t3.micro minimum (1 vCPU, 1 GB RAM)',
+              'Ubuntu 22.04 LTS (x86_64 or ARM)',
+              'Security group: ports 22, 4000, 4001, 10000-10999 open',
+              'Public IP or Elastic IP assigned',
+            ].map((item, i) => (
+              <li key={i} className="flex items-start gap-2">
+                <span style={{ color: 'var(--green)', marginTop: '1px' }}>›</span>
+                {item}
+              </li>
+            ))}
           </ul>
 
-          <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
-            Install Command
-          </p>
+          <Label>Install Command</Label>
           <CodeBlock copyText="git clone <repo> /opt/tunnelvault-src && cd /opt/tunnelvault-src && sudo bash install-server.sh --domain tunnel.yourdomain.com">
             <div><Kw>git clone</Kw> <Val>{'<repo>'}</Val> /opt/tunnelvault-src</div>
             <div><Kw>cd</Kw> /opt/tunnelvault-src</div>
             <div><Kw>sudo bash</Kw> install-server.sh --domain <Val>tunnel.yourdomain.com</Val></div>
           </CodeBlock>
 
-          <p className="mt-4 mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
-            Install Options
-          </p>
-          <TableWrapper>
-            <thead>
-              <tr className="border-b border-gray-800/60 bg-gray-900/80">
-                <Th>Flag</Th>
-                <Th>Default</Th>
-                <Th>Description</Th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-800/40">
-              <tr><Td mono accent="blue">--domain</Td><Td mono>tunnel.local</Td><Td>Server domain name</Td></tr>
-              <tr><Td mono accent="blue">--auth-token</Td><Td mono>auto-generated</Td><Td>API authentication token</Td></tr>
-              <tr><Td mono accent="blue">--port</Td><Td mono>4000</Td><Td>API + WebSocket + Dashboard port</Td></tr>
-              <tr><Td mono accent="blue">--proxy-port</Td><Td mono>4001</Td><Td>Tunnel proxy port</Td></tr>
-              <tr><Td mono accent="blue">--upgrade</Td><Td mono>&mdash;</Td><Td>Upgrade existing install (preserves DB and config)</Td></tr>
-            </tbody>
-          </TableWrapper>
+          <Label>Install Options</Label>
+          <DataTable
+            headers={['Flag', 'Default', 'Description']}
+            rows={[
+              [{ text: '--domain', mono: true, color: 'var(--blue)' }, { text: 'tunnel.local', mono: true }, { text: 'Server domain name' }],
+              [{ text: '--auth-token', mono: true, color: 'var(--blue)' }, { text: 'auto-generated', mono: true }, { text: 'API authentication token' }],
+              [{ text: '--port', mono: true, color: 'var(--blue)' }, { text: '4000', mono: true }, { text: 'API + WebSocket + Dashboard port' }],
+              [{ text: '--proxy-port', mono: true, color: 'var(--blue)' }, { text: '4001', mono: true }, { text: 'Tunnel proxy port' }],
+              [{ text: '--upgrade', mono: true, color: 'var(--blue)' }, { text: '—' }, { text: 'Upgrade existing install (preserves DB and config)' }],
+            ]}
+          />
         </SectionCard>
 
-        {/* ────────────────────────────────────────────────────────── */}
-        {/* 2. Client Installation                                    */}
-        {/* ────────────────────────────────────────────────────────── */}
+        {/* 2. Client Installation */}
         <SectionCard icon={Terminal} title="Client Installation" id="client-install">
-          <p className="mb-2 text-sm text-gray-400">
-            Install the <code className="rounded bg-gray-800 px-1.5 py-0.5 text-xs text-emerald-400">tunnelvault</code> CLI
-            on any machine that needs to create tunnels. Config is saved
-            to <code className="rounded bg-gray-800 px-1.5 py-0.5 text-xs text-gray-300">~/.tunnelvault/config.json</code>.
+          <p className="text-[11px]" style={{ color: 'var(--text-dim)' }}>
+            Install the <InlineCode>tunnelvault</InlineCode> CLI on any machine that needs to create tunnels. Config is saved to <InlineCode>~/.tunnelvault/config.json</InlineCode>.
           </p>
 
           <CodeBlock copyText="bash install-client.sh --server ws://YOUR-EC2-IP:4000 --auth-token YOUR_TOKEN">
@@ -279,394 +234,235 @@ export default function SetupGuide() {
             <div>  --auth-token <Val>YOUR_TOKEN</Val></div>
           </CodeBlock>
 
-          <p className="mt-3 text-xs text-gray-500">
-            To uninstall: <code className="rounded bg-gray-800 px-1.5 py-0.5 text-xs text-gray-300">bash install-client.sh --uninstall</code>
+          <p className="text-[11px] mt-2" style={{ color: 'var(--text-dim)' }}>
+            To uninstall: <InlineCode>bash install-client.sh --uninstall</InlineCode>
           </p>
 
-          <p className="mt-4 mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
-            Config Priority
-          </p>
-          <p className="text-sm text-gray-400">
-            CLI flag &rarr; environment variable (<code className="rounded bg-gray-800 px-1.5 py-0.5 text-xs text-gray-300">TUNNELVAULT_SERVER</code>,{' '}
-            <code className="rounded bg-gray-800 px-1.5 py-0.5 text-xs text-gray-300">TUNNELVAULT_AUTH_TOKEN</code>) &rarr;{' '}
-            config.json &rarr; defaults.
+          <Label>Config Priority</Label>
+          <p className="text-[11px]" style={{ color: 'var(--text-dim)' }}>
+            CLI flag → env var (<InlineCode>TUNNELVAULT_SERVER</InlineCode>, <InlineCode>TUNNELVAULT_AUTH_TOKEN</InlineCode>) → config.json → defaults.
           </p>
         </SectionCard>
 
-        {/* ────────────────────────────────────────────────────────── */}
-        {/* 3. Quick Start                                            */}
-        {/* ────────────────────────────────────────────────────────── */}
+        {/* 3. Quick Start */}
         <SectionCard icon={Cpu} title="Quick Start" id="quick-start">
-          <p className="mb-4 text-sm text-gray-400">
-            Get up and running in four steps.
-          </p>
+          <p className="text-[11px]" style={{ color: 'var(--text-dim)' }}>Get up and running in four steps.</p>
 
-          <StepIndicator number="1" title="Deploy the Server">
-            <p>Run <code className="rounded bg-gray-800 px-1.5 py-0.5 text-xs text-emerald-400">install-server.sh</code> on
-            your EC2 instance. This installs Node.js, builds the dashboard, configures the SSH gateway, and starts systemd services.</p>
-            <CodeBlock copyText="sudo bash install-server.sh --domain tunnel.yourdomain.com">
-              <div><Kw>sudo bash</Kw> install-server.sh --domain <Val>tunnel.yourdomain.com</Val></div>
-            </CodeBlock>
-          </StepIndicator>
+          <div className="mt-3">
+            <Step number="1" title="Deploy the Server">
+              <p>Run <InlineCode>install-server.sh</InlineCode> on your EC2 instance.</p>
+              <CodeBlock copyText="sudo bash install-server.sh --domain tunnel.yourdomain.com">
+                <div><Kw>sudo bash</Kw> install-server.sh --domain <Val>tunnel.yourdomain.com</Val></div>
+              </CodeBlock>
+            </Step>
 
-          <StepIndicator number="2" title="Create a Token">
-            <p>Use the web dashboard or API to register a token with a target IP and the client{"'"}s SSH public key.</p>
-            <div className="mt-2">
-              <button
-                onClick={() => navigate('/tokens')}
-                className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-medium text-white shadow-lg shadow-emerald-500/20 transition-all hover:bg-emerald-500 hover:shadow-emerald-500/30"
-              >
-                <ExternalLink size={12} />
-                Go to Token Management
-              </button>
-            </div>
-          </StepIndicator>
+            <Step number="2" title="Create a Token">
+              <p>Register a token with a target IP and the client's public key.</p>
+              <div className="mt-2">
+                <button
+                  onClick={() => navigate('/tokens')}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', background: 'var(--green)', border: '1px solid var(--green)', color: '#040d0a', fontFamily: 'inherit', fontSize: '10px', letterSpacing: '.09em', textTransform: 'uppercase', fontWeight: 600, padding: '6px 12px', cursor: 'pointer' }}
+                >
+                  <ExternalLink size={10} /> Token Management
+                </button>
+              </div>
+            </Step>
 
-          <StepIndicator number="3" title="Install the Client">
-            <p>On your local machine, run the client installer to set up
-              the <code className="rounded bg-gray-800 px-1.5 py-0.5 text-xs text-emerald-400">tunnelvault</code> CLI.</p>
-            <CodeBlock copyText="bash install-client.sh --server ws://YOUR-EC2-IP:4000 --auth-token YOUR_TOKEN">
-              <div><Kw>bash</Kw> install-client.sh --server <Val>ws://YOUR-EC2-IP:4000</Val> --auth-token <Val>YOUR_TOKEN</Val></div>
-            </CodeBlock>
-          </StepIndicator>
+            <Step number="3" title="Install the Client">
+              <p>Run the client installer on your local machine.</p>
+              <CodeBlock copyText="bash install-client.sh --server ws://YOUR-EC2-IP:4000 --auth-token YOUR_TOKEN">
+                <div><Kw>bash</Kw> install-client.sh --server <Val>ws://YOUR-EC2-IP:4000</Val> --auth-token <Val>YOUR_TOKEN</Val></div>
+              </CodeBlock>
+            </Step>
 
-          <StepIndicator number="4" title="Connect">
-            <p>Expose a local port or SSH through the gateway.</p>
-            <CodeBlock copyText="tunnelvault connect 3000 --name myapp">
-              <div><Comment># Expose local port 3000 as a tunnel</Comment></div>
-              <div><Kw>tunnelvault</Kw> connect <Val>3000</Val> --name <Val>myapp</Val></div>
-              <div />
-              <div><Comment># Or SSH through the gateway</Comment></div>
-              <div><Kw>ssh</Kw> <Val>gw-myToken123@your-gateway-ip</Val></div>
-            </CodeBlock>
-          </StepIndicator>
+            <Step number="4" title="Connect">
+              <p>Expose a local port via TCP tunnel.</p>
+              <CodeBlock copyText="tunnelvault connect 22 --name my-pi">
+                <div><Cmt># Expose local SSH port as a TCP tunnel</Cmt></div>
+                <div><Kw>tunnelvault</Kw> connect <Val>22</Val> --name <Val>my-pi</Val></div>
+                <div />
+                <div><Cmt># Then SSH to the allocated port on your server</Cmt></div>
+                <div><Kw>ssh</Kw> user@<Val>your-ec2-ip</Val> -p <Val>10001</Val></div>
+              </CodeBlock>
+            </Step>
+          </div>
         </SectionCard>
 
-        {/* ────────────────────────────────────────────────────────── */}
-        {/* 4. SSH Gateway Usage                                      */}
-        {/* ────────────────────────────────────────────────────────── */}
-        <SectionCard icon={Key} title="SSH Gateway Usage" id="ssh-gateway">
-          <p className="mb-3 text-sm text-gray-400">
-            The SSH gateway routes connections to private EC2 instances using
-            token-based usernames. When you connect
-            as <code className="rounded bg-gray-800 px-1.5 py-0.5 text-xs text-emerald-400">gw-&lt;TOKEN&gt;</code>,
-            the gateway looks up the token in SQLite and proxies the SSH session to
-            the target IP via netcat.
+        {/* 4. SSH Gateway Usage */}
+        <SectionCard icon={Key} title="TCP Tunnel Usage" id="ssh-gateway">
+          <p className="text-[11px]" style={{ color: 'var(--text-dim)' }}>
+            TunnelVault creates a TCP listener on the server (port range 10000–10999) that forwards raw TCP data through a WebSocket to the client. This enables SSH and any other TCP protocol.
           </p>
 
-          <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
-            How It Works
-          </p>
-          <ol className="mb-4 space-y-1.5 text-sm text-gray-400 list-decimal list-inside">
-            <li>Admin creates a token (dashboard or API) with target IP, port, and client public key</li>
-            <li>A Linux user <code className="rounded bg-gray-800 px-1.5 py-0.5 text-xs text-emerald-400">gw-&lt;TOKEN&gt;</code> is created on the gateway</li>
-            <li>Client public key is added to that user{"'"}s authorized_keys</li>
-            <li><code className="rounded bg-gray-800 px-1.5 py-0.5 text-xs text-gray-300">ssh_router.sh</code> (ForceCommand) looks up the token and proxies to the target</li>
-            <li>Session is logged to the database and visible on the dashboard</li>
+          <Label>How It Works</Label>
+          <ol className="space-y-1.5 text-[11px] list-decimal list-inside" style={{ color: 'var(--text-dim)' }}>
+            <li>Client connects to server WebSocket at <InlineCode>ws://host:4000/ws</InlineCode> with auth token</li>
+            <li>Server allocates a TCP port (10000–10999) and starts a listener</li>
+            <li>Incoming TCP connections are multiplexed as JSON frames over the WebSocket</li>
+            <li>Client forwards the data to the local target (e.g., <InlineCode>localhost:22</InlineCode>)</li>
+            <li>Connection is tracked in real-time on the Connections and Sessions pages</li>
           </ol>
 
-          <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
-            SSH Config (~/.ssh/config)
-          </p>
-          <CodeBlock copyText={"Host my-server\n    HostName <GATEWAY_PUBLIC_IP>\n    User gw-myToken123\n    IdentityFile ~/.ssh/id_rsa"}>
-            <div><Kw>Host</Kw>          <Val>my-server</Val></div>
-            <div>    <Kw>HostName</Kw>  <Val>&lt;GATEWAY_PUBLIC_IP&gt;</Val></div>
-            <div>    <Kw>User</Kw>      <Val>gw-myToken123</Val></div>
+          <Label>SSH Config (~/.ssh/config)</Label>
+          <CodeBlock copyText={"Host my-pi\n    HostName YOUR-EC2-IP\n    Port 10001\n    User pi\n    IdentityFile ~/.ssh/id_rsa"}>
+            <div><Kw>Host</Kw>           <Val>my-pi</Val></div>
+            <div>    <Kw>HostName</Kw>   <Val>YOUR-EC2-IP</Val></div>
+            <div>    <Kw>Port</Kw>       <Val>10001</Val>   <Cmt># allocated TCP port from dashboard</Cmt></div>
+            <div>    <Kw>User</Kw>       <Val>pi</Val></div>
             <div>    <Kw>IdentityFile</Kw> <Val>~/.ssh/id_rsa</Val></div>
           </CodeBlock>
 
-          <p className="mt-4 mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
-            Connect
-          </p>
-          <CodeBlock copyText="ssh my-server">
-            <div><Kw>ssh</Kw> my-server</div>
-            <div><Comment># Gateway automatically routes to the target EC2 private IP</Comment></div>
-          </CodeBlock>
-
-          <p className="mt-4 mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
-            Register Token via CLI (on gateway server)
-          </p>
-          <CodeBlock copyText={'sudo bash /opt/tunnelvault/gateway/register_token.sh \\\n  --token myToken123 \\\n  --ip 10.0.1.42 \\\n  --label "My Server" \\\n  --pubkey "ssh-rsa AAAAB3Nza..."'}>
-            <div><Kw>sudo bash</Kw> /opt/tunnelvault/gateway/register_token.sh \</div>
-            <div>  --token   <Val>myToken123</Val> \</div>
-            <div>  --ip      <Val>10.0.1.42</Val> \</div>
-            <div>  --label   <Val>{'"'}My Server{'"'}</Val> \</div>
-            <div>  --pubkey  <Val>{'"'}ssh-rsa AAAAB3Nza...{'"'}</Val></div>
+          <Label>Connect</Label>
+          <CodeBlock copyText="ssh my-pi">
+            <div><Kw>ssh</Kw> my-pi</div>
+            <div><Cmt># Traffic tunnels through WebSocket to your Raspberry Pi</Cmt></div>
           </CodeBlock>
         </SectionCard>
 
-        {/* ────────────────────────────────────────────────────────── */}
-        {/* 5. CLI Commands                                           */}
-        {/* ────────────────────────────────────────────────────────── */}
+        {/* 5. CLI Commands */}
         <SectionCard icon={Terminal} title="CLI Commands Reference" id="cli-commands">
-          <TableWrapper>
-            <thead>
-              <tr className="border-b border-gray-800/60 bg-gray-900/80">
-                <Th>Command</Th>
-                <Th>Description</Th>
-                <Th>Example</Th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-800/40">
-              <tr>
-                <Td mono accent="emerald">connect &lt;port&gt;</Td>
-                <Td>Expose a local port via WebSocket tunnel</Td>
-                <Td mono>tunnelvault connect 3000 --name myapp</Td>
-              </tr>
-              <tr>
-                <Td mono accent="emerald">list</Td>
-                <Td>List all active tunnels on the server</Td>
-                <Td mono>tunnelvault list</Td>
-              </tr>
-              <tr>
-                <Td mono accent="emerald">status</Td>
-                <Td>Show server status (uptime, tunnels, connections)</Td>
-                <Td mono>tunnelvault status</Td>
-              </tr>
-            </tbody>
-          </TableWrapper>
+          <DataTable
+            headers={['Command', 'Description', 'Example']}
+            rows={[
+              [{ text: 'connect <port>', mono: true, color: 'var(--green)' }, { text: 'Expose a local port via WebSocket tunnel' }, { text: 'tunnelvault connect 22 --name my-pi', mono: true }],
+              [{ text: 'list', mono: true, color: 'var(--green)' }, { text: 'List all active tunnels on the server' }, { text: 'tunnelvault list', mono: true }],
+              [{ text: 'status', mono: true, color: 'var(--green)' }, { text: 'Show server status (uptime, tunnels, connections)' }, { text: 'tunnelvault status', mono: true }],
+            ]}
+          />
 
-          <p className="mt-4 mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
-            Connect Options
-          </p>
-          <TableWrapper>
-            <thead>
-              <tr className="border-b border-gray-800/60 bg-gray-900/80">
-                <Th>Flag</Th>
-                <Th>Description</Th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-800/40">
-              <tr><Td mono accent="blue">-n, --name &lt;name&gt;</Td><Td>Tunnel name (shown in dashboard)</Td></tr>
-              <tr><Td mono accent="blue">-s, --subdomain &lt;sub&gt;</Td><Td>Requested subdomain for public URL</Td></tr>
-              <tr><Td mono accent="blue">--server &lt;url&gt;</Td><Td>Server WebSocket URL (default: ws://localhost:4000)</Td></tr>
-              <tr><Td mono accent="blue">--auth-token &lt;token&gt;</Td><Td>Bearer token for authentication</Td></tr>
-            </tbody>
-          </TableWrapper>
+          <Label>Connect Options</Label>
+          <DataTable
+            headers={['Flag', 'Description']}
+            rows={[
+              [{ text: '-n, --name <name>', mono: true, color: 'var(--blue)' }, { text: 'Tunnel name (shown in dashboard)' }],
+              [{ text: '-s, --subdomain <sub>', mono: true, color: 'var(--blue)' }, { text: 'Requested subdomain for public URL' }],
+              [{ text: '--server <url>', mono: true, color: 'var(--blue)' }, { text: 'Server WebSocket URL (default: ws://localhost:4000)' }],
+              [{ text: '--auth-token <token>', mono: true, color: 'var(--blue)' }, { text: 'Bearer token for authentication' }],
+            ]}
+          />
 
-          <p className="mt-4 mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
-            Examples
-          </p>
-          <CodeBlock copyText={"tunnelvault connect 3000 --name myapp\ntunnelvault connect 8080 --name api --subdomain api\ntunnelvault list --server http://tunnel.example.com:4000\ntunnelvault status"}>
-            <div><Comment># Expose local port 3000</Comment></div>
-            <div><Kw>tunnelvault</Kw> connect <Val>3000</Val> --name <Val>myapp</Val></div>
+          <Label>Examples</Label>
+          <CodeBlock copyText={"tunnelvault connect 22 --name my-pi\ntunnelvault connect 3000 --name webapp\ntunnelvault list --server http://tunnel.example.com:4000\ntunnelvault status"}>
+            <div><Cmt># Expose SSH port</Cmt></div>
+            <div><Kw>tunnelvault</Kw> connect <Val>22</Val> --name <Val>my-pi</Val></div>
             <div />
-            <div><Comment># Request a specific subdomain</Comment></div>
-            <div><Kw>tunnelvault</Kw> connect <Val>8080</Val> --name <Val>api</Val> --subdomain <Val>api</Val></div>
+            <div><Cmt># Expose a web app</Cmt></div>
+            <div><Kw>tunnelvault</Kw> connect <Val>3000</Val> --name <Val>webapp</Val></div>
             <div />
-            <div><Comment># List tunnels on a remote server</Comment></div>
+            <div><Cmt># List tunnels on a remote server</Cmt></div>
             <div><Kw>tunnelvault</Kw> list --server <Val>http://tunnel.example.com:4000</Val></div>
-            <div />
-            <div><Comment># Check server status</Comment></div>
-            <div><Kw>tunnelvault</Kw> status</div>
           </CodeBlock>
         </SectionCard>
 
-        {/* ────────────────────────────────────────────────────────── */}
-        {/* 6. API Endpoints                                          */}
-        {/* ────────────────────────────────────────────────────────── */}
+        {/* 6. API Endpoints */}
         <SectionCard icon={Globe} title="API Endpoints" id="api-endpoints">
-          <p className="mb-3 text-sm text-gray-400">
-            All routes require <code className="rounded bg-gray-800 px-1.5 py-0.5 text-xs text-gray-300">Authorization: Bearer &lt;AUTH_TOKEN&gt;</code> unless
-            noted. When <code className="rounded bg-gray-800 px-1.5 py-0.5 text-xs text-gray-300">AUTH_TOKEN</code> is
-            unset, auth is disabled (dev mode).
+          <p className="text-[11px]" style={{ color: 'var(--text-dim)' }}>
+            All routes require <InlineCode>Authorization: Bearer {'<AUTH_TOKEN>'}</InlineCode> unless noted. When <InlineCode>AUTH_TOKEN</InlineCode> is unset, auth is disabled (dev mode).
           </p>
 
-          <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
-            Health &amp; Stats
-          </p>
-          <TableWrapper>
-            <thead>
-              <tr className="border-b border-gray-800/60 bg-gray-900/80">
-                <Th>Method</Th>
-                <Th>Path</Th>
-                <Th>Auth</Th>
-                <Th>Description</Th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-800/40">
-              <tr><Td mono accent="emerald">GET</Td><Td mono>/api/health</Td><Td>No</Td><Td>Health check with uptime</Td></tr>
-              <tr><Td mono accent="emerald">GET</Td><Td mono>/api/stats</Td><Td>Yes</Td><Td>Aggregated stats (tunnels, connections, bytes, tokens, sessions)</Td></tr>
-            </tbody>
-          </TableWrapper>
+          <Label>Health & Stats</Label>
+          <DataTable
+            headers={['Method', 'Path', 'Auth', 'Description']}
+            rows={[
+              [{ text: 'GET', mono: true, color: 'var(--green)' }, { text: '/api/health', mono: true }, { text: 'No' }, { text: 'Health check with uptime' }],
+              [{ text: 'GET', mono: true, color: 'var(--green)' }, { text: '/api/stats', mono: true }, { text: 'Yes' }, { text: 'Aggregated stats (tunnels, connections, bytes, tokens, sessions)' }],
+            ]}
+          />
 
-          <p className="mt-4 mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
-            Tunnels
-          </p>
-          <TableWrapper>
-            <thead>
-              <tr className="border-b border-gray-800/60 bg-gray-900/80">
-                <Th>Method</Th>
-                <Th>Path</Th>
-                <Th>Description</Th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-800/40">
-              <tr><Td mono accent="emerald">GET</Td><Td mono>/api/tunnels</Td><Td>List all active tunnels</Td></tr>
-              <tr><Td mono accent="emerald">GET</Td><Td mono>/api/tunnels/:id</Td><Td>Get single tunnel</Td></tr>
-              <tr><Td mono accent="blue">POST</Td><Td mono>/api/tunnels</Td><Td>Create tunnel (body: name, localPort, subdomain)</Td></tr>
-              <tr><Td mono accent="amber">DELETE</Td><Td mono>/api/tunnels/:id</Td><Td>Remove tunnel</Td></tr>
-            </tbody>
-          </TableWrapper>
+          <Label>Tunnels</Label>
+          <DataTable
+            headers={['Method', 'Path', 'Description']}
+            rows={[
+              [{ text: 'GET', mono: true, color: 'var(--green)' }, { text: '/api/tunnels', mono: true }, { text: 'List all active tunnels' }],
+              [{ text: 'GET', mono: true, color: 'var(--green)' }, { text: '/api/tunnels/:id', mono: true }, { text: 'Get single tunnel' }],
+              [{ text: 'POST', mono: true, color: 'var(--blue)' }, { text: '/api/tunnels', mono: true }, { text: 'Create tunnel (body: name, localPort, subdomain)' }],
+              [{ text: 'DELETE', mono: true, color: 'var(--amber)' }, { text: '/api/tunnels/:id', mono: true }, { text: 'Remove tunnel' }],
+            ]}
+          />
 
-          <p className="mt-4 mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
-            Tokens
-          </p>
-          <TableWrapper>
-            <thead>
-              <tr className="border-b border-gray-800/60 bg-gray-900/80">
-                <Th>Method</Th>
-                <Th>Path</Th>
-                <Th>Description</Th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-800/40">
-              <tr><Td mono accent="emerald">GET</Td><Td mono>/api/tokens</Td><Td>List all tokens with session counts</Td></tr>
-              <tr><Td mono accent="emerald">GET</Td><Td mono>/api/tokens/:token</Td><Td>Token details + last 50 sessions</Td></tr>
-              <tr><Td mono accent="blue">POST</Td><Td mono>/api/tokens</Td><Td>Create token (body: token, label, target_ip, target_port, public_key)</Td></tr>
-              <tr><Td mono accent="blue">PATCH</Td><Td mono>/api/tokens/:token</Td><Td>Update fields (target_ip, target_port, label, active, public_key)</Td></tr>
-              <tr><Td mono accent="amber">DELETE</Td><Td mono>/api/tokens/:token</Td><Td>Delete token + associated sessions</Td></tr>
-            </tbody>
-          </TableWrapper>
+          <Label>Tokens</Label>
+          <DataTable
+            headers={['Method', 'Path', 'Description']}
+            rows={[
+              [{ text: 'GET', mono: true, color: 'var(--green)' }, { text: '/api/tokens', mono: true }, { text: 'List all tokens with session counts' }],
+              [{ text: 'GET', mono: true, color: 'var(--green)' }, { text: '/api/tokens/:token', mono: true }, { text: 'Token details + last 50 sessions' }],
+              [{ text: 'POST', mono: true, color: 'var(--blue)' }, { text: '/api/tokens', mono: true }, { text: 'Create token (body: token, label, target_ip, target_port, public_key)' }],
+              [{ text: 'PATCH', mono: true, color: 'var(--blue)' }, { text: '/api/tokens/:token', mono: true }, { text: 'Update fields (target_ip, target_port, label, active, public_key)' }],
+              [{ text: 'DELETE', mono: true, color: 'var(--amber)' }, { text: '/api/tokens/:token', mono: true }, { text: 'Delete token + associated sessions' }],
+            ]}
+          />
 
-          <p className="mt-4 mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
-            Sessions
-          </p>
-          <TableWrapper>
-            <thead>
-              <tr className="border-b border-gray-800/60 bg-gray-900/80">
-                <Th>Method</Th>
-                <Th>Path</Th>
-                <Th>Description</Th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-800/40">
-              <tr><Td mono accent="emerald">GET</Td><Td mono>/api/sessions</Td><Td>List sessions (?active=1 for active only)</Td></tr>
-              <tr><Td mono accent="blue">POST</Td><Td mono>/api/sessions</Td><Td>Create session (body: token, client_ip, pid)</Td></tr>
-              <tr><Td mono accent="blue">PATCH</Td><Td mono>/api/sessions/:id</Td><Td>Mark session disconnected</Td></tr>
-            </tbody>
-          </TableWrapper>
-
-          <p className="mt-4 mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
-            Connections
-          </p>
-          <TableWrapper>
-            <thead>
-              <tr className="border-b border-gray-800/60 bg-gray-900/80">
-                <Th>Method</Th>
-                <Th>Path</Th>
-                <Th>Description</Th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-800/40">
-              <tr><Td mono accent="emerald">GET</Td><Td mono>/api/connections</Td><Td>Active connections (?tunnel=id to filter)</Td></tr>
-            </tbody>
-          </TableWrapper>
+          <Label>Sessions & Connections</Label>
+          <DataTable
+            headers={['Method', 'Path', 'Description']}
+            rows={[
+              [{ text: 'GET', mono: true, color: 'var(--green)' }, { text: '/api/sessions', mono: true }, { text: 'List sessions (?active=1 for active only)' }],
+              [{ text: 'POST', mono: true, color: 'var(--blue)' }, { text: '/api/sessions', mono: true }, { text: 'Create session (body: token, client_ip, pid)' }],
+              [{ text: 'PATCH', mono: true, color: 'var(--blue)' }, { text: '/api/sessions/:id', mono: true }, { text: 'Mark session disconnected' }],
+              [{ text: 'GET', mono: true, color: 'var(--green)' }, { text: '/api/connections', mono: true }, { text: 'Active connections (?tunnel=id to filter)' }],
+            ]}
+          />
         </SectionCard>
 
-        {/* ────────────────────────────────────────────────────────── */}
-        {/* 7. Security Checklist                                     */}
-        {/* ────────────────────────────────────────────────────────── */}
+        {/* 7. Security Checklist */}
         <SectionCard icon={Shield} title="Security Checklist" id="security">
-          <div className="space-y-2">
+          <div className="space-y-0.5">
             {[
-              'Set a strong AUTH_TOKEN in production (use: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))")',
+              "Set a strong AUTH_TOKEN in production (use: node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\")",
               'Configure ALLOWED_ORIGINS to restrict CORS to your dashboard domain',
               'Restrict SSH admin access (port 22) to your IP in the security group',
               'Use TLS (Nginx + Let\'s Encrypt) in front of ports 4000/4001',
               'Regularly rotate the AUTH_TOKEN and update client configs',
-              'Monitor /var/log/tunnelvault-gateway.log for suspicious SSH sessions',
+              'Monitor /var/log/tunnelvault.log for suspicious connections',
               'Disable inactive tokens promptly via the dashboard',
               'Keep the EC2 instance and Node.js updated with security patches',
-              'Use private IPs only for target_ip values (no public IPs through the gateway)',
+              'Use private IPs only for target_ip values',
               'Review active sessions periodically on the Sessions page',
             ].map((item, i) => (
-              <label key={i} className="flex items-start gap-3 rounded-lg px-3 py-2 text-sm text-gray-400 transition-colors hover:bg-gray-800/40">
-                <input
-                  type="checkbox"
-                  className="mt-0.5 h-4 w-4 shrink-0 rounded border-gray-600 bg-gray-800 text-emerald-500 focus:ring-emerald-500/30 focus:ring-offset-0"
-                />
-                <span>{item}</span>
+              <label key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', padding: '7px 8px', cursor: 'pointer' }}
+                onMouseEnter={e => e.currentTarget.style.background = 'var(--green-bg)'}
+                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+                <input type="checkbox" style={{ marginTop: '2px', accentColor: 'var(--green)', flexShrink: 0 }} />
+                <span className="text-[11px]" style={{ color: 'var(--text-dim)' }}>{item}</span>
               </label>
             ))}
           </div>
         </SectionCard>
 
-        {/* ────────────────────────────────────────────────────────── */}
-        {/* 8. Troubleshooting                                        */}
-        {/* ────────────────────────────────────────────────────────── */}
+        {/* 8. Troubleshooting */}
         <SectionCard icon={AlertCircle} title="Troubleshooting" id="troubleshooting">
-          <p className="mb-3 text-sm text-gray-400">
-            Click an issue to expand the solution.
-          </p>
-          <div className="rounded-lg border border-gray-800/60 divide-y divide-gray-800/40 px-3">
+          <p className="text-[11px]" style={{ color: 'var(--text-dim)' }}>Click an issue to expand the solution.</p>
+          <div style={{ marginTop: '8px' }}>
             <TroubleshootItem question="Server won't start: EADDRINUSE error">
-              Ports 4000 or 4001 are already in use. Find the process
-              with <code className="rounded bg-gray-800 px-1.5 py-0.5 text-xs text-gray-300">sudo lsof -i :4000</code> and
-              stop it, or change the port in <code className="rounded bg-gray-800 px-1.5 py-0.5 text-xs text-gray-300">.env</code>.
+              Ports 4000 or 4001 are already in use. Find the process with <InlineCode>sudo lsof -i :4000</InlineCode> and stop it, or change the port in <InlineCode>.env</InlineCode>.
             </TroubleshootItem>
-
             <TroubleshootItem question="WebSocket connection refused from CLI client">
-              Ensure the server is running and port 4000 is open in your security group. The
-              WebSocket endpoint is <code className="rounded bg-gray-800 px-1.5 py-0.5 text-xs text-gray-300">ws://host:4000/ws</code>.
-              Check firewall rules if using a non-AWS environment.
+              Ensure the server is running and port 4000 is open in your security group. The WebSocket endpoint is <InlineCode>ws://host:4000/ws</InlineCode>. Check firewall rules if using a non-AWS environment.
             </TroubleshootItem>
-
-            <TroubleshootItem question="SSH: Permission denied (publickey)">
-              The client{"'"}s public key does not match the registered key for the token. Verify
-              with <code className="rounded bg-gray-800 px-1.5 py-0.5 text-xs text-gray-300">GET /api/tokens/:token</code> and
-              update the public_key field if needed. Also ensure the token is active.
+            <TroubleshootItem question="TCP tunnel connects but SSH fails">
+              Verify the client is running (<InlineCode>tunnelvault status</InlineCode>), the tunnel shows as active in the dashboard, and the allocated port is correct. Ensure the local SSH service is running on the client machine.
             </TroubleshootItem>
-
-            <TroubleshootItem question="SSH: Token not found in gateway log">
-              The SSH username must be exactly <code className="rounded bg-gray-800 px-1.5 py-0.5 text-xs text-gray-300">gw-&lt;TOKEN&gt;</code>.
-              Check that the token exists in the database and the Linux user was created.
-              Re-run the register script if needed.
+            <TroubleshootItem question="Tunnel stops working after server restart">
+              The client will auto-reconnect (if installed as a service). Check the tunnel is re-registered via the dashboard. If using systemd: <InlineCode>sudo systemctl status tunnelvault-client</InlineCode>.
             </TroubleshootItem>
-
             <TroubleshootItem question="Dashboard shows 'Frontend not built yet'">
-              Run <code className="rounded bg-gray-800 px-1.5 py-0.5 text-xs text-gray-300">npm run build</code> from the
-              project root to build the frontend
-              into <code className="rounded bg-gray-800 px-1.5 py-0.5 text-xs text-gray-300">frontend/dist/</code>. The
-              API serves the dashboard from that directory.
+              Run <InlineCode>npm run build</InlineCode> from the project root to build the frontend into <InlineCode>frontend/dist/</InlineCode>. The API serves the dashboard from that directory.
             </TroubleshootItem>
-
             <TroubleshootItem question="API returns 401 Unauthorized">
-              Include the auth token as a Bearer
-              header: <code className="rounded bg-gray-800 px-1.5 py-0.5 text-xs text-gray-300">Authorization: Bearer YOUR_TOKEN</code>.
-              If you don{"'"}t know the token, check <code className="rounded bg-gray-800 px-1.5 py-0.5 text-xs text-gray-300">backend/.env</code> on
-              the server.
+              Include the auth token as a Bearer header: <InlineCode>Authorization: Bearer YOUR_TOKEN</InlineCode>. If you don't know the token, check <InlineCode>backend/.env</InlineCode> on the server.
             </TroubleshootItem>
-
-            <TroubleshootItem question="API returns 429 Too Many Requests">
-              Rate limiting is 100 requests per minute per IP. Wait 60 seconds and try again.
-              If you need higher limits, modify <code className="rounded bg-gray-800 px-1.5 py-0.5 text-xs text-gray-300">RATE_LIMIT_MAX</code> in
-              server.js.
+            <TroubleshootItem question="Connections page shows nothing">
+              This means no active TCP connections exist. Connect via SSH through the tunnel port first. If connections still don't appear, check that the client is sending traffic and the server backend is up to date.
             </TroubleshootItem>
-
-            <TroubleshootItem question="Tunnel connects but traffic doesn't flow">
-              Check that the local application is running on the port you specified. The CLI
-              client forwards traffic
-              to <code className="rounded bg-gray-800 px-1.5 py-0.5 text-xs text-gray-300">localhost:&lt;port&gt;</code>.
-              Also verify the proxy server is running on port 4001.
+            <TroubleshootItem question="Tunnel is inactive and won't reactivate">
+              Click the toggle in the Tunnels page. The status will show 'Reconnecting…' until the client reconnects via WebSocket. If the client service is stopped, restart it: <InlineCode>sudo systemctl restart tunnelvault-client</InlineCode>.
             </TroubleshootItem>
-
-            <TroubleshootItem question="SSH gateway works but session not tracked">
-              The gateway script calls <code className="rounded bg-gray-800 px-1.5 py-0.5 text-xs text-gray-300">POST /api/sessions</code> to
-              log sessions. Verify the API is reachable from localhost
-              (<code className="rounded bg-gray-800 px-1.5 py-0.5 text-xs text-gray-300">curl http://127.0.0.1:4000/api/health</code>).
-              Check <code className="rounded bg-gray-800 px-1.5 py-0.5 text-xs text-gray-300">/var/log/tunnelvault-gateway.log</code> for errors.
-            </TroubleshootItem>
-
             <TroubleshootItem question="Systemd service fails to start after reboot">
-              Check logs
-              with <code className="rounded bg-gray-800 px-1.5 py-0.5 text-xs text-gray-300">journalctl -u tunnelvault -n 50</code>.
-              Common causes: Node.js not in PATH, missing .env file, or database permissions.
-              Re-run <code className="rounded bg-gray-800 px-1.5 py-0.5 text-xs text-gray-300">install-server.sh --upgrade</code> to
-              fix service configuration.
+              Check logs with <InlineCode>journalctl -u tunnelvault -n 50</InlineCode>. Common causes: Node.js not in PATH, missing .env file, or database permissions. Re-run <InlineCode>install-server.sh --upgrade</InlineCode> to fix service configuration.
             </TroubleshootItem>
           </div>
         </SectionCard>
+
       </div>
     </div>
   );

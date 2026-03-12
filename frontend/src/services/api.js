@@ -1,10 +1,11 @@
 const EMPTY_STATS = {
   activeTunnels: 0,
+  activeConnections: 0,
   totalConnections: 0,
   dataTransferred: '0 B',
   uptime: '0s',
   activeTokens: 0,
-  liveSshSessions: 0,
+  liveSessions: 0,
   chartData: [],
   recentActivity: [],
 };
@@ -69,7 +70,7 @@ export async function getStats() {
   const recentActivity = (data.recent_sessions || []).slice(0, 8).map((s, idx) => ({
     id: s.id || idx,
     type: s.disconnected_at ? 'session_ended' : 'session_started',
-    message: `SSH ${s.disconnected_at ? 'disconnected' : 'connected'}: ${s.client_ip || 'unknown'} → ${s.target_ip || '?'}:${s.target_port || '22'}`,
+    message: `${s.token_label || s.token || 'unknown'} ${s.disconnected_at ? 'disconnected' : 'connected'} from ${s.client_ip || 'unknown'}`,
     time: s.disconnected_at
       ? new Date(s.disconnected_at.endsWith('Z') ? s.disconnected_at : s.disconnected_at + 'Z').toLocaleString('en-US', { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' })
       : new Date(s.connected_at.endsWith('Z') ? s.connected_at : s.connected_at + 'Z').toLocaleString('en-US', { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' }),
@@ -77,11 +78,12 @@ export async function getStats() {
 
   return {
     activeTunnels: data.activeTunnels ?? 0,
+    activeConnections: data.activeConnections ?? 0,
     totalConnections: data.totalConnections ?? 0,
     dataTransferred,
     uptime: data.uptime || '0s',
     activeTokens: data.active_tokens ?? 0,
-    liveSshSessions: data.live_sessions ?? 0,
+    liveSessions: data.live_sessions ?? 0,
     chartData,
     recentActivity,
   };

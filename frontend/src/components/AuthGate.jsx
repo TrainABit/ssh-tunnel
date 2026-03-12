@@ -1,15 +1,13 @@
 import { useState, useEffect } from 'react';
-import { Shield, Key, AlertCircle } from 'lucide-react';
+import { Shield } from 'lucide-react';
 import { getAuthToken, setAuthToken } from '../services/api';
 
 export default function AuthGate({ children }) {
-  const [authenticated, setAuthenticated] = useState(null); // null = checking
+  const [authenticated, setAuthenticated] = useState(null);
   const [token, setToken] = useState('');
   const [error, setError] = useState('');
 
-  useEffect(() => {
-    checkAuth();
-  }, []);
+  useEffect(() => { checkAuth(); }, []);
 
   async function checkAuth() {
     const stored = getAuthToken();
@@ -17,108 +15,99 @@ export default function AuthGate({ children }) {
       const res = await fetch('/api/stats', {
         headers: stored ? { Authorization: `Bearer ${stored}` } : {},
       });
-      if (res.ok) {
-        setAuthenticated(true);
-      } else if (res.status === 401) {
-        setAuthenticated(false);
-      } else {
-        // Server might be down or other error — let through
-        setAuthenticated(true);
-      }
+      setAuthenticated(res.ok || res.status !== 401);
     } catch {
-      // Network error — server probably not reachable, let through and show empty states
       setAuthenticated(true);
     }
   }
 
   async function handleLogin(e) {
     e.preventDefault();
-    if (!token.trim()) {
-      setError('Please enter your AUTH_TOKEN');
-      return;
-    }
+    if (!token.trim()) { setError('Please enter your AUTH_TOKEN'); return; }
     setAuthToken(token.trim());
     setError('');
     try {
-      const res = await fetch('/api/stats', {
-        headers: { Authorization: `Bearer ${token.trim()}` },
-      });
-      if (res.ok) {
-        setAuthenticated(true);
-        window.location.reload();
-      } else {
-        setError('Invalid token. Check your server .env file.');
-      }
+      const res = await fetch('/api/stats', { headers: { Authorization: `Bearer ${token.trim()}` } });
+      if (res.ok) { setAuthenticated(true); window.location.reload(); }
+      else setError('Invalid token. Check your server .env file.');
     } catch {
       setError('Cannot reach server. Is the backend running?');
     }
   }
 
-  // Still checking
   if (authenticated === null) {
     return (
-      <div className="flex h-screen items-center justify-center bg-[#0a0a0f]">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-emerald-500 border-t-transparent" />
+      <div style={{ display: 'flex', height: '100vh', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)' }}>
+        <div style={{ width: '24px', height: '24px', borderRadius: '50%', border: '2px solid var(--green)', borderTopColor: 'transparent', animation: 'spin 0.8s linear infinite' }} />
       </div>
     );
   }
 
-  // Authenticated — show app
-  if (authenticated) {
-    return children;
-  }
+  if (authenticated) return children;
 
-  // Not authenticated — show login
   return (
-    <div className="flex h-screen items-center justify-center bg-[#0a0a0f] p-4">
-      <div className="w-full max-w-md">
-        <div className="mb-8 text-center">
-          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-emerald-500/10">
-            <Shield size={32} className="text-emerald-400" />
+    <div style={{ display: 'flex', height: '100vh', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)', padding: '16px' }}>
+      <div style={{ width: '100%', maxWidth: '380px' }}>
+        {/* Logo */}
+        <div style={{ textAlign: 'center', marginBottom: '32px' }}>
+          <div style={{
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            width: '48px', height: '48px', border: '1.5px solid var(--green)',
+            color: 'var(--green)', marginBottom: '12px', position: 'relative',
+          }}>
+            <div style={{ position: 'absolute', inset: '5px', border: '1px solid var(--green-dim)', opacity: 0.5 }} />
+            <Shield size={18} strokeWidth={1.5} />
           </div>
-          <h1 className="text-2xl font-bold text-white">
-            Tunnel<span className="text-emerald-400">Vault</span>
-          </h1>
-          <p className="mt-2 text-sm text-gray-500">
-            Enter your API token to access the dashboard
-          </p>
+          <div style={{ fontSize: '12px', letterSpacing: '.18em', textTransform: 'uppercase', color: 'var(--text)' }}>
+            TunnelVault
+          </div>
+          <div style={{ fontSize: '10px', color: 'var(--text-dim)', marginTop: '4px' }}>
+            Enter AUTH_TOKEN to access the dashboard
+          </div>
         </div>
 
-        <form onSubmit={handleLogin} className="space-y-4">
-          <div className="rounded-xl border border-gray-800/60 bg-gray-900 p-6">
-            <label className="mb-2 flex items-center gap-2 text-sm font-medium text-gray-300">
-              <Key size={14} />
+        <form onSubmit={handleLogin}>
+          <div style={{ marginBottom: '12px' }}>
+            <label style={{ display: 'block', fontSize: '9.5px', letterSpacing: '.15em', textTransform: 'uppercase', color: 'var(--text-dim)', marginBottom: '6px' }}>
               AUTH_TOKEN
             </label>
             <input
               type="password"
               value={token}
-              onChange={(e) => setToken(e.target.value)}
+              onChange={e => setToken(e.target.value)}
               placeholder="Enter token from server .env..."
               autoFocus
-              className="w-full rounded-lg border border-gray-700 bg-gray-800/60 px-4 py-3 font-mono text-sm text-white placeholder-gray-600 outline-none transition-colors focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/20"
+              style={{
+                width: '100%', background: 'var(--surface)', border: '1px solid var(--border2)',
+                color: 'var(--text)', fontFamily: 'inherit', fontSize: '12px',
+                padding: '10px 12px', outline: 'none', boxSizing: 'border-box',
+              }}
+              onFocus={e => e.target.style.borderColor = 'var(--green-dim)'}
+              onBlur={e => e.target.style.borderColor = 'var(--border2)'}
             />
             {error && (
-              <div className="mt-3 flex items-center gap-2 text-xs text-red-400">
-                <AlertCircle size={12} />
-                {error}
-              </div>
+              <p style={{ fontSize: '11px', color: 'var(--red)', marginTop: '6px' }}>{error}</p>
             )}
           </div>
 
           <button
             type="submit"
-            className="w-full rounded-lg bg-emerald-600 py-3 text-sm font-medium text-white shadow-lg shadow-emerald-500/20 transition-all hover:bg-emerald-500"
+            style={{
+              width: '100%', background: 'var(--green)', border: '1px solid var(--green)',
+              color: '#040d0a', fontFamily: 'inherit', fontSize: '10.5px',
+              letterSpacing: '.09em', textTransform: 'uppercase', fontWeight: 600,
+              padding: '10px', cursor: 'pointer', transition: 'background .15s',
+            }}
+            onMouseEnter={e => e.currentTarget.style.background = '#00f599'}
+            onMouseLeave={e => e.currentTarget.style.background = 'var(--green)'}
           >
             Authenticate
           </button>
 
-          <p className="text-center text-xs text-gray-600">
+          <p style={{ marginTop: '12px', textAlign: 'center', fontSize: '10.5px', color: 'var(--text-dim)' }}>
             Find your token in{' '}
-            <code className="rounded bg-gray-800 px-1.5 py-0.5 font-mono text-gray-400">
-              backend/.env
-            </code>{' '}
-            → AUTH_TOKEN
+            <code style={{ color: 'var(--blue)', background: 'var(--surface)', padding: '1px 6px' }}>backend/.env</code>
+            {' '}→ AUTH_TOKEN
           </p>
         </form>
       </div>
