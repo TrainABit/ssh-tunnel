@@ -72,6 +72,7 @@ program
   .option('-n, --name <name>', 'tunnel name')
   .option('-s, --subdomain <sub>', 'requested subdomain')
   .option('--server <url>', 'tunnel server URL', DEFAULT_WS_SERVER)
+  .option('--protocol <proto>', 'tunnel protocol: http or tcp', 'http')
   .action((port, options) => {
     const portNum = parseInt(port, 10);
     if (isNaN(portNum) || portNum < 1 || portNum > 65535) {
@@ -93,6 +94,7 @@ program
       subdomain: options.subdomain,
       server: serverUrl,
       authToken: resolve(program.opts().authToken, 'TUNNELVAULT_AUTH_TOKEN', 'auth_token', undefined, undefined),
+      protocol: options.protocol === 'tcp' ? 'tcp' : 'http',
     });
 
     // Graceful shutdown

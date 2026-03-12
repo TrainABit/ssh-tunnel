@@ -112,15 +112,26 @@ function TunnelCard({ tunnel, onDelete, onToggle, onCopy }) {
         </div>
 
         {/* URL mapping */}
-        <div className="mb-4 flex items-center gap-2 rounded-lg bg-gray-800/50 px-3 py-2">
-          <span className="truncate font-mono text-xs text-emerald-400">
-            {tunnel.publicUrl}
-          </span>
-          <ArrowRight size={12} className="shrink-0 text-gray-500" />
-          <span className="truncate font-mono text-xs text-gray-400">
-            localhost:{tunnel.localPort}
-          </span>
-        </div>
+        {tunnel.protocol === 'tcp' ? (
+          <div className="mb-4 space-y-2">
+            <div className="flex items-center gap-2 rounded-lg bg-gray-800/50 px-3 py-2">
+              <span className="font-mono text-xs text-emerald-400">SSH port {tunnel.allocatedPort ?? '—'}</span>
+              <ArrowRight size={12} className="shrink-0 text-gray-500" />
+              <span className="font-mono text-xs text-gray-400">localhost:{tunnel.localPort}</span>
+            </div>
+            {tunnel.allocatedPort && (
+              <div className="rounded-lg bg-gray-800/30 px-3 py-2 font-mono text-xs text-gray-400">
+                ssh user@{window.location.hostname} -p {tunnel.allocatedPort}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="mb-4 flex items-center gap-2 rounded-lg bg-gray-800/50 px-3 py-2">
+            <span className="truncate font-mono text-xs text-emerald-400">{tunnel.publicUrl}</span>
+            <ArrowRight size={12} className="shrink-0 text-gray-500" />
+            <span className="truncate font-mono text-xs text-gray-400">localhost:{tunnel.localPort}</span>
+          </div>
+        )}
 
         {/* Stats */}
         <div className="mb-4 grid grid-cols-2 gap-3">
@@ -137,10 +148,14 @@ function TunnelCard({ tunnel, onDelete, onToggle, onCopy }) {
         {/* Actions */}
         <div className="flex items-center gap-2">
           <button
-            onClick={() => onCopy(tunnel.publicUrl)}
+            onClick={() => onCopy(
+              tunnel.protocol === 'tcp' && tunnel.allocatedPort
+                ? `ssh user@${window.location.hostname} -p ${tunnel.allocatedPort}`
+                : tunnel.publicUrl
+            )}
             className="inline-flex items-center gap-1.5 rounded-lg border border-gray-700 bg-gray-800/50 px-3 py-1.5 text-xs text-gray-300 transition-colors hover:border-gray-600 hover:text-white"
           >
-            <Copy size={12} /> Copy URL
+            <Copy size={12} /> {tunnel.protocol === 'tcp' ? 'Copy SSH' : 'Copy URL'}
           </button>
           <button
             onClick={() => onToggle(tunnel.id)}

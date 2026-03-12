@@ -46,7 +46,8 @@ function tokensRouter(db) {
 
   // POST /api/tokens — create a new token
   router.post('/', (req, res) => {
-    const { label, target_ip, target_port, public_key } = req.body;
+    const { label, target_port, public_key } = req.body;
+    const target_ip = req.body.target_ip || '';
     const token = req.body.token || generateToken();
 
     // Validate token format: alphanumeric only, max 64 chars
@@ -54,15 +55,8 @@ function tokensRouter(db) {
       return res.status(400).json({ error: 'Token must be alphanumeric, 1-64 characters' });
     }
 
-    if (!target_ip) {
-      return res.status(400).json({ error: 'target_ip is required' });
-    }
-    if (!public_key || !public_key.trim()) {
-      return res.status(400).json({ error: 'public_key is required' });
-    }
-
-    // Validate target_ip format (each octet 0-255)
-    if (!/^((25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(25[0-5]|2[0-4]\d|[01]?\d\d?)$/.test(target_ip)) {
+    // Validate target_ip format (each octet 0-255) only if provided
+    if (target_ip && !/^((25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(25[0-5]|2[0-4]\d|[01]?\d\d?)$/.test(target_ip)) {
       return res.status(400).json({ error: 'target_ip must be a valid IPv4 address' });
     }
 
@@ -75,7 +69,7 @@ function tokensRouter(db) {
     // Sanitize label
     const safeLabel = String(label || '').substring(0, 200);
 
-    const linux_user = 'gw-' + token;
+    const linux_user = (public_key && public_key.trim()) ? 'gw-' + token : 'ws-' + token;
 
     try {
       db.run(
@@ -90,9 +84,11 @@ function tokensRouter(db) {
           linux_user,
         ]
       );
-      // Create Linux user in background (non-blocking)
-      createLinuxUser(linux_user, public_key);
-      log.info('Token created', { token: token.slice(0, 4) + '***', linux_user, target: `${target_ip}:${port}` });
+      // Create Linux user in background (non-blocking) only if public_key is provided
+      if (public_key && public_key.trim()) {
+        createLinuxUser(linux_user, public_key);
+      }
+      log.info('Token created', { token: token.slice(0, 4) + '***', linux_user, target: target_ip ? `${target_ip}:${port}` : 'none' });
       res.status(201).json({ token, linux_user });
     } catch (err) {
       if (err.message && err.message.includes('UNIQUE')) {

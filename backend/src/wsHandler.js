@@ -23,8 +23,10 @@ function safeTokenCompare(a, b) {
  * @param {http.Server} server - The HTTP server to attach to
  * @param {TunnelManager} tunnelManager
  * @param {ConnectionTracker} connectionTracker
+ * @param {object} db - database module
+ * @param {TcpProxy} tcpProxy
  */
-function initWebSocket(server, tunnelManager, connectionTracker) {
+function initWebSocket(server, tunnelManager, connectionTracker, db, tcpProxy) {
   const AUTH_TOKEN = process.env.AUTH_TOKEN;
 
   const wss = new WebSocket.Server({
@@ -34,6 +36,7 @@ function initWebSocket(server, tunnelManager, connectionTracker) {
     verifyClient: (info, cb) => {
       // Skip auth if no AUTH_TOKEN is configured (development mode)
       if (!AUTH_TOKEN) {
+        info.req._clientToken = null;
         return cb(true);
       }
 
@@ -42,7 +45,19 @@ function initWebSocket(server, tunnelManager, connectionTracker) {
         || (info.req.headers['authorization'] || '').replace(/^Bearer\s+/i, '');
 
       if (safeTokenCompare(token, AUTH_TOKEN)) {
+        info.req._clientToken = null;
         return cb(true);
+      }
+
+      // After the global AUTH_TOKEN check fails, also accept per-client tokens from DB
+      if (db && token) {
+        try {
+          const row = db.queryOne('SELECT * FROM tokens WHERE token = ? AND active = 1', [token]);
+          if (row) {
+            info.req._clientToken = row;
+            return cb(true);
+          }
+        } catch {}
       }
 
       cb(false, 401, 'Unauthorized');
@@ -53,6 +68,12 @@ function initWebSocket(server, tunnelManager, connectionTracker) {
     const clientIp = req.socket.remoteAddress;
     // Track ALL tunnel IDs for this WS connection (not just the last one)
     const clientTunnelIds = [];
+
+    const clientToken = req._clientToken || null;
+    ws.clientToken = clientToken;
+    if (clientToken && db) {
+      try { db.run("UPDATE tokens SET last_seen = datetime('now') WHERE token = ?", [clientToken.token]); } catch {}
+    }
 
     log.info('New client connection', { ip: clientIp });
 
@@ -78,22 +99,41 @@ function initWebSocket(server, tunnelManager, connectionTracker) {
             break;
           }
 
+          const protocol = msg.protocol === 'tcp' ? 'tcp' : 'http';
+          const name = ws.clientToken
+            ? String(ws.clientToken.label || ws.clientToken.token).substring(0, 100)
+            : String(msg.name || 'unnamed').substring(0, 100);
           const config = {
-            name: String(msg.name || 'unnamed').substring(0, 100),
+            name,
             localPort: parseInt(msg.localPort, 10) || 3000,
-            subdomain: msg.subdomain ? String(msg.subdomain).substring(0, 63).replace(/[^a-z0-9-]/gi, '-') : undefined,
+            subdomain: protocol === 'http' && msg.subdomain
+              ? String(msg.subdomain).substring(0, 63).replace(/[^a-z0-9-]/gi, '-')
+              : undefined,
+            protocol,
+            clientToken: ws.clientToken?.token,
           };
           const tunnel = tunnelManager.createTunnel(config, ws);
           clientTunnelIds.push(tunnel.id);
+
+          // For TCP tunnels: start TCP listener
+          let allocatedPort = null;
+          if (protocol === 'tcp' && tcpProxy) {
+            allocatedPort = tcpProxy.startListener(tunnel.id, ws, config.localPort);
+            if (allocatedPort !== null) {
+              tunnelManager.setAllocatedPort(tunnel.id, allocatedPort);
+            }
+          }
 
           ws.send(JSON.stringify({
             type: 'registered',
             tunnelId: tunnel.id,
             publicUrl: tunnel.publicUrl,
             ownerSecret: tunnel.ownerSecret,
+            protocol,
+            allocatedPort,
           }));
 
-          log.info('Tunnel registered', { name: tunnel.name, publicUrl: tunnel.publicUrl, tunnelId: tunnel.id });
+          log.info('Tunnel registered', { name: tunnel.name, protocol, allocatedPort, tunnelId: tunnel.id });
           break;
         }
 
@@ -121,6 +161,16 @@ function initWebSocket(server, tunnelManager, connectionTracker) {
           break;
         }
 
+        case 'tcp-data': {
+          if (tcpProxy && msg.connId && msg.data) tcpProxy.forwardData(msg.connId, msg.data);
+          break;
+        }
+
+        case 'tcp-close': {
+          if (tcpProxy && msg.connId) tcpProxy.closeConn(msg.connId);
+          break;
+        }
+
         default:
           ws.send(JSON.stringify({ type: 'error', message: 'Unknown message type' }));
       }
@@ -131,6 +181,8 @@ function initWebSocket(server, tunnelManager, connectionTracker) {
       // Mark ALL tunnels for this WS as disconnected, but only if
       // the tunnel's current WS is still this one (prevents race with reconnect)
       for (const tid of clientTunnelIds) {
+        const t = tunnelManager.getTunnel(tid);
+        if (t?.protocol === 'tcp' && tcpProxy) tcpProxy.stopListener(tid);
         tunnelManager.markDisconnected(tid, ws);
         connectionTracker.removeByTunnel(tid);
       }

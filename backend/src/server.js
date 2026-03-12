@@ -16,6 +16,7 @@ setupGlobalHandlers();
 
 const TunnelManager = require('./tunnelManager');
 const ConnectionTracker = require('./connectionTracker');
+const TcpProxy = require('./tcpProxy');
 const { initWebSocket } = require('./wsHandler');
 const { createProxyServer } = require('./proxyServer');
 const tunnelsRouter = require('./routes/tunnels');
@@ -54,6 +55,7 @@ function safeTokenCompare(a, b) {
 // ─── Core services ───────────────────────────────────────
 const tunnelManager = new TunnelManager(db);
 const connectionTracker = new ConnectionTracker();
+const tcpProxy = new TcpProxy();
 
 // ─── Express app (API) ──────────────────────────────────
 const app = express();
@@ -198,7 +200,7 @@ if (tlsEnabled) {
 } else {
   server = http.createServer(app);
 }
-initWebSocket(server, tunnelManager, connectionTracker);
+initWebSocket(server, tunnelManager, connectionTracker, db, tcpProxy);
 
 // ─── Proxy server ───────────────────────────────────────
 const proxyServer = createProxyServer(tunnelManager, connectionTracker);
@@ -220,6 +222,7 @@ function shutdown() {
   log.info('Shutting down...');
   clearInterval(rateLimitCleanup);
   connectionTracker.destroy();
+  tcpProxy.destroy();
   db.close();
   server.close(() => {
     proxyServer.close(() => {

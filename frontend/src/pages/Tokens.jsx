@@ -81,29 +81,17 @@ function SshConfigBlock({ token, gatewayHost }) {
 }
 
 function CreateModal({ onClose, onCreate }) {
-  const [form, setForm] = useState({
-    token: '',
-    label: '',
-    target_ip: '',
-    target_port: '22',
-    public_key: '',
-  });
+  const [form, setForm] = useState({ token: '', label: '' });
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState(null);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!form.target_ip || !form.public_key) return;
     setSubmitting(true);
-    const created = await onCreate({
-      ...form,
-      target_port: Number(form.target_port),
-    });
+    const created = await onCreate({ token: form.token, label: form.label });
     setResult(created);
     setSubmitting(false);
   };
-
-  const gatewayHost = window.location.hostname || 'gateway-ip';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -126,11 +114,12 @@ function CreateModal({ onClose, onCreate }) {
                 Token <span className="font-mono text-[#38b6ff]">{result.token}</span> created successfully
               </div>
             </div>
-            <div>
-              <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
-                SSH Config for Client
-              </p>
-              <SshConfigBlock token={result.token} gatewayHost={gatewayHost} />
+            <div className="space-y-3 text-sm text-gray-300">
+              <p>Add to <code className="text-[#38b6ff]">~/.tunnelvault/config.json</code> on the client device:</p>
+              <div className="rounded-lg border border-gray-700/60 bg-[#08080d] p-3 font-mono text-xs">
+                {`{\n  "server": "ws://${window.location.hostname}:4000",\n  "auth_token": "${result.token}"\n}`}
+              </div>
+              <p className="text-xs text-gray-500">Then run: <code className="text-[#38b6ff]">tunnelvault connect 22 --protocol tcp</code></p>
             </div>
             <button
               onClick={onClose}
@@ -162,46 +151,6 @@ function CreateModal({ onClose, onCreate }) {
                 placeholder="Dev Server - Berlin"
                 className="w-full rounded-lg border border-gray-700 bg-gray-800/60 px-3 py-2.5 font-mono text-sm text-white placeholder-gray-500 outline-none transition-colors focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/20"
               />
-            </div>
-            <div className="grid grid-cols-3 gap-3">
-              <div className="col-span-2">
-                <label className="mb-1.5 block text-sm text-gray-400">
-                  Target IP <span className="text-red-400">*</span>
-                </label>
-                <input
-                  type="text"
-                  value={form.target_ip}
-                  onChange={(e) => setForm({ ...form, target_ip: e.target.value })}
-                  placeholder="10.0.1.42"
-                  className="w-full rounded-lg border border-gray-700 bg-gray-800/60 px-3 py-2.5 font-mono text-sm text-white placeholder-gray-500 outline-none transition-colors focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/20"
-                  required
-                />
-              </div>
-              <div>
-                <label className="mb-1.5 block text-sm text-gray-400">Port</label>
-                <input
-                  type="number"
-                  value={form.target_port}
-                  onChange={(e) => setForm({ ...form, target_port: e.target.value })}
-                  className="w-full rounded-lg border border-gray-700 bg-gray-800/60 px-3 py-2.5 font-mono text-sm text-white placeholder-gray-500 outline-none transition-colors focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/20"
-                />
-              </div>
-            </div>
-            <div>
-              <label className="mb-1.5 block text-sm text-gray-400">
-                SSH Public Key <span className="text-red-400">*</span>
-              </label>
-              <textarea
-                value={form.public_key}
-                onChange={(e) => setForm({ ...form, public_key: e.target.value })}
-                placeholder="ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAB... user@host"
-                rows={4}
-                className="w-full resize-y rounded-lg border border-gray-700 bg-gray-800/60 px-3 py-2.5 font-mono text-sm text-white placeholder-gray-500 outline-none transition-colors focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/20"
-                required
-              />
-              <p className="mt-1 text-xs text-gray-600">
-                Output of: <code className="text-[#38b6ff]">cat ~/.ssh/id_rsa.pub</code>
-              </p>
             </div>
             <button
               type="submit"

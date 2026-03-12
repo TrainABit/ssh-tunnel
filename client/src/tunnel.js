@@ -1,5 +1,6 @@
 import WebSocket from 'ws';
 import http from 'node:http';
+import net from 'node:net';
 import { Display } from './display.js';
 
 const INITIAL_RECONNECT_DELAY = 1000;
@@ -20,6 +21,8 @@ export class TunnelClient {
     this.shouldReconnect = true;
     this.heartbeatTimer = null;
     this.publicUrl = '';
+    this.protocol = options.protocol || 'http';
+    this.tcpConns = new Map();
   }
 
   connect() {
@@ -55,6 +58,7 @@ export class TunnelClient {
         name: this.name,
         localPort: this.localPort,
         subdomain: this.subdomain,
+        protocol: this.protocol,
       }));
     });
 
@@ -96,7 +100,11 @@ export class TunnelClient {
     switch (msg.type) {
       case 'registered':
         this.publicUrl = msg.publicUrl;
-        this.display.setConnected(msg.publicUrl, `http://localhost:${this.localPort}`);
+        if (msg.protocol === 'tcp' && msg.allocatedPort) {
+          this.display.setConnected(`SSH port ${msg.allocatedPort}`, `localhost:${this.localPort}`);
+        } else {
+          this.display.setConnected(msg.publicUrl, `http://localhost:${this.localPort}`);
+        }
         break;
 
       case 'request':
@@ -108,6 +116,18 @@ export class TunnelClient {
         this._send({ type: 'pong' });
         break;
 
+      case 'tcp-open':
+        this._openTcpConn(msg.connId, msg.localPort);
+        break;
+
+      case 'tcp-data':
+        this._forwardTcpData(msg.connId, msg.data);
+        break;
+
+      case 'tcp-close':
+        this._closeTcpConn(msg.connId);
+        break;
+
       case 'error':
         this.display.stopSpinner(false, `Server error: ${msg.message}`);
         break;
@@ -115,6 +135,32 @@ export class TunnelClient {
       default:
         break;
     }
+  }
+
+  _openTcpConn(connId, localPort) {
+    const socket = net.createConnection({ port: localPort, host: 'localhost' });
+    this.tcpConns.set(connId, socket);
+    socket.on('data', (chunk) => {
+      this._send({ type: 'tcp-data', connId, data: chunk.toString('base64') });
+    });
+    const cleanup = () => {
+      this.tcpConns.delete(connId);
+      this._send({ type: 'tcp-close', connId });
+    };
+    socket.on('end', cleanup);
+    socket.on('error', () => { socket.destroy(); });
+    socket.on('close', () => this.tcpConns.delete(connId));
+  }
+
+  _forwardTcpData(connId, data) {
+    const socket = this.tcpConns.get(connId);
+    if (socket && !socket.destroyed) socket.write(Buffer.from(data, 'base64'));
+  }
+
+  _closeTcpConn(connId) {
+    const socket = this.tcpConns.get(connId);
+    if (socket && !socket.destroyed) socket.end();
+    this.tcpConns.delete(connId);
   }
 
   _proxyRequest(msg) {
@@ -236,6 +282,8 @@ export class TunnelClient {
     this.shouldReconnect = false;
     this._clearHeartbeat();
     this.display.destroy();
+    for (const socket of this.tcpConns.values()) socket.destroy();
+    this.tcpConns.clear();
     if (this.ws) {
       this.ws.close(1000, 'Client disconnecting');
       this.ws = null;

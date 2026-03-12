@@ -26,6 +26,8 @@ class TunnelManager extends EventEmitter {
             createdAt: row.created_at,
             connections: row.connections,
             bytesTransferred: row.bytes_transferred,
+            protocol: row.protocol || 'http',
+            allocatedPort: row.allocated_port || null,
           };
           this.tunnels.set(tunnel.id, tunnel);
         }
@@ -50,6 +52,7 @@ class TunnelManager extends EventEmitter {
     const id = uuidv4();
     const subdomain = config.subdomain || config.name.toLowerCase().replace(/[^a-z0-9-]/g, '-');
     const domain = process.env.DOMAIN || 'tunnel.local';
+    const protocol = config.protocol === 'tcp' ? 'tcp' : 'http';
 
     // Remove any inactive tunnels with the same subdomain to prevent
     // stale entries from shadowing new registrations
@@ -69,18 +72,25 @@ class TunnelManager extends EventEmitter {
     // Generate an ownership secret — clients must present this to reconnect
     const ownerSecret = crypto.randomBytes(32).toString('hex');
 
+    const publicUrl = protocol === 'tcp'
+      ? `tcp:${config.allocatedPort || '?'}`
+      : `http://${subdomain}.${domain}:${process.env.PROXY_PORT || 4001}`;
+
     const tunnel = {
       id,
       name: config.name,
       subdomain,
       localPort: config.localPort,
-      publicUrl: `http://${subdomain}.${domain}:${process.env.PROXY_PORT || 4001}`,
+      publicUrl,
       clientWs: ws,
       status: ws ? 'active' : 'simulated',
       createdAt: new Date().toISOString(),
       connections: 0,
       bytesTransferred: 0,
       ownerSecret,
+      protocol,
+      allocatedPort: config.allocatedPort || null,
+      clientToken: config.clientToken || null,
     };
 
     this.tunnels.set(id, tunnel);
@@ -89,9 +99,9 @@ class TunnelManager extends EventEmitter {
     if (this.db) {
       try {
         this.db.run(
-          `INSERT INTO tunnels (id, name, subdomain, local_port, public_url, status, created_at, connections, bytes_transferred)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [tunnel.id, tunnel.name, tunnel.subdomain, tunnel.localPort, tunnel.publicUrl, tunnel.status, tunnel.createdAt, tunnel.connections, tunnel.bytesTransferred]
+          `INSERT INTO tunnels (id, name, subdomain, local_port, public_url, status, created_at, connections, bytes_transferred, protocol, allocated_port)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [tunnel.id, tunnel.name, tunnel.subdomain, tunnel.localPort, tunnel.publicUrl, tunnel.status, tunnel.createdAt, tunnel.connections, tunnel.bytesTransferred, tunnel.protocol, tunnel.allocatedPort]
         );
       } catch (err) {
         log.error('Failed to persist tunnel to DB', { error: err, tunnelId: tunnel.id });
@@ -100,6 +110,23 @@ class TunnelManager extends EventEmitter {
 
     this.emit('tunnel:created', tunnel);
     return tunnel;
+  }
+
+  /**
+   * Update the allocated TCP port for a tunnel and persist to DB.
+   */
+  setAllocatedPort(id, port) {
+    const t = this.tunnels.get(id);
+    if (!t) return;
+    t.allocatedPort = port;
+    t.publicUrl = `tcp:${port}`;
+    if (this.db) {
+      try {
+        this.db.run('UPDATE tunnels SET allocated_port = ?, public_url = ? WHERE id = ?', [port, t.publicUrl, id]);
+      } catch (err) {
+        log.warn('DB error in setAllocatedPort', { error: err, tunnelId: id });
+      }
+    }
   }
 
   /**
@@ -294,6 +321,8 @@ class TunnelManager extends EventEmitter {
       createdAt: t.createdAt,
       connections: t.connections,
       bytesTransferred: t.bytesTransferred,
+      protocol: t.protocol || 'http',
+      allocatedPort: t.allocatedPort || null,
       // ownerSecret intentionally excluded
     };
   }

@@ -22,7 +22,7 @@ db.exec(`
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       token TEXT UNIQUE NOT NULL,
       label TEXT NOT NULL DEFAULT '',
-      target_ip TEXT NOT NULL,
+      target_ip TEXT NOT NULL DEFAULT '',
       target_port INTEGER NOT NULL DEFAULT 22,
       public_key TEXT NOT NULL DEFAULT '',
       linux_user TEXT UNIQUE NOT NULL,
@@ -49,9 +49,15 @@ db.exec(`
       status TEXT NOT NULL DEFAULT 'inactive',
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       connections INTEGER NOT NULL DEFAULT 0,
-      bytes_transferred INTEGER NOT NULL DEFAULT 0
+      bytes_transferred INTEGER NOT NULL DEFAULT 0,
+      protocol TEXT NOT NULL DEFAULT 'http',
+      allocated_port INTEGER
   );
 `);
+
+// Migrations for existing installations
+try { db.exec(`ALTER TABLE tunnels ADD COLUMN protocol TEXT NOT NULL DEFAULT 'http'`); } catch {}
+try { db.exec(`ALTER TABLE tunnels ADD COLUMN allocated_port INTEGER`); } catch {}
 
 // ─── Helper functions ─────────────────────────────────────
 

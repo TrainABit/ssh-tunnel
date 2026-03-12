@@ -252,8 +252,12 @@ info "Package manifests copied"
 if [[ ! -d "${SCRIPT_DIR}/frontend/dist" ]]; then
     echo -e "  ${DIM}Building frontend...${NC}"
     cd "${SCRIPT_DIR}/frontend"
-    npm install --quiet > /dev/null 2>&1
-    npm run build --quiet > /dev/null 2>&1
+    if npm install --quiet 2>&1 | tail -3 && npm run build 2>&1 | tail -5; then
+        info "Frontend built successfully"
+    else
+        warn "Frontend build failed — Dashboard UI may be unavailable"
+        warn "Run manually: cd ${SCRIPT_DIR}/frontend && npm install && npm run build"
+    fi
     cd "$SCRIPT_DIR"
 fi
 
@@ -318,6 +322,8 @@ else
     cat > "$ENV_FILE" <<ENVEOF
 PORT=${API_PORT}
 PROXY_PORT=${PROXY_PORT}
+TCP_PORT_MIN=10000
+TCP_PORT_MAX=10999
 DOMAIN=${DOMAIN}
 AUTH_TOKEN=${AUTH_TOKEN}
 DB_PATH=${DB_PATH}
@@ -487,6 +493,8 @@ ufw allow "${API_PORT}/tcp" comment "TunnelVault API" > /dev/null 2>&1
 info "Allowed port ${API_PORT} (API + Dashboard)"
 ufw allow "${PROXY_PORT}/tcp" comment "TunnelVault Proxy" > /dev/null 2>&1
 info "Allowed port ${PROXY_PORT} (Proxy)"
+ufw allow 10000:10999/tcp comment "TunnelVault TCP tunnels" > /dev/null 2>&1
+info "Allowed ports 10000-10999 (TCP tunnels)"
 if $ENABLE_TLS; then
     ufw allow 80/tcp comment "HTTP (redirect to HTTPS)" > /dev/null 2>&1
     info "Allowed port 80 (HTTP redirect)"

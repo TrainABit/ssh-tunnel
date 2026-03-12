@@ -1,86 +1,94 @@
 # TunnelVault
 
-Self-hosted tunneling service with SSH gateway routing, WebSocket tunnels, and a web dashboard — like ngrok, but private.
+Self-hosted tunneling service with TCP/SSH tunneling, WebSocket HTTP tunnels, and a web dashboard — like ngrok, but private and self-hosted.
 
-- **SSH Token Routing** — route SSH connections through a gateway to private EC2 instances using `gw-<TOKEN>` usernames
-- **WebSocket Tunnels** — expose local ports to the internet via persistent WebSocket connections
+- **TCP Tunneling** — expose any TCP port (e.g. SSH on port 22) through the server; connect with a plain `ssh` command
+- **HTTP Tunnels** — expose local HTTP services via persistent WebSocket connections
+- **Named Client Tokens** — create per-device tokens in the dashboard; clients identify themselves automatically by token
+- **Auto-connect Service** — client runs as a systemd service, reconnects on boot without manual commands
 - **Web Dashboard** — real-time monitoring of tunnels, tokens, sessions, and connections
-- **CLI Client** — lightweight command-line tool to create and manage tunnels
-- **Built-in Security** — auth tokens, rate limiting, input validation, security headers
+- **CLI Client** — lightweight command-line tool (`connect`, `list`, `status`)
+- **Built-in Security** — per-client token auth, rate limiting, input validation, security headers
 
 ---
 
-## TL;DR — Get Running in 3 Steps
+## TL;DR — SSH into a Raspberry Pi through EC2
 
 **1. Deploy the server** (on your EC2 instance):
 ```bash
 git clone https://github.com/florianhengross/sshtunnel.git ~/tunnelvault
 cd ~/tunnelvault
-sudo bash install-server.sh --domain tunnel.yourdomain.com
+sudo bash install-server.sh
 ```
-Save the auth token printed at the end.
+Save the admin auth token printed at the end.
 
-**2. Install the client** (on your local machine):
+**2. Create a client token in the dashboard:**
+
+Open `http://YOUR-EC2-IP:4000` → Tokens → New Token → give it a name (e.g. "Raspberry Pi").
+
+**3. Install the client** (on the Raspberry Pi):
 ```bash
-git clone https://github.com/florianhengross/sshtunnel.git ~/sshtunnel
-cd ~/sshtunnel
-bash install-client.sh --server ws://YOUR-EC2-IP:4000 --auth-token YOUR_TOKEN
+git clone https://github.com/florianhengross/sshtunnel.git ~/tunnelvault
+cd ~/tunnelvault
+sudo bash install-client.sh --server ws://YOUR-EC2-IP:4000 --token CLIENT_TOKEN
 ```
+The client starts automatically on boot and reconnects if the connection drops.
 
-**3. Expose a local port:**
+**4. SSH from anywhere:**
+
+The dashboard shows the assigned port under Tunnels. Connect from any device:
 ```bash
-tunnelvault connect 3000
+ssh pi@YOUR-EC2-IP -p PORT_FROM_DASHBOARD
 ```
 
-Open the dashboard at `http://YOUR-EC2-IP:4000`.
-
-> Make sure your EC2 security group allows inbound TCP on ports **22**, **4000**, and **4001**.
+> Make sure your EC2 security group allows inbound TCP on ports **22**, **4000**, **4001**, and **10000–10999**.
 
 ---
 
 ## Architecture
 
 ```
-                          EC2 Instance
-                    ┌─────────────────────────┐
- Internet           │  SSH Gateway (port 22)   │         VPC
- ────────┐          │  API + WS   (port 4000)  │    ┌────────────┐
-         │          │  Proxy      (port 4001)  │    │ Target EC2 │
- SSH     ├────SSH──▶│  Dashboard  (port 4000)  │───▶│ 10.0.x.x   │
- Client  │          └─────────────────────────┘    └────────────┘
- ────────┘                     ▲
-                               │ WebSocket
- ┌────────────┐     ┌─────────┴──────────┐
- │ Browser    │────▶│  TunnelVault       │◀───── CLI Client (local)
- │ Dashboard  │     │  Server (:4000)    │              │
- └────────────┘     │  Proxy  (:4001)    │              ▼
-                    └────────────────────┘       ┌─────────────┐
-                                                 │ Local App   │
-                                                 │ (:3000 etc) │
-                                                 └─────────────┘
+ Any Device          EC2 Instance
+ ──────────┐    ┌──────────────────────────────┐
+           │    │  Dashboard + API  (port 4000) │
+ ssh -p N  ├───▶│  TCP Proxy        (port N)    │
+           │    │  HTTP Proxy       (port 4001) │
+ ──────────┘    └────────────┬─────────────────┘
+                             │ WebSocket (persistent)
+                    ┌────────▼───────────┐
+                    │  TunnelVault       │
+                    │  Client (device)   │
+                    │  runs as systemd   │
+                    │  service           │
+                    └────────┬───────────┘
+                             │
+                    ┌────────▼───────────┐
+                    │  localhost:22      │
+                    │  (SSH / any port)  │
+                    └────────────────────┘
 ```
 
-**SSH flow:** Client connects as `gw-<TOKEN>@gateway` &rarr; `ssh_router.sh` looks up token in SQLite &rarr; proxies to target EC2 private IP via netcat.
+**TCP tunnel flow:** Client connects to server via WebSocket using its per-client token → server allocates a port (10000–10999) → when someone SSHes to that port on EC2, raw TCP is piped through the WebSocket to the client → client forwards to `localhost:22`.
 
-**Tunnel flow:** CLI client opens WebSocket to server &rarr; server assigns subdomain &rarr; incoming HTTP on proxy port is forwarded through WebSocket to client &rarr; client forwards to local app.
+**HTTP tunnel flow:** CLI client registers via WebSocket → server assigns subdomain → incoming HTTP on proxy port (4001) is forwarded through WebSocket to client → client forwards to local app.
 
 ---
 
 ## Features
 
-- SSH token-based routing to private VPC instances
+- **TCP tunneling** — pipe raw TCP (SSH, databases, anything) through WebSocket to any client device
+- **SSH access from anywhere** — `ssh user@ec2-ip -p PORT` with port assigned and shown in the dashboard
+- **Per-client token auth** — each device gets its own named token; tunnel appears in dashboard with device name
+- **Auto-connect systemd service** — client installer sets up a service that starts on boot and auto-reconnects
+- **HTTP tunneling** — expose local HTTP services via subdomain routing through proxy port
 - Web dashboard with real-time stats, charts, and session history
-- WebSocket tunnel creation and management
 - CLI client with `connect`, `list`, and `status` commands
-- Token management (create, update, enable/disable, delete) via API or dashboard
-- Session tracking with client IP, PID, and duration
+- Token management (create, enable/disable, delete) via dashboard or API
 - Connection monitoring with bytes transferred
 - Rate limiting (100 req/min per IP)
-- Security headers (CSP, X-Frame-Options, XSS protection)
-- Bearer token authentication on all API routes
-- SQLite database for tokens and sessions
-- Systemd service integration for production
-- Automated server and client installation scripts
+- Security headers (CSP, X-Frame-Options, etc.)
+- SQLite database — no external DB required
+- Automated server (`install-server.sh`) and client (`install-client.sh`) installation scripts
 
 ---
 
@@ -143,39 +151,66 @@ sudo bash install-server.sh --domain tunnel.yourdomain.com
 
 | Port | Protocol | Source | Purpose |
 |------|----------|--------|---------|
-| 22 | TCP | 0.0.0.0/0 | SSH gateway + admin access |
+| 22 | TCP | 0.0.0.0/0 | Admin SSH access to EC2 |
 | 4000 | TCP | 0.0.0.0/0 | API + Dashboard + WebSocket |
-| 4001 | TCP | 0.0.0.0/0 | Proxy server (tunnel traffic) |
+| 4001 | TCP | 0.0.0.0/0 | HTTP proxy (tunnel traffic) |
+| 10000–10999 | TCP | 0.0.0.0/0 | TCP tunnels (SSH access to devices) |
 | 80/443 | TCP | 0.0.0.0/0 | Optional: Nginx + TLS |
 
 ---
 
 ## Client Installation
 
+First, create a client token in the dashboard (Tokens → New Token), then run on the client device:
+
 ```bash
-git clone https://github.com/florianhengross/sshtunnel.git ~/sshtunnel
-cd ~/sshtunnel
-bash install-client.sh --server ws://YOUR-EC2-IP:4000 --auth-token YOUR_TOKEN
+git clone https://github.com/florianhengross/sshtunnel.git ~/tunnelvault
+cd ~/tunnelvault
+sudo bash install-client.sh --server ws://YOUR-EC2-IP:4000 --token YOUR_CLIENT_TOKEN
 ```
 
-This installs the `tunnelvault` CLI to your system and saves config to `~/.tunnelvault/config.json`.
+This installs the `tunnelvault` CLI, writes config to `/etc/tunnelvault/config.json` and `~/.tunnelvault/config.json`, and creates a systemd service (`tunnelvault-client`) that:
+- Starts automatically on boot
+- Reconnects automatically if the connection drops
+- Exposes the local SSH port (22) as a TCP tunnel
 
-To uninstall:
+### install-client.sh Options
 
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--server URL` | TunnelVault server WebSocket URL | required |
+| `--token TOKEN` | Per-client auth token from dashboard | required |
+| `--port PORT` | Local port to tunnel | `22` |
+| `--protocol PROTO` | Tunnel protocol: `tcp` or `http` | `tcp` |
+| `--user USER` | Linux user to run the service as | current user |
+
+Once connected, the assigned SSH port is shown in the dashboard under Tunnels:
 ```bash
-bash install-client.sh --uninstall
+ssh pi@YOUR-EC2-IP -p PORT_FROM_DASHBOARD
 ```
 
 ---
 
 ## Usage
 
-### Connect a Local Port
+### Connect a Local Port (HTTP)
 
 ```bash
 tunnelvault connect 3000 --name myapp
 tunnelvault connect 8080 --name api --subdomain api
 tunnelvault connect 3000 --server ws://tunnel.example.com:4000
+```
+
+### Connect a TCP Port (SSH / raw TCP)
+
+```bash
+tunnelvault connect 22 --protocol tcp
+tunnelvault connect 22 --protocol tcp --server ws://YOUR-EC2-IP:4000 --auth-token YOUR_TOKEN
+```
+
+The server assigns a port and shows it in the dashboard. SSH from anywhere:
+```bash
+ssh user@YOUR-EC2-IP -p ASSIGNED_PORT
 ```
 
 ### List Active Tunnels
@@ -203,40 +238,34 @@ Priority: CLI flag > environment variable > `~/.tunnelvault/config.json` > defau
 
 ---
 
-## SSH Gateway
+## TCP Tunneling (SSH Access)
 
-The SSH gateway routes connections to private EC2 instances using token-based usernames.
+TCP tunneling lets you SSH into any device running the TunnelVault client, even if it's behind NAT or a firewall.
 
 ### How It Works
 
-1. Admin creates a token via the web dashboard or API, specifying: token name, target IP, target port, and client public key
-2. A Linux user `gw-<TOKEN>` is created on the gateway server
-3. The client's public key is added to that user's `authorized_keys`
-4. When a client connects as `gw-<TOKEN>`, the `ssh_router.sh` ForceCommand looks up the token in SQLite and proxies the connection to the target IP via netcat
-5. The session is recorded in the database and appears on the dashboard
+1. Create a named client token in the dashboard (Tokens → New Token, just a label — no IP or public key needed)
+2. Install and start the client on the device: `sudo bash install-client.sh --server ws://EC2:4000 --token TOKEN`
+3. The client connects to the server via WebSocket and registers a TCP tunnel for port 22
+4. The server allocates a port from the range 10000–10999 and shows it in the dashboard under Tunnels
+5. From any device: `ssh user@EC2-IP -p ASSIGNED_PORT` — traffic is piped through the WebSocket to the client
 
-### SSH Config Example
-
-```
-Host my-server
-    HostName <GATEWAY_PUBLIC_IP>
-    User gw-myToken123
-    IdentityFile ~/.ssh/id_rsa
-```
+### SSH from Anywhere
 
 ```bash
-ssh my-server
-# Automatically routes to the target EC2 private IP
+# Port shown in the dashboard under Tunnels
+ssh pi@YOUR-EC2-IP -p 10001
 ```
 
-### Register a Token via CLI
-
+Or add to `~/.ssh/config` for convenience:
+```
+Host raspberry-pi
+    HostName YOUR-EC2-IP
+    Port 10001
+    User pi
+```
 ```bash
-sudo bash /opt/tunnelvault/register_token.sh \
-  --token   myToken123 \
-  --ip      10.0.1.42 \
-  --label   "My Server" \
-  --pubkey  "ssh-rsa AAAAB3Nza..."
+ssh raspberry-pi
 ```
 
 ---
@@ -282,8 +311,8 @@ All endpoints require `Authorization: Bearer <AUTH_TOKEN>` header (except health
 |--------|------|------|-------------|
 | GET | `/api/tokens` | Yes | List all tokens with session counts |
 | GET | `/api/tokens/:token` | Yes | Get token details + last 50 sessions |
-| POST | `/api/tokens` | Yes | Create token (body: `token`, `label`, `target_ip`, `target_port`, `public_key`) |
-| PATCH | `/api/tokens/:token` | Yes | Update token fields (`target_ip`, `target_port`, `label`, `active`, `public_key`) |
+| POST | `/api/tokens` | Yes | Create token (body: `label`, optional `token`) |
+| PATCH | `/api/tokens/:token` | Yes | Update token fields (`label`, `active`) |
 | DELETE | `/api/tokens/:token` | Yes | Delete token and associated sessions |
 
 ### Sessions
@@ -329,9 +358,11 @@ All configuration is via environment variables in `backend/.env`:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `4000` | API + WebSocket + Dashboard port |
-| `PROXY_PORT` | `4001` | Tunnel proxy port |
-| `DOMAIN` | `tunnel.local` | Server domain for generating public URLs |
-| `AUTH_TOKEN` | — | API authentication token (leave unset for dev mode) |
+| `PROXY_PORT` | `4001` | HTTP tunnel proxy port |
+| `DOMAIN` | `tunnel.local` | Server domain for generating HTTP tunnel URLs |
+| `AUTH_TOKEN` | — | Admin API auth token (leave unset for dev mode) |
+| `TCP_PORT_MIN` | `10000` | Start of TCP tunnel port range |
+| `TCP_PORT_MAX` | `10999` | End of TCP tunnel port range |
 | `ALLOWED_ORIGINS` | — | Comma-separated CORS origins (unset = allow all) |
 
 Generate a secure token:
@@ -353,6 +384,7 @@ tunnelvault/
 │   │   ├── connectionTracker.js# Connection stats and history
 │   │   ├── wsHandler.js        # WebSocket handler for tunnel clients
 │   │   ├── proxyServer.js      # HTTP proxy for tunnel traffic
+│   │   ├── tcpProxy.js         # TCP-over-WebSocket proxy (SSH tunneling)
 │   │   ├── database.js         # SQLite database helpers
 │   │   └── routes/
 │   │       ├── tunnels.js      # /api/tunnels CRUD
@@ -396,11 +428,11 @@ Check that ports 4000 and 4001 are not in use: `sudo lsof -i :4000`. Verify Node
 **WebSocket connection refused**
 Ensure the server is running and port 4000 is open in your security group. The client connects to `ws://<host>:4000/ws`.
 
-**SSH gateway: "Permission denied"**
-Verify the token exists and is active (`GET /api/tokens`). Check that the client's public key matches what was registered.
+**TCP tunnel: connection refused on SSH port**
+Check the client service is running: `journalctl -u tunnelvault-client -f`. Verify the tunnel shows as active in the dashboard. Make sure your EC2 security group allows TCP on ports 10000–10999.
 
-**SSH gateway: "Token not found"**
-The username must be `gw-<TOKEN>` exactly. Verify the token is in the database and the `gw-` user was created on the system.
+**TCP tunnel: port not shown in dashboard**
+The client must connect with `--protocol tcp`. If using the install script, this is the default. Check tunnel status in the dashboard — the port appears once the client is connected.
 
 **Dashboard shows no data**
 Build the frontend first: `npm run build`. The API serves the frontend from `frontend/dist/`. In dev mode, run `npm run dev` for hot-reload on port 3000.
