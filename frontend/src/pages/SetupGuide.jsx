@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { copyToClipboard } from '../utils/clipboard';
 import {
   Copy,
   Check,
@@ -28,7 +29,7 @@ function CodeBlock({ children, copyText }) {
         ? children
         : '');
     if (text) {
-      navigator.clipboard?.writeText(text);
+      copyToClipboard(text);
     }
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);

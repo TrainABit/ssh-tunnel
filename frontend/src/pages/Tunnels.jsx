@@ -11,6 +11,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { getTunnels, createTunnel, deleteTunnel, toggleTunnel } from '../services/api';
+import { copyToClipboard } from '../utils/clipboard';
 
 function CreateModal({ onClose, onCreate }) {
   const [form, setForm] = useState({ name: '', localPort: '', subdomain: '' });
@@ -217,7 +218,7 @@ export default function Tunnels() {
   };
 
   const handleCopy = (url) => {
-    navigator.clipboard?.writeText(url);
+    copyToClipboard(url);
     setCopied(url);
     setTimeout(() => setCopied(null), 2000);
   };

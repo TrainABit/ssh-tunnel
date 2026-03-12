@@ -19,6 +19,7 @@ import {
   updateToken,
   deleteToken,
 } from '../services/api';
+import { copyToClipboard } from '../utils/clipboard';
 
 function formatTimestamp(ts) {
   if (!ts || typeof ts !== 'string') return '\u2013';
@@ -47,7 +48,7 @@ function InstallCommandBlock({ server, token }) {
   const cmd = `sudo bash install-client.sh --server ${server} --token ${token}`;
 
   const handleCopy = () => {
-    navigator.clipboard?.writeText(cmd);
+    copyToClipboard(cmd);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -389,7 +390,7 @@ export default function Tokens() {
   };
 
   const handleCopyToken = (token) => {
-    navigator.clipboard?.writeText(token);
+    copyToClipboard(token);
     setCopied(token);
     setTimeout(() => setCopied(null), 2000);
   };

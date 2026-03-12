@@ -11,6 +11,7 @@ import {
   LogOut,
 } from 'lucide-react';
 import { getAuthToken, setAuthToken, clearAuthToken } from '../services/api';
+import { copyToClipboard } from '../utils/clipboard';
 
 function Section({ icon: Icon, title, children }) {
   return (
@@ -48,7 +49,7 @@ export default function Settings() {
   }, []);
 
   const handleCopy = () => {
-    navigator.clipboard?.writeText(authToken);
+    copyToClipboard(authToken);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
