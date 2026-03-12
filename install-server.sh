@@ -374,10 +374,12 @@ CREATE TABLE IF NOT EXISTS tokens (
 );
 CREATE TABLE IF NOT EXISTS sessions (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
-    token            TEXT NOT NULL,
+    token            TEXT,
     connected_at     TEXT NOT NULL DEFAULT (datetime('now')),
     disconnected_at  TEXT,
     client_ip        TEXT,
+    target_ip        TEXT,
+    target_port      INTEGER,
     pid              INTEGER
 );
 CREATE TABLE IF NOT EXISTS tunnels (

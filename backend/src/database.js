@@ -58,6 +58,8 @@ db.exec(`
 // Migrations for existing installations
 try { db.exec(`ALTER TABLE tunnels ADD COLUMN protocol TEXT NOT NULL DEFAULT 'http'`); } catch {}
 try { db.exec(`ALTER TABLE tunnels ADD COLUMN allocated_port INTEGER`); } catch {}
+try { db.exec(`ALTER TABLE sessions ADD COLUMN target_ip TEXT`); } catch {}
+try { db.exec(`ALTER TABLE sessions ADD COLUMN target_port INTEGER`); } catch {}
 
 // ─── Helper functions ─────────────────────────────────────
 
