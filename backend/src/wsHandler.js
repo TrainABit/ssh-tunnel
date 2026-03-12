@@ -103,9 +103,14 @@ function initWebSocket(server, tunnelManager, connectionTracker, db, tcpProxy) {
           const name = ws.clientToken
             ? String(ws.clientToken.label || ws.clientToken.token).substring(0, 100)
             : String(msg.name || 'unnamed').substring(0, 100);
+          const localPort = parseInt(msg.localPort, 10);
+          if (!localPort || localPort < 1 || localPort > 65535) {
+            ws.send(JSON.stringify({ type: 'error', message: 'localPort must be between 1 and 65535' }));
+            break;
+          }
           const config = {
             name,
-            localPort: parseInt(msg.localPort, 10) || 3000,
+            localPort,
             subdomain: protocol === 'http' && msg.subdomain
               ? String(msg.subdomain).substring(0, 63).replace(/[^a-z0-9-]/gi, '-')
               : undefined,
