@@ -22,6 +22,8 @@ Save the auth token printed at the end.
 
 **2. Install the client** (on your local machine):
 ```bash
+git clone https://github.com/florianhengross/sshtunnel.git ~/sshtunnel
+cd ~/sshtunnel
 bash install-client.sh --server ws://YOUR-EC2-IP:4000 --auth-token YOUR_TOKEN
 ```
 
@@ -151,6 +153,8 @@ sudo bash install-server.sh --domain tunnel.yourdomain.com
 ## Client Installation
 
 ```bash
+git clone https://github.com/florianhengross/sshtunnel.git ~/sshtunnel
+cd ~/sshtunnel
 bash install-client.sh --server ws://YOUR-EC2-IP:4000 --auth-token YOUR_TOKEN
 ```
 
