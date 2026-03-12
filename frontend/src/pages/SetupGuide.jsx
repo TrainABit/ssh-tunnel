@@ -228,7 +228,7 @@ export default function SetupGuide() {
             Install the <InlineCode>tunnelvault</InlineCode> CLI on any machine that needs to create tunnels. Config is saved to <InlineCode>~/.tunnelvault/config.json</InlineCode>.
           </p>
 
-          <CodeBlock copyText="bash install-client.sh --server ws://YOUR-EC2-IP:4000 --auth-token YOUR_TOKEN">
+          <CodeBlock copyText="bash install-client.sh --server ws://YOUR-EC2-IP:4000 --token YOUR_TOKEN">
             <div><Kw>bash</Kw> install-client.sh \</div>
             <div>  --server <Val>ws://YOUR-EC2-IP:4000</Val> \</div>
             <div>  --auth-token <Val>YOUR_TOKEN</Val></div>
@@ -270,7 +270,7 @@ export default function SetupGuide() {
 
             <Step number="3" title="Install the Client">
               <p>Run the client installer on your local machine.</p>
-              <CodeBlock copyText="bash install-client.sh --server ws://YOUR-EC2-IP:4000 --auth-token YOUR_TOKEN">
+              <CodeBlock copyText="bash install-client.sh --server ws://YOUR-EC2-IP:4000 --token YOUR_TOKEN">
                 <div><Kw>bash</Kw> install-client.sh --server <Val>ws://YOUR-EC2-IP:4000</Val> --auth-token <Val>YOUR_TOKEN</Val></div>
               </CodeBlock>
             </Step>
@@ -337,7 +337,7 @@ export default function SetupGuide() {
               [{ text: '-n, --name <name>', mono: true, color: 'var(--blue)' }, { text: 'Tunnel name (shown in dashboard)' }],
               [{ text: '-s, --subdomain <sub>', mono: true, color: 'var(--blue)' }, { text: 'Requested subdomain for public URL' }],
               [{ text: '--server <url>', mono: true, color: 'var(--blue)' }, { text: 'Server WebSocket URL (default: ws://localhost:4000)' }],
-              [{ text: '--auth-token <token>', mono: true, color: 'var(--blue)' }, { text: 'Bearer token for authentication' }],
+              [{ text: '--token <token>', mono: true, color: 'var(--blue)' }, { text: 'Per-client auth token from dashboard' }],
             ]}
           />
 

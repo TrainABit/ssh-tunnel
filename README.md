@@ -6,6 +6,7 @@ Self-hosted tunneling service with TCP/SSH tunneling, WebSocket HTTP tunnels, an
 - **HTTP Tunnels** — expose local HTTP services via persistent WebSocket connections
 - **Named Client Tokens** — create per-device tokens in the dashboard; clients identify themselves automatically by token
 - **Auto-connect Service** — client runs as a systemd service, reconnects on boot without manual commands
+- **Auto-Updater** — server checks for new Git commits every 5 minutes and redeploys automatically
 - **Web Dashboard** — real-time monitoring of tunnels, tokens, sessions, and connections
 - **CLI Client** — lightweight command-line tool (`connect`, `list`, `status`)
 - **Built-in Security** — per-client token auth, rate limiting, input validation, security headers
@@ -136,8 +137,10 @@ sudo bash install-server.sh --domain tunnel.yourdomain.com
 | `--auth-token TOKEN` | API auth token | Auto-generated |
 | `--port PORT` | API server port | `4000` |
 | `--proxy-port PORT` | Proxy server port | `4001` |
-| `--upgrade` | Upgrade existing install (preserves DB and config) | — |
+| `--upgrade` | Upgrade existing install (preserves DB and config), rebuilds frontend | — |
 | `--tls` | Set up Nginx + Let's Encrypt automatically | — |
+
+After a successful install, the server auto-updates itself every 5 minutes by checking for new commits on `origin/main`. Logs: `tail -f /opt/tunnelvault/logs/auto-update.log`. Force update: `sudo /opt/tunnelvault/auto-update.sh`.
 
 ### EC2 Requirements
 
@@ -183,6 +186,9 @@ This installs the `tunnelvault` CLI, writes config to `/etc/tunnelvault/config.j
 | `--port PORT` | Local port to tunnel | `22` |
 | `--protocol PROTO` | Tunnel protocol: `tcp` or `http` | `tcp` |
 | `--user USER` | Linux user to run the service as | current user |
+| `--upgrade` | Update client files, preserve config, schedule safe restart | — |
+
+> **Safe upgrade over an active tunnel:** If you run `--upgrade` while connected via the tunnel, the script copies all files first without stopping the service, then schedules a service restart 30 seconds later. Your SSH session will disconnect when the tunnel restarts and reconnect automatically.
 
 Once connected, the assigned SSH port is shown in the dashboard under Tunnels:
 ```bash
@@ -279,7 +285,7 @@ The dashboard is served on port 4000 alongside the API. Pages:
 | Dashboard | `/` | Overview stats, connection history chart, live sessions |
 | Tunnels | `/tunnels` | Active WebSocket tunnels with public URLs |
 | Tokens | `/tokens` | Create, edit, enable/disable, delete SSH gateway tokens |
-| Sessions | `/sessions` | SSH session history with client IP, duration, status |
+| Sessions | `/sessions` | TCP tunnel session history with client IP, port, duration, status |
 | Connections | `/connections` | Active proxy connections with bytes transferred |
 | Settings | `/settings` | Server configuration and status |
 | Setup Guide | `/setup` | In-app deployment and usage documentation |
@@ -412,6 +418,7 @@ tunnelvault/
 │   └── setup.sh                # Gateway sshd configuration
 ├── install-server.sh           # Automated server deployment script
 ├── install-client.sh           # Automated client installation script
+├── auto-update.sh              # Auto-updater (installed to /opt/tunnelvault/ by install-server.sh)
 ├── DEPLOYMENT.md               # Full EC2 deployment guide
 └── package.json                # Root scripts (install:all, dev, build, start)
 ```
@@ -434,8 +441,11 @@ Check the client service is running: `journalctl -u tunnelvault-client -f`. Veri
 **TCP tunnel: port not shown in dashboard**
 The client must connect with `--protocol tcp`. If using the install script, this is the default. Check tunnel status in the dashboard — the port appears once the client is connected.
 
-**Dashboard shows no data**
-Build the frontend first: `npm run build`. The API serves the frontend from `frontend/dist/`. In dev mode, run `npm run dev` for hot-reload on port 3000.
+**Dashboard shows no data / 500 errors on `/api/stats`**
+If upgrading from an older install, the database may be missing columns added in newer versions. Restart the service — migrations run automatically on startup: `sudo systemctl restart tunnelvault`. Also ensure the frontend is built: `npm run build`.
+
+**Dashboard UI looks outdated after `git pull`**
+The `--upgrade` flag now always rebuilds the frontend. Run `cd ~/tunnelvault && git pull && sudo bash install-server.sh --upgrade`, then hard-refresh the browser (`Ctrl+Shift+R`).
 
 ---
 
