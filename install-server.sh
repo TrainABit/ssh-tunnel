@@ -27,7 +27,7 @@ BOLD='\033[1m'
 DIM='\033[2m'
 NC='\033[0m'
 
-TOTAL_STEPS=12
+TOTAL_STEPS=13
 step_num=0
 
 # Adjusted after argument parsing (see below)
@@ -478,9 +478,55 @@ else
 fi
 
 # ================================================================
-# STEP 11 — Configure Firewall
+# STEP 11 — Install Auto-Updater
 # ================================================================
-step "Configuring firewall (ufw)"
+step "Installing auto-updater"
+
+# Write the auto-update script with the actual source path substituted
+sed "s|__SOURCE_DIR__|${SCRIPT_DIR}|g" "${SCRIPT_DIR}/auto-update.sh" > "${INSTALL_DIR}/auto-update.sh"
+chmod 755 "${INSTALL_DIR}/auto-update.sh"
+info "Auto-update script installed at ${INSTALL_DIR}/auto-update.sh"
+
+# Systemd one-shot service
+cat > "/etc/systemd/system/tunnelvault-autoupdate.service" <<EOF
+[Unit]
+Description=TunnelVault Auto-Updater
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=${INSTALL_DIR}/auto-update.sh
+User=root
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tunnelvault-update
+EOF
+
+# Systemd timer — runs every 5 minutes
+cat > "/etc/systemd/system/tunnelvault-autoupdate.timer" <<EOF
+[Unit]
+Description=TunnelVault Auto-Update Timer
+Requires=tunnelvault-autoupdate.service
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now tunnelvault-autoupdate.timer
+info "Auto-updater timer enabled (checks every 5 min)"
+
+# ================================================================
+# STEP 12 — Configure Firewall (ufw)
+# ================================================================
+step "Configuring firewall"
 
 ufw --force reset > /dev/null 2>&1
 ufw default deny incoming > /dev/null 2>&1
@@ -619,7 +665,7 @@ NGINXEOF
 fi
 
 # ================================================================
-# STEP 12 — Set Permissions & Finalize
+# STEP 13 — Set Permissions & Finalize
 # ================================================================
 step "Setting permissions"
 
@@ -684,6 +730,7 @@ fi
 echo -e "  Proxy Port:      ${CYAN}${PROXY_PORT}${NC}"
 echo -e "  SSH Gateway:     ${CYAN}Port 22${NC}"
 echo -e "  Service Status:  ${STATUS_COLOR}${STATUS_TEXT}${NC}"
+echo -e "  Auto-Updater:    ${GREEN}every 5 min (git pull)${NC}"
 echo ""
 echo -e "  ${BOLD}${YELLOW}Auth Token (save this — it won't be shown again):${NC}"
 echo -e "  ────────────────────────────────────────────────────"
@@ -692,6 +739,8 @@ echo ""
 echo -e "  ${BOLD}Useful Commands${NC}"
 echo -e "  ────────────────────────────────────────────────────"
 echo -e "  ${DIM}View logs:${NC}       journalctl -u ${SERVICE_NAME} -f"
+echo -e "  ${DIM}Update logs:${NC}     tail -f ${INSTALL_DIR}/logs/auto-update.log"
+echo -e "  ${DIM}Force update:${NC}    ${INSTALL_DIR}/auto-update.sh"
 echo -e "  ${DIM}Service status:${NC}  systemctl status ${SERVICE_NAME}"
 echo -e "  ${DIM}Restart:${NC}         systemctl restart ${SERVICE_NAME}"
 echo -e "  ${DIM}Register token:${NC}  ${INSTALL_DIR}/register_token.sh \\"
