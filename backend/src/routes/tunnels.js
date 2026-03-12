@@ -82,6 +82,23 @@ function tunnelsRouter(tunnelManager) {
     res.json({ tunnel: data });
   });
 
+  // POST /api/tunnels/:id/reboot — send reboot command to the connected client device
+  router.post('/:id/reboot', (req, res) => {
+    const tunnel = tunnelManager.getTunnel(req.params.id);
+    if (!tunnel) {
+      return res.status(404).json({ error: 'Tunnel not found' });
+    }
+    if (!tunnel.clientWs || tunnel.clientWs.readyState !== 1) {
+      return res.status(409).json({ error: 'Client is not connected' });
+    }
+    try {
+      tunnel.clientWs.send(JSON.stringify({ type: 'reboot' }));
+    } catch (err) {
+      return res.status(500).json({ error: 'Failed to send reboot command' });
+    }
+    res.status(202).json({ message: 'Reboot command sent' });
+  });
+
   // DELETE /api/tunnels/:id — remove tunnel
   router.delete('/:id', (req, res) => {
     const removed = tunnelManager.removeTunnel(req.params.id);

@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { Copy, Trash2, Power, Check, RefreshCw, ArrowRight } from 'lucide-react';
-import { getTunnels, deleteTunnel, toggleTunnel } from '../services/api';
+import { Copy, Trash2, Power, Check, RefreshCw, ArrowRight, RotateCcw } from 'lucide-react';
+import { getTunnels, deleteTunnel, toggleTunnel, rebootTunnel } from '../services/api';
 import { copyToClipboard } from '../utils/clipboard';
 
 const btnStyle = {
@@ -14,10 +14,28 @@ const btnStyle = {
 };
 
 
-function TunnelCard({ tunnel, onDelete, onToggle, onCopy }) {
+function TunnelCard({ tunnel, onDelete, onToggle, onCopy, onReboot }) {
   const isActive = tunnel.status === 'active';
   const isInactive = tunnel.status === 'inactive';
   const isPaused = tunnel.status === 'paused';
+  const [rebootStep, setRebootStep] = useState(0); // 0=idle, 1=confirm, 2=rebooting
+  const rebootTimerRef = useRef(null);
+
+  const handleRebootClick = () => {
+    if (rebootStep === 0) {
+      // First click — show confirm
+      setRebootStep(1);
+      // Auto-cancel after 4s if not confirmed
+      rebootTimerRef.current = setTimeout(() => setRebootStep(0), 4000);
+    } else if (rebootStep === 1) {
+      // Second click — execute
+      clearTimeout(rebootTimerRef.current);
+      setRebootStep(2);
+      onReboot(tunnel.id).finally(() => {
+        setTimeout(() => setRebootStep(0), 3000);
+      });
+    }
+  };
 
   return (
     <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', position: 'relative', overflow: 'hidden' }}>
@@ -105,12 +123,30 @@ function TunnelCard({ tunnel, onDelete, onToggle, onCopy }) {
           </button>
 
           {isActive ? (
-            <button
-              onClick={() => onToggle(tunnel.id)}
-              style={{ ...btnStyle.ghost, borderColor: '#3a2800', color: 'var(--amber)', padding: '4px 10px', fontSize: '9.5px' }}
-            >
-              <Power size={10} /> Stop
-            </button>
+            <>
+              <button
+                onClick={() => onToggle(tunnel.id)}
+                style={{ ...btnStyle.ghost, borderColor: '#3a2800', color: 'var(--amber)', padding: '4px 10px', fontSize: '9.5px' }}
+              >
+                <Power size={10} /> Stop
+              </button>
+              <button
+                onClick={handleRebootClick}
+                title={rebootStep === 1 ? 'Click again to confirm reboot' : 'Reboot device'}
+                style={{
+                  ...btnStyle.ghost,
+                  padding: '4px 10px', fontSize: '9.5px',
+                  ...(rebootStep === 1
+                    ? { borderColor: '#5a1212', color: '#e84040', animation: 'pulse 1s infinite' }
+                    : rebootStep === 2
+                    ? { borderColor: 'var(--border2)', color: 'var(--text-dim)', opacity: 0.5 }
+                    : { borderColor: 'var(--border2)', color: 'var(--text-dim)' }),
+                }}
+              >
+                <RotateCcw size={10} />
+                {rebootStep === 1 ? 'Confirm?' : rebootStep === 2 ? 'Rebooting…' : 'Reboot'}
+              </button>
+            </>
           ) : isInactive ? (
             <span className="flex items-center gap-1.5 border px-2.5 py-1 text-[9.5px]" style={{ borderColor: 'var(--border)', color: 'var(--text-dim)' }}>
               <span className="h-1.5 w-1.5 rounded-full animate-pulse" style={{ background: 'var(--text-dim)' }} />
@@ -219,6 +255,7 @@ export default function Tunnels() {
               onDelete={async (id) => { await deleteTunnel(id); load(); }}
               onToggle={async (id) => { await toggleTunnel(id); load(); }}
               onCopy={handleCopy}
+              onReboot={async (id) => { await rebootTunnel(id); }}
             />
           ))}
         </div>

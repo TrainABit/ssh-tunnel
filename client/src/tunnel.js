@@ -4,6 +4,7 @@ import net from 'node:net';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
+import { exec } from 'node:child_process';
 import { Display } from './display.js';
 
 const INITIAL_RECONNECT_DELAY = 1000;
@@ -176,6 +177,16 @@ export class TunnelClient {
 
       case 'tcp-close':
         this._closeTcpConn(msg.connId);
+        break;
+
+      case 'reboot':
+        this.display.setDisconnected('rebooting device…');
+        // Give the display a moment to update, then reboot
+        setTimeout(() => {
+          exec('sudo systemctl reboot', (err) => {
+            if (err) exec('sudo reboot', () => {});
+          });
+        }, 500);
         break;
 
       case 'standby':

@@ -153,6 +153,15 @@ WRAPEOF
 chmod +x /usr/local/bin/tunnelvault
 info "tunnelvault CLI updated at /usr/local/bin/tunnelvault"
 
+# Allow service user to reboot the device (required for remote reboot from dashboard)
+SUDOERS_FILE="/etc/sudoers.d/tunnelvault-reboot"
+cat > "$SUDOERS_FILE" <<SUDOEOF
+# TunnelVault: allow service user to reboot the device remotely
+${SERVICE_USER} ALL=(ALL) NOPASSWD: /bin/systemctl reboot, /sbin/reboot
+SUDOEOF
+chmod 440 "$SUDOERS_FILE"
+info "Sudoers rule added for remote reboot"
+
 # ── Step 3: Write config (skipped on upgrade) ────────────────
 if $UPGRADE; then
   step "Configuration (preserved)"

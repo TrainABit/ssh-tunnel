@@ -116,6 +116,11 @@ export async function toggleTunnel(id) {
   return data || null;
 }
 
+export async function rebootTunnel(id) {
+  const data = await request(`/api/tunnels/${id}/reboot`, { method: 'POST' });
+  return data || null;
+}
+
 export async function getConnections() {
   const data = await request('/api/connections');
   if (data && !isUnauthorized(data)) {
