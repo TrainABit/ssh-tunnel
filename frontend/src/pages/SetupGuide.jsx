@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { copyToClipboard } from '../utils/clipboard';
 import {
   Copy, Check, Terminal, Server, Key, Shield, Globe,
-  Cpu, AlertCircle, BookOpen, ChevronDown, ChevronRight, ExternalLink,
+  Cpu, AlertCircle, BookOpen, ChevronDown, ChevronRight, ExternalLink, Bell,
 } from 'lucide-react';
 
 function CodeBlock({ children, copyText }) {
@@ -130,7 +130,8 @@ const tocItems = [
   { href: '#server-install', label: 'Server Install', icon: Server },
   { href: '#client-install', label: 'Client Install', icon: Terminal },
   { href: '#quick-start', label: 'Quick Start', icon: Cpu },
-  { href: '#ssh-gateway', label: 'SSH Gateway', icon: Key },
+  { href: '#ssh-gateway', label: 'TCP Tunneling', icon: Key },
+  { href: '#webhooks', label: 'Webhooks', icon: Bell },
   { href: '#cli-commands', label: 'CLI Reference', icon: Terminal },
   { href: '#api-endpoints', label: 'API Endpoints', icon: Globe },
   { href: '#security', label: 'Security', icon: Shield },
@@ -225,22 +226,36 @@ export default function SetupGuide() {
         {/* 2. Client Installation */}
         <SectionCard icon={Terminal} title="Client Installation" id="client-install">
           <p className="text-[11px]" style={{ color: 'var(--text-dim)' }}>
-            Install the <InlineCode>tunnelvault</InlineCode> CLI on any machine that needs to create tunnels. Config is saved to <InlineCode>~/.tunnelvault/config.json</InlineCode>.
+            Install the <InlineCode>tunnelvault</InlineCode> CLI on any device (e.g. Raspberry Pi) that needs to expose a port. Creates a systemd service that auto-connects on boot and a 12h auto-updater.
           </p>
 
-          <CodeBlock copyText="bash install-client.sh --server ws://YOUR-EC2-IP:4000 --token YOUR_TOKEN">
-            <div><Kw>bash</Kw> install-client.sh \</div>
+          <CodeBlock copyText="sudo bash install-client.sh --server ws://YOUR-EC2-IP:4000 --token YOUR_TOKEN">
+            <div><Kw>sudo bash</Kw> install-client.sh \</div>
             <div>  --server <Val>ws://YOUR-EC2-IP:4000</Val> \</div>
-            <div>  --auth-token <Val>YOUR_TOKEN</Val></div>
+            <div>  --token <Val>YOUR_TOKEN</Val></div>
           </CodeBlock>
 
-          <p className="text-[11px] mt-2" style={{ color: 'var(--text-dim)' }}>
-            To uninstall: <InlineCode>bash install-client.sh --uninstall</InlineCode>
-          </p>
+          <Label>Install Options</Label>
+          <DataTable
+            headers={['Flag', 'Default', 'Description']}
+            rows={[
+              [{ text: '--server URL', mono: true, color: 'var(--blue)' }, { text: 'required' }, { text: 'Server WebSocket URL' }],
+              [{ text: '--token TOKEN', mono: true, color: 'var(--blue)' }, { text: 'required' }, { text: 'Per-client token from dashboard' }],
+              [{ text: '--port PORT', mono: true, color: 'var(--blue)' }, { text: '22' }, { text: 'Local port to tunnel' }],
+              [{ text: '--protocol PROTO', mono: true, color: 'var(--blue)' }, { text: 'tcp' }, { text: 'Tunnel protocol: tcp or http' }],
+              [{ text: '--upgrade', mono: true, color: 'var(--blue)' }, { text: '—' }, { text: 'Update files only — preserves config, schedules safe restart' }],
+            ]}
+          />
+
+          <Label>Upgrade (safe over live tunnel)</Label>
+          <CodeBlock copyText="git pull && sudo bash install-client.sh --upgrade">
+            <div><Kw>git pull</Kw> <Cmt>&amp;&amp;</Cmt> <Kw>sudo bash</Kw> install-client.sh --upgrade</div>
+            <div><Cmt># Files update live; service restarts 30s after script exits</Cmt></div>
+          </CodeBlock>
 
           <Label>Config Priority</Label>
           <p className="text-[11px]" style={{ color: 'var(--text-dim)' }}>
-            CLI flag → env var (<InlineCode>TUNNELVAULT_SERVER</InlineCode>, <InlineCode>TUNNELVAULT_AUTH_TOKEN</InlineCode>) → config.json → defaults.
+            CLI flag → env var (<InlineCode>TUNNELVAULT_SERVER</InlineCode>, <InlineCode>TUNNELVAULT_AUTH_TOKEN</InlineCode>) → <InlineCode>~/.tunnelvault/config.json</InlineCode> → defaults.
           </p>
         </SectionCard>
 
@@ -269,9 +284,9 @@ export default function SetupGuide() {
             </Step>
 
             <Step number="3" title="Install the Client">
-              <p>Run the client installer on your local machine.</p>
-              <CodeBlock copyText="bash install-client.sh --server ws://YOUR-EC2-IP:4000 --token YOUR_TOKEN">
-                <div><Kw>bash</Kw> install-client.sh --server <Val>ws://YOUR-EC2-IP:4000</Val> --auth-token <Val>YOUR_TOKEN</Val></div>
+              <p>Run the client installer on the device you want to access.</p>
+              <CodeBlock copyText="sudo bash install-client.sh --server ws://YOUR-EC2-IP:4000 --token YOUR_TOKEN">
+                <div><Kw>sudo bash</Kw> install-client.sh --server <Val>ws://YOUR-EC2-IP:4000</Val> --token <Val>YOUR_TOKEN</Val></div>
               </CodeBlock>
             </Step>
 
@@ -298,6 +313,7 @@ export default function SetupGuide() {
           <ol className="space-y-1.5 text-[11px] list-decimal list-inside" style={{ color: 'var(--text-dim)' }}>
             <li>Client connects to server WebSocket at <InlineCode>ws://host:4000/ws</InlineCode> with auth token</li>
             <li>Server allocates a TCP port (10000–10999) and starts a listener</li>
+            <li>The port is persisted — reconnects and reboots always reuse the same port</li>
             <li>Incoming TCP connections are multiplexed as JSON frames over the WebSocket</li>
             <li>Client forwards the data to the local target (e.g., <InlineCode>localhost:22</InlineCode>)</li>
             <li>Connection is tracked in real-time on the Connections and Sessions pages</li>
@@ -319,7 +335,39 @@ export default function SetupGuide() {
           </CodeBlock>
         </SectionCard>
 
-        {/* 5. CLI Commands */}
+        {/* 5. Webhooks */}
+        <SectionCard icon={Bell} title="Webhook Notifications" id="webhooks">
+          <p className="text-[11px]" style={{ color: 'var(--text-dim)' }}>
+            Receive push notifications when tunnels connect or disconnect. Set two env vars in <InlineCode>backend/.env</InlineCode> on the server, then restart the service.
+          </p>
+
+          <Label>Configuration (.env)</Label>
+          <CodeBlock>
+            <div><Cmt># Webhook URL — the destination to POST events to</Cmt></div>
+            <div><Kw>WEBHOOK_URL</Kw>=<Val>https://ntfy.sh/your-topic</Val></div>
+            <div />
+            <div><Cmt># Type: ntfy | slack | discord | json</Cmt></div>
+            <div><Kw>WEBHOOK_TYPE</Kw>=<Val>ntfy</Val></div>
+          </CodeBlock>
+
+          <Label>Supported Types</Label>
+          <DataTable
+            headers={['Type', 'WEBHOOK_URL', 'Payload']}
+            rows={[
+              [{ text: 'ntfy', mono: true, color: 'var(--green)' }, { text: 'https://ntfy.sh/your-topic' }, { text: 'Plain text push notification' }],
+              [{ text: 'slack', mono: true, color: 'var(--green)' }, { text: 'Slack Incoming Webhook URL' }, { text: '{ text }' }],
+              [{ text: 'discord', mono: true, color: 'var(--green)' }, { text: 'Discord Webhook URL' }, { text: '{ content }' }],
+              [{ text: 'json', mono: true, color: 'var(--green)' }, { text: 'Any HTTPS endpoint' }, { text: '{ event, text, tunnelName, tunnelId, allocatedPort, timestamp }' }],
+            ]}
+          />
+
+          <Label>Apply Changes</Label>
+          <CodeBlock copyText="sudo systemctl restart tunnelvault">
+            <div><Kw>sudo systemctl</Kw> restart <Val>tunnelvault</Val></div>
+          </CodeBlock>
+        </SectionCard>
+
+        {/* 6. CLI Commands */}
         <SectionCard icon={Terminal} title="CLI Commands Reference" id="cli-commands">
           <DataTable
             headers={['Command', 'Description', 'Example']}
@@ -443,7 +491,7 @@ export default function SetupGuide() {
               Verify the client is running (<InlineCode>tunnelvault status</InlineCode>), the tunnel shows as active in the dashboard, and the allocated port is correct. Ensure the local SSH service is running on the client machine.
             </TroubleshootItem>
             <TroubleshootItem question="Tunnel stops working after server restart">
-              The client will auto-reconnect (if installed as a service). Check the tunnel is re-registered via the dashboard. If using systemd: <InlineCode>sudo systemctl status tunnelvault-client</InlineCode>.
+              The client auto-reconnects and reclaims the same tunnel and port (identity is stored in <InlineCode>~/.tunnelvault/state.json</InlineCode>). If the server DB was wiped, the client falls back to a fresh registration with a new port. Check status: <InlineCode>sudo systemctl status tunnelvault-client</InlineCode>.
             </TroubleshootItem>
             <TroubleshootItem question="Dashboard shows 'Frontend not built yet'">
               Run <InlineCode>npm run build</InlineCode> from the project root to build the frontend into <InlineCode>frontend/dist/</InlineCode>. The API serves the dashboard from that directory.

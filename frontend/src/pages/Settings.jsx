@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Copy, Eye, EyeOff, Save, Check, LogOut } from 'lucide-react';
+import { Copy, Eye, EyeOff, Save, Check, LogOut, Bell } from 'lucide-react';
 import { getAuthToken, setAuthToken, clearAuthToken } from '../services/api';
 import { copyToClipboard } from '../utils/clipboard';
 
@@ -107,9 +107,28 @@ export default function Settings() {
             <Row label="Database" value="SQLite (data/tunnelvault.db)" />
             <Row label="Domain" value="Set via DOMAIN in .env" />
             <Row label="TLS" value="Managed by Nginx" />
+            <Row label="Auto-updater" value="Every 72h via systemd timer" />
           </div>
           <p className="mt-3 text-[10.5px]" style={{ color: 'var(--text-dim)' }}>
             To change server settings, edit the .env file on the server and restart the service.
+          </p>
+        </Card>
+
+        {/* Webhook Notifications */}
+        <Card title="Webhook Notifications">
+          <div className="flex items-start gap-3 mb-3">
+            <Bell size={13} style={{ color: 'var(--green)', marginTop: '1px', flexShrink: 0 }} />
+            <p className="text-[10.5px]" style={{ color: 'var(--text-dim)' }}>
+              Receive push alerts when tunnels connect or disconnect. Configure in <code style={{ background: 'var(--bg)', border: '1px solid var(--border2)', padding: '1px 5px', fontSize: '10px', color: 'var(--blue)' }}>backend/.env</code> on the server.
+            </p>
+          </div>
+          <div style={{ background: 'var(--bg)', border: '1px solid var(--border2)', padding: '10px 14px', fontSize: '11px', lineHeight: 1.8 }}>
+            <div><span style={{ color: 'var(--text-dim)' }}># Set one of: ntfy | slack | discord | json</span></div>
+            <div><span style={{ color: 'var(--blue)' }}>WEBHOOK_URL</span>=<span style={{ color: 'var(--green)' }}>https://ntfy.sh/your-topic</span></div>
+            <div><span style={{ color: 'var(--blue)' }}>WEBHOOK_TYPE</span>=<span style={{ color: 'var(--green)' }}>ntfy</span></div>
+          </div>
+          <p className="mt-2 text-[10px]" style={{ color: 'var(--text-dim)' }}>
+            Then: <code style={{ background: 'var(--bg)', border: '1px solid var(--border2)', padding: '1px 5px', fontSize: '10px', color: 'var(--text-mid)' }}>sudo systemctl restart tunnelvault</code>
           </p>
         </Card>
       </div>
