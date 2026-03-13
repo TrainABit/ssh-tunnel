@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { RefreshCw, Download, Search } from 'lucide-react';
 import { getSessions } from '../services/api';
+import { formatGeo } from '../utils/geo';
 
 function formatTimestamp(ts) {
   if (!ts || typeof ts !== 'string') return '–';
@@ -177,7 +178,7 @@ export default function Sessions() {
           <table className="w-full" style={{ borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ borderBottom: '1px solid var(--border)', background: 'var(--surface2)' }}>
-                {['Client', 'From IP', 'Port', 'Connected', 'Duration', 'Status'].map(h => (
+                {['Client', 'From IP', 'Location', 'Port', 'Connected', 'Duration', 'Status'].map(h => (
                   <th key={h} className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide whitespace-nowrap" style={{ color: 'var(--text-dim)' }}>
                     {h}
                   </th>
@@ -187,12 +188,13 @@ export default function Sessions() {
             <tbody>
               {pageSessions.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-5 py-14 text-center text-sm" style={{ color: 'var(--text-dim)' }}>
+                  <td colSpan={7} className="px-5 py-14 text-center text-sm" style={{ color: 'var(--text-dim)' }}>
                     No sessions found
                   </td>
                 </tr>
               ) : pageSessions.map((s) => {
                 const isLive = s.disconnected_at === null;
+                const geo = formatGeo(s.country_code, s.city);
                 return (
                   <tr
                     key={s.id}
@@ -216,6 +218,9 @@ export default function Sessions() {
                     </td>
                     <td className="px-5 py-3 text-sm whitespace-nowrap" style={{ color: 'var(--text-mid)', fontFamily: 'var(--font-mono)' }}>
                       {s.client_ip || '–'}
+                    </td>
+                    <td className="px-5 py-3 text-sm whitespace-nowrap" style={{ color: 'var(--text-dim)' }}>
+                      {geo || <span style={{ color: 'var(--border2)' }}>–</span>}
                     </td>
                     <td className="px-5 py-3 text-sm whitespace-nowrap" style={{ color: 'var(--text-mid)', fontFamily: 'var(--font-mono)' }}>
                       {s.target_port ? `:${s.target_port}` : '–'}

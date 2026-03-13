@@ -31,6 +31,7 @@ function sessionsRouter(db) {
     const sql = `
       SELECT
         s.id, s.token, s.client_ip,
+        s.country, s.country_code, s.city,
         s.target_ip, s.target_port,
         s.connected_at, s.disconnected_at,
         t.label AS token_label

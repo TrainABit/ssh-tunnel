@@ -169,6 +169,17 @@ export async function deleteToken(token) {
 
 // ── SSH Session endpoints ──
 
+// ── SSH WebSocket URL ──
+
+export function getSshWsUrl(tunnelId) {
+  const token = getAuthToken();
+  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  const host = window.location.host;
+  const params = new URLSearchParams({ tunnelId });
+  if (token) params.set('auth_token', token);
+  return `${proto}://${host}/ws/ssh?${params.toString()}`;
+}
+
 export async function getSessions(activeOnly = false) {
   const url = activeOnly ? '/api/sessions?active=1' : '/api/sessions';
   const data = await request(url);

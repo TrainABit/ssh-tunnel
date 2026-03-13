@@ -30,10 +30,13 @@ function tokensRouter(db) {
   const router = Router();
 
   // GET /api/tokens — list all tokens with session counts and last_connected
+  // NOTE: private_key is intentionally excluded from list response
   router.get('/', (_req, res) => {
     const tokens = db.query(`
       SELECT
-        t.*,
+        t.id, t.token, t.label, t.target_ip, t.target_port,
+        t.public_key, t.linux_user, t.created_at, t.last_seen, t.active,
+        (t.private_key IS NOT NULL AND t.private_key != '') AS has_private_key,
         COUNT(s.id) AS session_count,
         MAX(s.connected_at) AS last_connected
       FROM tokens t
@@ -114,7 +117,9 @@ function tokensRouter(db) {
       [req.params.token]
     );
 
-    res.json({ ...tokenRow, sessions });
+    // Strip private_key, expose only boolean flag
+    const { private_key, ...safeToken } = tokenRow;
+    res.json({ ...safeToken, has_private_key: !!private_key, sessions });
   });
 
   // PATCH /api/tokens/:token — update token fields
@@ -124,7 +129,7 @@ function tokensRouter(db) {
       return res.status(400).json({ error: 'Invalid token format' });
     }
 
-    const allowed = ['target_ip', 'target_port', 'label', 'active', 'public_key'];
+    const allowed = ['target_ip', 'target_port', 'label', 'active', 'public_key', 'private_key'];
     const sets = [];
     const values = [];
 
@@ -150,6 +155,12 @@ function tokensRouter(db) {
           }
           if (pk.includes('\n') || pk.includes('\r')) {
             return res.status(400).json({ error: 'public_key must not contain newlines' });
+          }
+        }
+        if (field === 'private_key') {
+          const pk = String(req.body[field]).trim();
+          if (pk && !pk.startsWith('-----BEGIN')) {
+            return res.status(400).json({ error: 'private_key must be a PEM-format private key' });
           }
         }
         sets.push(`${field} = ?`);

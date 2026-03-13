@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { getConnections, getTunnels } from '../services/api';
+import { formatGeo } from '../utils/geo';
 
 function formatDuration(startTime) {
   if (!startTime) return '--';
@@ -112,7 +113,7 @@ export default function Connections() {
           <table className="w-full" style={{ borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ borderBottom: '1px solid var(--border)', background: 'var(--surface2)' }}>
-                {['Source IP', 'Tunnel', 'Duration', 'Bytes'].map(h => (
+                {['Source IP', 'Location', 'Tunnel', 'Duration', 'Bytes'].map(h => (
                   <th key={h} className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide whitespace-nowrap" style={{ color: 'var(--text-dim)' }}>
                     {h}
                   </th>
@@ -122,11 +123,13 @@ export default function Connections() {
             <tbody>
               {filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="px-5 py-14 text-center text-sm" style={{ color: 'var(--text-dim)' }}>
+                  <td colSpan={5} className="px-5 py-14 text-center text-sm" style={{ color: 'var(--text-dim)' }}>
                     No active connections
                   </td>
                 </tr>
-              ) : filtered.map((conn) => (
+              ) : filtered.map((conn) => {
+                const geo = formatGeo(conn.country_code, conn.city);
+                return (
                 <tr
                   key={conn.connectionId}
                   style={{ borderBottom: '1px solid var(--border)' }}
@@ -134,6 +137,9 @@ export default function Connections() {
                   onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
                 >
                   <td className="px-5 py-3 text-sm" style={{ color: 'var(--text)', fontFamily: 'var(--font-mono)' }}>{conn.sourceIp}</td>
+                  <td className="px-5 py-3 text-sm whitespace-nowrap" style={{ color: 'var(--text-dim)' }}>
+                    {geo || <span style={{ color: 'var(--border2)' }}>–</span>}
+                  </td>
                   <td className="px-5 py-3">
                     <span style={{
                       display: 'inline-flex', alignItems: 'center', gap: '5px',
@@ -147,7 +153,8 @@ export default function Connections() {
                   <td className="px-5 py-3 text-sm" style={{ color: 'var(--text-mid)' }}>{formatDuration(conn.startTime)}</td>
                   <td className="px-5 py-3 text-sm" style={{ color: 'var(--text-mid)' }}>{formatBytes((conn.bytesIn || 0) + (conn.bytesOut || 0))}</td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>

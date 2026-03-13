@@ -340,6 +340,7 @@ class TunnelManager extends EventEmitter {
       bytesTransferred: t.bytesTransferred,
       protocol: t.protocol || 'http',
       allocatedPort: t.allocatedPort || null,
+      clientToken: t.clientToken || null,
       // ownerSecret intentionally excluded
     };
   }

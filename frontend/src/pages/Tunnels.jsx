@@ -1,7 +1,8 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { Copy, Trash2, Power, Check, RefreshCw, ArrowRight, RotateCcw } from 'lucide-react';
+import { Copy, Trash2, Power, Check, RefreshCw, ArrowRight, RotateCcw, Terminal } from 'lucide-react';
 import { getTunnels, deleteTunnel, toggleTunnel, rebootTunnel } from '../services/api';
 import { copyToClipboard } from '../utils/clipboard';
+import SshTerminalModal from '../components/SshTerminalModal';
 
 const btnBase = {
   display: 'inline-flex', alignItems: 'center', gap: '5px',
@@ -17,7 +18,7 @@ const btn = {
   active: { ...btnBase, borderColor: 'var(--accent-dim)', color: 'var(--accent)' },
 };
 
-function TunnelCard({ tunnel, onDelete, onToggle, onCopy, onReboot }) {
+function TunnelCard({ tunnel, onDelete, onToggle, onCopy, onReboot, onSsh }) {
   const isActive = tunnel.status === 'active';
   const isInactive = tunnel.status === 'inactive';
   const isPaused = tunnel.status === 'paused';
@@ -133,6 +134,11 @@ function TunnelCard({ tunnel, onDelete, onToggle, onCopy, onReboot }) {
 
           {isActive ? (
             <>
+              {tunnel.protocol === 'tcp' && tunnel.allocatedPort && (
+                <button onClick={() => onSsh(tunnel)} style={btn.active}>
+                  <Terminal size={11} /> SSH
+                </button>
+              )}
               <button onClick={() => onToggle(tunnel.id)} style={btn.amber}>
                 <Power size={11} /> Stop
               </button>
@@ -181,6 +187,7 @@ export default function Tunnels() {
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [sshTunnel, setSshTunnel] = useState(null);
   const intervalRef = useRef(null);
 
   const load = useCallback(async (showSpinner) => {
@@ -213,6 +220,12 @@ export default function Tunnels() {
 
   return (
     <div className="space-y-5">
+      {sshTunnel && (
+        <SshTerminalModal
+          tunnel={sshTunnel}
+          onClose={() => setSshTunnel(null)}
+        />
+      )}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-xl font-semibold" style={{ color: 'var(--text)' }}>Tunnels</h1>
@@ -270,6 +283,7 @@ export default function Tunnels() {
               onToggle={async (id) => { await toggleTunnel(id); load(); }}
               onCopy={handleCopy}
               onReboot={async (id) => { await rebootTunnel(id); }}
+              onSsh={(t) => setSshTunnel(t)}
             />
           ))}
         </div>

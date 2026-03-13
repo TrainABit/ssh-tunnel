@@ -62,6 +62,10 @@ try { db.exec(`ALTER TABLE sessions ADD COLUMN target_ip TEXT`); } catch {}
 try { db.exec(`ALTER TABLE sessions ADD COLUMN target_port INTEGER`); } catch {}
 try { db.exec(`ALTER TABLE tunnels ADD COLUMN owner_secret TEXT`); } catch {}
 try { db.exec(`ALTER TABLE tunnels ADD COLUMN preferred_port INTEGER`); } catch {}
+try { db.exec(`ALTER TABLE sessions ADD COLUMN country TEXT`); } catch {}
+try { db.exec(`ALTER TABLE sessions ADD COLUMN country_code TEXT`); } catch {}
+try { db.exec(`ALTER TABLE sessions ADD COLUMN city TEXT`); } catch {}
+try { db.exec(`ALTER TABLE tokens ADD COLUMN private_key TEXT NOT NULL DEFAULT ''`); } catch {}
 
 // ─── Helper functions ─────────────────────────────────────
 

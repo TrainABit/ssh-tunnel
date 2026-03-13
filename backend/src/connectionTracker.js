@@ -33,6 +33,9 @@ class ConnectionTracker {
       startTime: new Date().toISOString(),
       bytesIn: 0,
       bytesOut: 0,
+      country: null,
+      country_code: null,
+      city: null,
     });
     return id;
   }
@@ -45,6 +48,18 @@ class ConnectionTracker {
     if (conn) {
       conn.bytesIn += bytesIn;
       conn.bytesOut += bytesOut;
+    }
+  }
+
+  /**
+   * Update geo fields for an active connection.
+   */
+  updateGeo(connectionId, geo) {
+    const conn = this.activeConnections.get(connectionId);
+    if (conn && geo) {
+      conn.country = geo.country;
+      conn.country_code = geo.country_code;
+      conn.city = geo.city;
     }
   }
 

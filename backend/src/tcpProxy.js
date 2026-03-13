@@ -1,6 +1,7 @@
 const net = require('net');
 const { v4: uuidv4 } = require('uuid');
 const { createLogger } = require('./logger');
+const { lookupGeo } = require('./geoip');
 const log = createLogger('tcp-proxy');
 
 class TcpProxy {
@@ -75,6 +76,26 @@ class TcpProxy {
       }
 
       this.connMeta.set(connId, { trackId, sessionId });
+
+      // Fire-and-forget geo lookup — does not block connection setup
+      if (sessionId || trackId) {
+        const capturedSessionId = sessionId;
+        const capturedTrackId = trackId;
+        lookupGeo(socket.remoteAddress).then(geo => {
+          if (!geo) return;
+          if (capturedSessionId && this.db) {
+            try {
+              this.db.run(
+                `UPDATE sessions SET country=?, country_code=?, city=? WHERE id=?`,
+                [geo.country, geo.country_code, geo.city, capturedSessionId]
+              );
+            } catch {}
+          }
+          if (capturedTrackId && this.connectionTracker) {
+            this.connectionTracker.updateGeo(capturedTrackId, geo);
+          }
+        }).catch(() => {});
+      }
 
       log.debug('TCP connection opened', { tunnelId, connId });
 

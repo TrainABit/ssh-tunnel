@@ -18,6 +18,7 @@ const TunnelManager = require('./tunnelManager');
 const ConnectionTracker = require('./connectionTracker');
 const TcpProxy = require('./tcpProxy');
 const { initWebSocket } = require('./wsHandler');
+const { initSshWebSocket } = require('./sshWsHandler');
 const { createProxyServer } = require('./proxyServer');
 const tunnelsRouter = require('./routes/tunnels');
 const connectionsRouter = require('./routes/connections');
@@ -82,7 +83,7 @@ app.use((_req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
-  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:");
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' ws: wss:;");
   if (process.env.TLS_CERT) {
     res.setHeader('Strict-Transport-Security', 'max-age=63072000; includeSubDomains');
   }
@@ -201,6 +202,7 @@ if (tlsEnabled) {
   server = http.createServer(app);
 }
 initWebSocket(server, tunnelManager, connectionTracker, db, tcpProxy);
+initSshWebSocket(server, tunnelManager, db, AUTH_TOKEN);
 
 // ─── Proxy server ───────────────────────────────────────
 const proxyServer = createProxyServer(tunnelManager, connectionTracker);
