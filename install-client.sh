@@ -30,15 +30,17 @@ LOCAL_PORT=22
 PROTOCOL="tcp"
 SERVICE_USER="${SUDO_USER:-${USER:-pi}}"
 UPGRADE=false
+EXTRA_PORTS=()  # additional ports: "port:protocol:name" e.g. "8080:tcp:dashboard"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --server)   SERVER_URL="$2";   shift 2 ;;
-    --token)    AUTH_TOKEN="$2";   shift 2 ;;
-    --port)     LOCAL_PORT="$2";   shift 2 ;;
-    --protocol) PROTOCOL="$2";     shift 2 ;;
-    --user)     SERVICE_USER="$2"; shift 2 ;;
-    --upgrade)  UPGRADE=true;      shift   ;;
+    --server)     SERVER_URL="$2";          shift 2 ;;
+    --token)      AUTH_TOKEN="$2";          shift 2 ;;
+    --port)       LOCAL_PORT="$2";          shift 2 ;;
+    --protocol)   PROTOCOL="$2";            shift 2 ;;
+    --user)       SERVICE_USER="$2";        shift 2 ;;
+    --extra-port) EXTRA_PORTS+=("$2");      shift 2 ;;
+    --upgrade)    UPGRADE=true;             shift   ;;
     -h|--help) head -n 16 "$0" | tail -n +2 | sed 's/^# \?//'; exit 0 ;;
     *) echo -e "${RED}Unknown option: $1${NC}"; exit 1 ;;
   esac
@@ -169,12 +171,23 @@ if $UPGRADE; then
 else
   step "Writing configuration"
   mkdir -p "$CONFIG_DIR"
+
+  # Build tunnels JSON array
+  TUNNELS_JSON="    {\"port\": ${LOCAL_PORT}, \"protocol\": \"${PROTOCOL}\", \"name\": \"ssh\"}"
+  for entry in "${EXTRA_PORTS[@]}"; do
+    IFS=':' read -r ep_port ep_proto ep_name <<< "$entry"
+    ep_proto="${ep_proto:-tcp}"
+    ep_name="${ep_name:-port-${ep_port}}"
+    TUNNELS_JSON+=",\n    {\"port\": ${ep_port}, \"protocol\": \"${ep_proto}\", \"name\": \"${ep_name}\"}"
+  done
+
   cat > "${CONFIG_DIR}/config.json" <<CFGEOF
 {
   "server": "${SERVER_URL}",
   "auth_token": "${AUTH_TOKEN}",
-  "protocol": "${PROTOCOL}",
-  "port": ${LOCAL_PORT}
+  "tunnels": [
+$(printf '%b' "$TUNNELS_JSON")
+  ]
 }
 CFGEOF
   chmod 600 "${CONFIG_DIR}/config.json"
@@ -203,7 +216,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=${SERVICE_USER}
-ExecStart=/usr/local/bin/tunnelvault connect ${LOCAL_PORT} --protocol ${PROTOCOL} --server ${SERVER_URL} --auth-token ${AUTH_TOKEN}
+ExecStart=/usr/local/bin/tunnelvault connect --server ${SERVER_URL} --auth-token ${AUTH_TOKEN}
 Restart=always
 RestartSec=10
 StandardOutput=journal

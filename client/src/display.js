@@ -32,6 +32,18 @@ export class Display {
     this.status = 'online';
     this.publicUrl = publicUrl;
     this.localTarget = localTarget;
+    this.tunnelLines = null;
+    this.stopSpinner(true, 'Connected to tunnel server');
+    this.render();
+    this.startLiveRender();
+  }
+
+  // Multi-tunnel: lines = [{name, port, public, status?}]
+  setConnectedMulti(lines) {
+    this.status = 'online';
+    this.tunnelLines = lines;
+    this.publicUrl = '';
+    this.localTarget = '';
     this.stopSpinner(true, 'Connected to tunnel server');
     this.render();
     this.startLiveRender();
@@ -106,8 +118,15 @@ export class Display {
     lines.push(this.boxLine(`${chalk.cyan.bold('TunnelVault')}                         ${chalk.dim('v1.0.0')}`));
     lines.push(mid);
     lines.push(this.boxLine(`${chalk.dim('Status:')}    ${statusColor}`));
-    lines.push(this.boxLine(`${chalk.dim('Public:')}    ${chalk.bold(this.publicUrl || '—')}`));
-    lines.push(this.boxLine(`${chalk.dim('Forward:')}   ${this.localTarget || '—'}`));
+    if (this.tunnelLines && this.tunnelLines.length > 0) {
+      for (const t of this.tunnelLines) {
+        const pub = t.public ? chalk.bold(t.public) : chalk.dim(t.status || 'connecting…');
+        lines.push(this.boxLine(`${chalk.dim(this.pad(t.name, 12))}  :${t.port} → ${pub}`));
+      }
+    } else {
+      lines.push(this.boxLine(`${chalk.dim('Public:')}    ${chalk.bold(this.publicUrl || '—')}`));
+      lines.push(this.boxLine(`${chalk.dim('Forward:')}   ${this.localTarget || '—'}`));
+    }
     lines.push(mid);
     lines.push(this.boxLine(chalk.dim('Connections')));
 

@@ -67,19 +67,13 @@ function authHeaders() {
 }
 
 program
-  .command('connect <port>')
-  .description('Connect a local port to the tunnel server')
-  .option('-n, --name <name>', 'tunnel name')
-  .option('-s, --subdomain <sub>', 'requested subdomain')
+  .command('connect [port]')
+  .description('Connect local port(s) to the tunnel server. Omit port to use tunnels[] from config.')
+  .option('-n, --name <name>', 'tunnel name (single-port mode)')
+  .option('-s, --subdomain <sub>', 'requested subdomain (single-port mode)')
   .option('--server <url>', 'tunnel server URL', DEFAULT_WS_SERVER)
-  .option('--protocol <proto>', 'tunnel protocol: http or tcp', 'http')
+  .option('--protocol <proto>', 'tunnel protocol: http or tcp', 'tcp')
   .action((port, options) => {
-    const portNum = parseInt(port, 10);
-    if (isNaN(portNum) || portNum < 1 || portNum > 65535) {
-      console.error(chalk.red('Error: port must be a number between 1 and 65535'));
-      process.exit(1);
-    }
-
     const serverUrl = resolve(
       options.server,
       'TUNNELVAULT_SERVER',
@@ -87,17 +81,43 @@ program
       DEFAULT_WS_SERVER,
       DEFAULT_WS_SERVER,
     );
+    const authToken = resolve(program.opts().authToken, 'TUNNELVAULT_AUTH_TOKEN', 'auth_token', undefined, undefined);
 
-    const client = new TunnelClient({
-      port: portNum,
-      name: options.name,
-      subdomain: options.subdomain,
-      server: serverUrl,
-      authToken: resolve(program.opts().authToken, 'TUNNELVAULT_AUTH_TOKEN', 'auth_token', undefined, undefined),
-      protocol: options.protocol === 'tcp' ? 'tcp' : 'http',
-    });
+    let clientOptions;
 
-    // Graceful shutdown
+    if (port) {
+      // Single-port mode (legacy / manual)
+      const portNum = parseInt(port, 10);
+      if (isNaN(portNum) || portNum < 1 || portNum > 65535) {
+        console.error(chalk.red('Error: port must be a number between 1 and 65535'));
+        process.exit(1);
+      }
+      clientOptions = {
+        port: portNum,
+        name: options.name,
+        subdomain: options.subdomain,
+        server: serverUrl,
+        authToken,
+        protocol: options.protocol === 'http' ? 'http' : 'tcp',
+      };
+    } else {
+      // Multi-tunnel mode — read tunnels[] from config
+      const tunnels = config.tunnels;
+      if (!tunnels || tunnels.length === 0) {
+        console.error(chalk.red('Error: no port given and no tunnels[] found in ~/.tunnelvault/config.json'));
+        console.error(chalk.dim('  Either run: tunnelvault connect <port>'));
+        console.error(chalk.dim('  Or add tunnels to your config.json'));
+        process.exit(1);
+      }
+      clientOptions = {
+        tunnels,
+        server: serverUrl,
+        authToken,
+      };
+    }
+
+    const client = new TunnelClient(clientOptions);
+
     const shutdown = () => {
       console.log(chalk.dim('\n  Shutting down...'));
       client.disconnect();

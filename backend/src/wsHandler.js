@@ -143,6 +143,7 @@ function initWebSocket(server, tunnelManager, connectionTracker, db, tcpProxy) {
             ownerSecret: tunnel.ownerSecret,
             protocol,
             allocatedPort,
+            localPort: config.localPort,
           }));
 
           notify('tunnel:connected', { tunnelName: tunnel.name, tunnelId: tunnel.id, allocatedPort });
@@ -183,6 +184,7 @@ function initWebSocket(server, tunnelManager, connectionTracker, db, tcpProxy) {
               tunnelId: msg.tunnelId,
               publicUrl: tunnel.publicUrl,
               allocatedPort,
+              localPort: tunnel.localPort,
             }));
             notify('tunnel:connected', { tunnelName: tunnel.name, tunnelId: tunnel.id, allocatedPort });
             log.info('Tunnel reconnected', { tunnelId: msg.tunnelId, allocatedPort });

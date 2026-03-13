@@ -2,7 +2,7 @@ import WebSocket from 'ws';
 import http from 'node:http';
 import net from 'node:net';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { exec } from 'node:child_process';
 import { Display } from './display.js';
@@ -33,9 +33,23 @@ function saveState(state) {
 
 export class TunnelClient {
   constructor(options) {
-    this.localPort = options.port;
-    this.name = options.name || '';
-    this.subdomain = options.subdomain || '';
+    // Support both single-tunnel (legacy) and multi-tunnel config
+    if (options.tunnels && options.tunnels.length > 0) {
+      this.tunnels = options.tunnels.map(t => ({
+        port: t.port,
+        protocol: t.protocol || 'tcp',
+        name: t.name || `tunnel-${t.port}`,
+        subdomain: t.subdomain || '',
+      }));
+    } else {
+      this.tunnels = [{
+        port: options.port,
+        protocol: options.protocol || 'http',
+        name: options.name || '',
+        subdomain: options.subdomain || '',
+      }];
+    }
+
     this.serverUrl = options.server || 'ws://localhost:4000';
     this.authToken = options.authToken || '';
     this.ws = null;
@@ -44,14 +58,16 @@ export class TunnelClient {
     this.reconnectAttempt = 0;
     this.shouldReconnect = true;
     this.heartbeatTimer = null;
-    this.publicUrl = '';
-    this.protocol = options.protocol || 'http';
-    this.tcpConns = new Map();
+    this.tcpConns = new Map(); // connId -> socket
 
-    // Persistent tunnel identity — reused across reconnects and reboots
-    const state = loadState();
-    this.tunnelId = state.tunnelId || null;
-    this.ownerSecret = state.ownerSecret || null;
+    // Per-tunnel state keyed by port: { tunnelId, ownerSecret, publicUrl, allocatedPort }
+    const saved = loadState();
+    // Migrate legacy single-tunnel state
+    if (saved.tunnelId && !saved.byPort) {
+      this.stateByPort = { [this.tunnels[0].port]: { tunnelId: saved.tunnelId, ownerSecret: saved.ownerSecret } };
+    } else {
+      this.stateByPort = saved.byPort || {};
+    }
   }
 
   connect() {
@@ -81,22 +97,24 @@ export class TunnelClient {
       this.reconnectAttempt = 0;
       this._resetHeartbeat();
 
-      // If we have a saved tunnel identity, try to reconnect to the same tunnel
-      // (preserves port assignment); otherwise register fresh
-      if (this.tunnelId && this.ownerSecret) {
-        this.ws.send(JSON.stringify({
-          type: 'reconnect',
-          tunnelId: this.tunnelId,
-          ownerSecret: this.ownerSecret,
-        }));
-      } else {
-        this.ws.send(JSON.stringify({
-          type: 'register',
-          name: this.name,
-          localPort: this.localPort,
-          subdomain: this.subdomain,
-          protocol: this.protocol,
-        }));
+      // Register or reconnect each tunnel
+      for (const t of this.tunnels) {
+        const saved = this.stateByPort[t.port];
+        if (saved?.tunnelId && saved?.ownerSecret) {
+          this.ws.send(JSON.stringify({
+            type: 'reconnect',
+            tunnelId: saved.tunnelId,
+            ownerSecret: saved.ownerSecret,
+          }));
+        } else {
+          this.ws.send(JSON.stringify({
+            type: 'register',
+            name: t.name,
+            localPort: t.port,
+            subdomain: t.subdomain,
+            protocol: t.protocol,
+          }));
+        }
       }
     });
 
@@ -111,14 +129,8 @@ export class TunnelClient {
       this._handleMessage(msg);
     });
 
-    this.ws.on('ping', () => {
-      this._resetHeartbeat();
-      // ws library auto-responds with pong
-    });
-
-    this.ws.on('pong', () => {
-      this._resetHeartbeat();
-    });
+    this.ws.on('ping', () => { this._resetHeartbeat(); });
+    this.ws.on('pong', () => { this._resetHeartbeat(); });
 
     this.ws.on('close', (code, reason) => {
       this._clearHeartbeat();
@@ -130,40 +142,43 @@ export class TunnelClient {
     this.ws.on('error', (err) => {
       this._clearHeartbeat();
       this.display.stopSpinner(false, `Connection error: ${err.message}`);
-      // The 'close' event will fire after this, triggering reconnect
     });
   }
 
   _handleMessage(msg) {
     switch (msg.type) {
-      case 'registered':
-        this.publicUrl = msg.publicUrl;
-        // Persist tunnel identity so we can reconnect to the same tunnel after reboot
-        this.tunnelId = msg.tunnelId;
-        this.ownerSecret = msg.ownerSecret;
-        saveState({ tunnelId: this.tunnelId, ownerSecret: this.ownerSecret });
-        if (msg.protocol === 'tcp' && msg.allocatedPort) {
-          this.display.setConnected(`SSH port ${msg.allocatedPort}`, `localhost:${this.localPort}`);
-        } else {
-          this.display.setConnected(msg.publicUrl, `http://localhost:${this.localPort}`);
-        }
+      case 'registered': {
+        // Match by localPort echoed from server
+        const port = msg.localPort;
+        this.stateByPort[port] = {
+          tunnelId: msg.tunnelId,
+          ownerSecret: msg.ownerSecret,
+          publicUrl: msg.publicUrl,
+          allocatedPort: msg.allocatedPort,
+        };
+        this._persistState();
+        const label = msg.protocol === 'tcp' && msg.allocatedPort
+          ? `port ${msg.allocatedPort}`
+          : msg.publicUrl;
+        this.display.setConnectedMulti(this._buildTunnelLines());
         break;
+      }
 
-      case 'reconnected':
-        this.publicUrl = msg.publicUrl;
-        if (msg.allocatedPort) {
-          this.display.setConnected(`SSH port ${msg.allocatedPort}`, `localhost:${this.localPort}`);
-        } else {
-          this.display.setConnected(msg.publicUrl, `http://localhost:${this.localPort}`);
+      case 'reconnected': {
+        const port = msg.localPort;
+        if (this.stateByPort[port]) {
+          this.stateByPort[port].publicUrl = msg.publicUrl;
+          this.stateByPort[port].allocatedPort = msg.allocatedPort;
         }
+        this.display.setConnectedMulti(this._buildTunnelLines());
         break;
+      }
 
       case 'request':
         this._proxyRequest(msg);
         break;
 
       case 'ping':
-        // Server-level ping (JSON), respond with pong
         this._send({ type: 'pong' });
         break;
 
@@ -181,7 +196,6 @@ export class TunnelClient {
 
       case 'reboot':
         this.display.setDisconnected('rebooting device…');
-        // Give the display a moment to update, then reboot
         setTimeout(() => {
           exec('sudo systemctl reboot', (err) => {
             if (err) exec('sudo reboot', () => {});
@@ -190,23 +204,24 @@ export class TunnelClient {
         break;
 
       case 'standby':
-        // Tunnel is manually paused — hold connection, don't show as connected
         this.display.setDisconnected('paused (resume from dashboard)');
         break;
 
       case 'error':
         if (msg.message === 'Tunnel not found for reconnect') {
-          // Stale state — server doesn't know this tunnel (wiped DB?); re-register fresh
-          this.tunnelId = null;
-          this.ownerSecret = null;
-          saveState({});
-          this.ws.send(JSON.stringify({
-            type: 'register',
-            name: this.name,
-            localPort: this.localPort,
-            subdomain: this.subdomain,
-            protocol: this.protocol,
-          }));
+          // Stale state — find which tunnel this was and re-register
+          // We can't easily tell which one failed, so clear all and re-register
+          this.stateByPort = {};
+          this._persistState();
+          for (const t of this.tunnels) {
+            this.ws.send(JSON.stringify({
+              type: 'register',
+              name: t.name,
+              localPort: t.port,
+              subdomain: t.subdomain,
+              protocol: t.protocol,
+            }));
+          }
         } else {
           this.display.stopSpinner(false, `Server error: ${msg.message}`);
         }
@@ -215,6 +230,19 @@ export class TunnelClient {
       default:
         break;
     }
+  }
+
+  _buildTunnelLines() {
+    return this.tunnels.map(t => {
+      const s = this.stateByPort[t.port];
+      if (!s) return { name: t.name, port: t.port, status: 'registering…' };
+      const pub = s.allocatedPort ? `EC2 port ${s.allocatedPort}` : (s.publicUrl || '—');
+      return { name: t.name, port: t.port, public: pub };
+    });
+  }
+
+  _persistState() {
+    saveState({ byPort: this.stateByPort });
   }
 
   _openTcpConn(connId, localPort) {
@@ -245,13 +273,15 @@ export class TunnelClient {
 
   _proxyRequest(msg) {
     const startTime = Date.now();
-    const { id, method, path, headers, body } = msg;
+    const { id, method, path, headers, body, localPort } = msg;
 
-    const url = new URL(path, `http://localhost:${this.localPort}`);
+    // Use localPort from message if provided, else fall back to first tunnel
+    const port = localPort || this.tunnels[0].port;
+    const url = new URL(path, `http://localhost:${port}`);
 
     const reqOptions = {
       hostname: 'localhost',
-      port: this.localPort,
+      port,
       path: url.pathname + url.search,
       method: method || 'GET',
       headers: headers || {},
@@ -263,59 +293,24 @@ export class TunnelClient {
       proxyRes.on('end', () => {
         const duration = Date.now() - startTime;
         const responseBody = Buffer.concat(chunks).toString('base64');
-
-        // Clean up response headers
         const resHeaders = {};
         for (const [key, val] of Object.entries(proxyRes.headers)) {
           resHeaders[key] = val;
         }
-
-        this._send({
-          type: 'response',
-          id,
-          statusCode: proxyRes.statusCode,
-          headers: resHeaders,
-          body: responseBody,
-          bodyEncoding: 'base64',
-        });
-
-        const statusText = http.STATUS_CODES[proxyRes.statusCode] || '';
-        this.display.logRequest(
-          method || 'GET',
-          path || '/',
-          proxyRes.statusCode,
-          statusText,
-          duration,
-        );
+        this._send({ type: 'response', id, statusCode: proxyRes.statusCode, headers: resHeaders, body: responseBody, bodyEncoding: 'base64' });
+        this.display.logRequest(method || 'GET', path || '/', proxyRes.statusCode, http.STATUS_CODES[proxyRes.statusCode] || '', duration);
         this.display.render();
       });
     });
 
     proxyReq.on('error', (err) => {
       const duration = Date.now() - startTime;
-      this._send({
-        type: 'response',
-        id,
-        statusCode: 502,
-        headers: { 'content-type': 'text/plain' },
-        body: Buffer.from(`Bad Gateway: ${err.message}`).toString('base64'),
-        bodyEncoding: 'base64',
-      });
-
-      this.display.logRequest(
-        method || 'GET',
-        path || '/',
-        502,
-        'Bad Gateway',
-        duration,
-      );
+      this._send({ type: 'response', id, statusCode: 502, headers: { 'content-type': 'text/plain' }, body: Buffer.from(`Bad Gateway: ${err.message}`).toString('base64'), bodyEncoding: 'base64' });
+      this.display.logRequest(method || 'GET', path || '/', 502, 'Bad Gateway', duration);
       this.display.render();
     });
 
-    if (body) {
-      const decoded = Buffer.from(body, 'base64');
-      proxyReq.write(decoded);
-    }
+    if (body) proxyReq.write(Buffer.from(body, 'base64'));
     proxyReq.end();
   }
 
@@ -328,10 +323,7 @@ export class TunnelClient {
   _resetHeartbeat() {
     this._clearHeartbeat();
     this.heartbeatTimer = setTimeout(() => {
-      // No heartbeat received, connection may be dead
-      if (this.ws) {
-        this.ws.terminate();
-      }
+      if (this.ws) this.ws.terminate();
     }, HEARTBEAT_TIMEOUT);
   }
 
@@ -344,17 +336,13 @@ export class TunnelClient {
 
   _scheduleReconnect() {
     if (!this.shouldReconnect) return;
-
     this.reconnectAttempt++;
     this.display.setReconnecting(this.reconnectAttempt);
-
     setTimeout(() => {
       if (!this.shouldReconnect) return;
       this.display.startSpinner(`Reconnecting (attempt ${this.reconnectAttempt})...`);
       this._doConnect();
     }, this.reconnectDelay);
-
-    // Exponential backoff
     this.reconnectDelay = Math.min(this.reconnectDelay * 2, MAX_RECONNECT_DELAY);
   }
 
