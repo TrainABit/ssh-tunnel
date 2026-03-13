@@ -30,39 +30,45 @@ function safeTokenCompare(a, b) {
 function initWebSocket(server, tunnelManager, connectionTracker, db, tcpProxy) {
   const AUTH_TOKEN = process.env.AUTH_TOKEN;
 
-  const wss = new WebSocket.Server({
-    server,
-    path: '/ws',
-    maxPayload: MAX_MESSAGE_SIZE,
-    verifyClient: (info, cb) => {
-      // Skip auth if no AUTH_TOKEN is configured (development mode)
-      if (!AUTH_TOKEN) {
-        info.req._clientToken = null;
-        return cb(true);
-      }
+  // noServer: true — we handle the upgrade event manually so that other WebSocket
+  // handlers (e.g. sshWsHandler on /ws/ssh) can coexist on the same HTTP server.
+  // Using { server, path } causes the ws library to send HTTP 400 + destroy the
+  // socket for any non-matching path, which would block /ws/ssh entirely.
+  const wss = new WebSocket.Server({ noServer: true, maxPayload: MAX_MESSAGE_SIZE });
 
-      const parsed = url.parse(info.req.url, true);
+  server.on('upgrade', (req, socket, head) => {
+    const pathname = new URL(req.url, 'http://localhost').pathname;
+    if (pathname !== '/ws') return; // let other handlers (sshWsHandler etc.) deal with it
+
+    // Auth check (mirrors the old verifyClient logic)
+    if (AUTH_TOKEN) {
+      const parsed = url.parse(req.url, true);
       const token = parsed.query.auth_token
-        || (info.req.headers['authorization'] || '').replace(/^Bearer\s+/i, '');
+        || (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '');
 
-      if (safeTokenCompare(token, AUTH_TOKEN)) {
-        info.req._clientToken = null;
-        return cb(true);
-      }
+      let clientToken = null;
+      let authorized = safeTokenCompare(token, AUTH_TOKEN);
 
-      // After the global AUTH_TOKEN check fails, also accept per-client tokens from DB
-      if (db && token) {
+      if (!authorized && db && token) {
         try {
           const row = db.queryOne('SELECT * FROM tokens WHERE token = ? AND active = 1', [token]);
-          if (row) {
-            info.req._clientToken = row;
-            return cb(true);
-          }
+          if (row) { authorized = true; clientToken = row; }
         } catch {}
       }
 
-      cb(false, 401, 'Unauthorized');
-    },
+      if (!authorized) {
+        socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+      req._clientToken = clientToken;
+    } else {
+      req._clientToken = null;
+    }
+
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      wss.emit('connection', ws, req);
+    });
   });
 
   wss.on('connection', (ws, req) => {
