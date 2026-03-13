@@ -122,7 +122,7 @@ export default function Layout() {
           className="flex h-16 items-center px-5 relative"
           style={{ borderBottom: '1px solid var(--border)' }}
         >
-          <BrandLogo height={22} />
+          <BrandLogo height={30} />
           <button
             className="ml-auto lg:hidden"
             style={{ color: 'var(--text-dim)', background: 'none', border: 'none', cursor: 'pointer' }}
