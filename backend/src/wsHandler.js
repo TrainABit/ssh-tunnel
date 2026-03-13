@@ -158,9 +158,14 @@ function initWebSocket(server, tunnelManager, connectionTracker, db, tcpProxy) {
               break;
             }
 
-            // For TCP tunnels: restart the TCP listener if it's not already running
+            // For TCP tunnels: always restart the listener so it uses the new WS.
+            // The old listener may still be running with a stale WS reference if the
+            // client reconnected before the old close event fired.
             let allocatedPort = tunnel.allocatedPort;
-            if (tunnel.protocol === 'tcp' && tcpProxy && !tcpProxy.servers.has(msg.tunnelId)) {
+            if (tunnel.protocol === 'tcp' && tcpProxy) {
+              if (tcpProxy.servers.has(msg.tunnelId)) {
+                tcpProxy.stopListener(msg.tunnelId); // replace stale listener
+              }
               allocatedPort = await tcpProxy.startListener(msg.tunnelId, ws, tunnel.localPort, ws.clientToken, tunnel.preferredPort || null);
               if (allocatedPort !== null) {
                 tunnelManager.setAllocatedPort(msg.tunnelId, allocatedPort);
@@ -204,16 +209,19 @@ function initWebSocket(server, tunnelManager, connectionTracker, db, tcpProxy) {
 
     ws.on('close', () => {
       log.info('Client disconnected', { tunnelIds: clientTunnelIds, ip: clientIp });
-      // Mark ALL tunnels for this WS as disconnected, but only if
-      // the tunnel's current WS is still this one (prevents race with reconnect)
       for (const tid of clientTunnelIds) {
         const t = tunnelManager.getTunnel(tid);
-        if (t && t.status !== 'paused') {
+        // If the tunnel already has a NEW WS (client reconnected before this close
+        // event fired), skip side-effects that belong to the old session only.
+        const isStillCurrent = !t || !t.clientWs || t.clientWs === ws;
+        if (t && t.status !== 'paused' && isStillCurrent) {
           notify('tunnel:disconnected', { tunnelName: t.name, tunnelId: tid });
         }
-        if (t?.protocol === 'tcp' && tcpProxy) tcpProxy.stopListener(tid);
-        tunnelManager.markDisconnected(tid, ws);
-        connectionTracker.removeByTunnel(tid);
+        if (t?.protocol === 'tcp' && tcpProxy && isStillCurrent) {
+          tcpProxy.stopListener(tid);
+        }
+        tunnelManager.markDisconnected(tid, ws); // no-op if already reconnected (has guard)
+        if (isStillCurrent) connectionTracker.removeByTunnel(tid);
       }
     });
 
