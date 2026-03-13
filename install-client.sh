@@ -201,8 +201,7 @@ fi
 
 # ── Step 4: Create / reload systemd service ──────────────────
 step "Configuring service"
-if ! $UPGRADE; then
-  cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<SVCEOF
+cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<SVCEOF
 [Unit]
 Description=TunnelVault Client — SSH tunnel to server
 After=network-online.target
@@ -221,8 +220,11 @@ SyslogIdentifier=tunnelvault-client
 [Install]
 WantedBy=multi-user.target
 SVCEOF
-  systemctl daemon-reload
-  systemctl enable "$SERVICE_NAME"
+systemctl daemon-reload
+systemctl enable "$SERVICE_NAME"
+if $UPGRADE; then
+  info "Service file updated"
+else
   info "Service file created and enabled"
 fi
 
