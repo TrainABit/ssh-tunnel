@@ -308,6 +308,7 @@ class TunnelManager extends EventEmitter {
     }
 
     t.clientWs = ws;
+    t.clientId = ws.clientId || null;
 
     // If manually paused, keep paused — don't activate
     if (t.status === 'paused') {
