@@ -174,8 +174,8 @@ export default function Dashboard() {
           <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
             <span className="text-sm font-semibold" style={{ color: 'var(--text)' }}>Connections Over Time</span>
           </div>
-          <div className="p-5 h-52">
-            <ResponsiveContainer width="100%" height="100%">
+          <div className="p-5">
+            <ResponsiveContainer width="100%" height={200}>
               <LineChart data={stats.chartData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                 <XAxis dataKey="time" stroke="var(--border2)" tick={{ fontSize: 11, fill: 'var(--text-dim)', fontFamily: 'Inter, sans-serif' }} />
