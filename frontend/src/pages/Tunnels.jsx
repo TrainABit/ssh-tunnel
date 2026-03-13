@@ -89,6 +89,10 @@ function ClientCard({ tunnels, onDelete, onToggle, onCopy, onReboot, onSsh }) {
             const label = portLabel(tunnel.localPort);
             const isSsh = tunnel.localPort === 22 && tunnel.protocol === 'tcp';
             const isWeb = tunnel.protocol === 'http';
+            const isWebPort = !isSsh && tunnel.protocol === 'tcp' && tunnel.allocatedPort;
+            const webUrl = isWebPort
+              ? `http://${window.location.hostname}:${tunnel.allocatedPort}`
+              : tunnel.publicUrl;
 
             return (
               <div key={tunnel.id} style={{
@@ -131,16 +135,17 @@ function ClientCard({ tunnels, onDelete, onToggle, onCopy, onReboot, onSsh }) {
                       <Terminal size={10} /> SSH
                     </button>
                   )}
-                  {isActive && isWeb && tunnel.publicUrl && (
-                    <button
-                      onClick={() => onCopy(tunnel.publicUrl)}
-                      title="Copy URL"
-                      style={{ ...btnBase, padding: '3px 8px', fontSize: '11px', borderColor: 'var(--border)', color: 'var(--text-mid)' }}
+                  {isActive && (isWeb || isWebPort) && webUrl && (
+                    <a
+                      href={webUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ ...btnBase, padding: '3px 8px', fontSize: '11px', borderColor: 'var(--border)', color: 'var(--text-mid)', textDecoration: 'none' }}
                     >
-                      <Globe size={10} /> URL
-                    </button>
+                      <Globe size={10} /> Open
+                    </a>
                   )}
-                  {isActive && (
+                  {isActive && !isWeb && (
                     <button
                       onClick={() => onCopy(
                         tunnel.protocol === 'tcp' && tunnel.allocatedPort
