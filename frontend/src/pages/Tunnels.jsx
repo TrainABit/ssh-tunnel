@@ -97,80 +97,78 @@ function ClientCard({ tunnels, onDelete, onToggle, onCopy, onReboot, onSsh }) {
                 borderRadius: '8px',
                 padding: '8px 12px',
               }}>
-                <div className="flex items-center justify-between gap-2">
-                  {/* Port info */}
-                  <div className="flex items-center gap-2 text-sm min-w-0">
-                    <span style={{
-                      fontSize: '10px', fontWeight: 600, padding: '1px 6px', borderRadius: '4px',
-                      background: 'var(--surface2)', color: 'var(--text-mid)', flexShrink: 0,
-                    }}>{label}</span>
-                    {tunnel.protocol === 'tcp' ? (
-                      <>
-                        <span style={{ color: 'var(--accent)', fontFamily: 'var(--font-mono)', fontWeight: 600, flexShrink: 0 }}>
-                          :{tunnel.allocatedPort ?? '—'}
-                        </span>
-                        <ArrowRight size={10} style={{ color: 'var(--text-dim)', flexShrink: 0 }} />
-                        <span style={{ color: 'var(--text-dim)', fontFamily: 'var(--font-mono)', fontSize: '11px' }}>
-                          :{tunnel.localPort}
-                        </span>
-                      </>
-                    ) : (
-                      <span className="truncate" style={{ color: 'var(--accent)', fontFamily: 'var(--font-mono)', fontSize: '11px' }}>
-                        {tunnel.publicUrl || '—'}
+                {/* Top row: label + port */}
+                <div className="flex items-center gap-2 mb-2">
+                  <span style={{
+                    fontSize: '10px', fontWeight: 600, padding: '1px 6px', borderRadius: '4px',
+                    background: 'var(--surface2)', color: 'var(--text-mid)', flexShrink: 0,
+                  }}>{label}</span>
+                  {tunnel.protocol === 'tcp' ? (
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span style={{ color: 'var(--accent)', fontFamily: 'var(--font-mono)', fontWeight: 600, fontSize: '13px' }}>
+                        :{tunnel.allocatedPort ?? '—'}
                       </span>
-                    )}
-                  </div>
+                      <ArrowRight size={10} style={{ color: 'var(--text-dim)', flexShrink: 0 }} />
+                      <span style={{ color: 'var(--text-dim)', fontFamily: 'var(--font-mono)', fontSize: '11px' }}>
+                        :{tunnel.localPort}
+                      </span>
+                    </div>
+                  ) : (
+                    <span className="truncate" style={{ color: 'var(--accent)', fontFamily: 'var(--font-mono)', fontSize: '11px' }}>
+                      {tunnel.publicUrl || '—'}
+                    </span>
+                  )}
+                </div>
 
-                  {/* Row actions */}
-                  <div className="flex items-center gap-1.5 flex-shrink-0">
-                    {isActive && isSsh && tunnel.allocatedPort && (
-                      <button
-                        onClick={() => onSsh(tunnel)}
-                        title="Open SSH terminal"
-                        style={{ ...btnBase, padding: '3px 8px', fontSize: '11px', borderColor: 'var(--accent-dim)', color: 'var(--accent)' }}
-                      >
-                        <Terminal size={10} /> SSH
-                      </button>
-                    )}
-                    {isActive && isWeb && tunnel.publicUrl && (
-                      <button
-                        onClick={() => onCopy(tunnel.publicUrl)}
-                        title="Copy URL"
-                        style={{ ...btnBase, padding: '3px 8px', fontSize: '11px', borderColor: 'var(--border)', color: 'var(--text-mid)' }}
-                      >
-                        <Globe size={10} /> URL
-                      </button>
-                    )}
-                    {isActive && (
-                      <button
-                        onClick={() => onCopy(
-                          tunnel.protocol === 'tcp' && tunnel.allocatedPort
-                            ? `ssh user@${window.location.hostname} -p ${tunnel.allocatedPort}`
-                            : tunnel.publicUrl
-                        )}
-                        title="Copy"
-                        style={{ ...btnBase, padding: '3px 8px', fontSize: '11px', borderColor: 'var(--border)', color: 'var(--text-mid)' }}
-                      >
-                        <Copy size={10} />
-                      </button>
-                    )}
-                    {(isActive || isPaused) && (
-                      <button
-                        onClick={() => onToggle(tunnel.id)}
-                        title={isActive ? 'Stop tunnel' : 'Resume tunnel'}
-                        style={{ ...btnBase, padding: '3px 8px', fontSize: '11px', ...(isActive ? btn.amber : btn.active) }}
-                      >
-                        <Power size={10} /> {isActive ? 'Stop' : 'Resume'}
-                      </button>
-                    )}
+                {/* Bottom row: actions */}
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {isActive && isSsh && tunnel.allocatedPort && (
                     <button
-                      onClick={() => onDelete(tunnel.id)}
-                      title="Delete tunnel"
-                      style={{ ...btnBase, padding: '3px 8px', fontSize: '11px', ...btn.danger }}
+                      onClick={() => onSsh(tunnel)}
+                      title="Open SSH terminal"
+                      style={{ ...btnBase, padding: '3px 8px', fontSize: '11px', borderColor: 'var(--accent-dim)', color: 'var(--accent)' }}
                     >
-                      <Trash2 size={10} />
+                      <Terminal size={10} /> SSH
                     </button>
-                  </div>
+                  )}
+                  {isActive && isWeb && tunnel.publicUrl && (
+                    <button
+                      onClick={() => onCopy(tunnel.publicUrl)}
+                      title="Copy URL"
+                      style={{ ...btnBase, padding: '3px 8px', fontSize: '11px', borderColor: 'var(--border)', color: 'var(--text-mid)' }}
+                    >
+                      <Globe size={10} /> URL
+                    </button>
+                  )}
+                  {isActive && (
+                    <button
+                      onClick={() => onCopy(
+                        tunnel.protocol === 'tcp' && tunnel.allocatedPort
+                          ? `ssh user@${window.location.hostname} -p ${tunnel.allocatedPort}`
+                          : tunnel.publicUrl
+                      )}
+                      title="Copy"
+                      style={{ ...btnBase, padding: '3px 8px', fontSize: '11px', borderColor: 'var(--border)', color: 'var(--text-mid)' }}
+                    >
+                      <Copy size={10} />
+                    </button>
+                  )}
+                  {(isActive || isPaused) && (
+                    <button
+                      onClick={() => onToggle(tunnel.id)}
+                      title={isActive ? 'Stop tunnel' : 'Resume tunnel'}
+                      style={{ ...btnBase, padding: '3px 8px', fontSize: '11px', ...(isActive ? btn.amber : btn.active) }}
+                    >
+                      <Power size={10} /> {isActive ? 'Stop' : 'Resume'}
+                    </button>
+                  )}
+                  <button
+                    onClick={() => onDelete(tunnel.id)}
+                    title="Delete tunnel"
+                    style={{ ...btnBase, padding: '3px 8px', fontSize: '11px', ...btn.danger }}
+                  >
+                    <Trash2 size={10} />
+                  </button>
                 </div>
               </div>
             );
