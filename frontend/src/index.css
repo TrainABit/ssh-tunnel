@@ -11,69 +11,69 @@
 ───────────────────────────────────────────────────── */
 :root,
 [data-theme="dark"] {
-  --bg:          #060b18;
-  --surface:     #0b1428;
-  --surface2:    #0f1a30;
-  --border:      #162040;
-  --border2:     #1d2d50;
+  --bg:          #070d1f;
+  --surface:     #0d1530;
+  --surface2:    #111d3a;
+  --border:      #1a2b50;
+  --border2:     #213560;
 
   /* brand cyan accent */
   --accent:      #1eb4e6;
-  --accent-dim:  #0a5878;
+  --accent-dim:  rgba(30,180,230,0.3);
   --accent-glow: rgba(30,180,230,0.08);
-  --accent-bg:   rgba(30,180,230,0.06);
+  --accent-bg:   rgba(30,180,230,0.07);
 
-  /* Legacy aliases — page components use --green* unchanged */
+  /* Legacy aliases */
   --green:       #1eb4e6;
-  --green-dim:   #0a5878;
+  --green-dim:   rgba(30,180,230,0.3);
   --green-glow:  rgba(30,180,230,0.08);
-  --green-bg:    rgba(30,180,230,0.06);
+  --green-bg:    rgba(30,180,230,0.07);
 
   --amber:       #f0a500;
   --red:         #e84040;
-  --blue:        #4aa3ff;
+  --blue:        #5aadff;
 
-  --text:        #c0d4e8;
-  --text-dim:    #3a5272;
-  --text-mid:    #6a8aaa;
+  --text:        #d0e2f5;
+  --text-dim:    #4a6080;
+  --text-mid:    #7090b0;
 
-  --logo-filter: brightness(0) invert(1);  /* white logo on dark */
-  --scanline-opacity: 0.022;
+  --shadow-sm:   0 1px 3px rgba(0,0,0,0.4);
+  --shadow-md:   0 4px 12px rgba(0,0,0,0.5);
 }
 
 /* ─────────────────────────────────────────────────────
    LIGHT MODE
-   brand corporate palette — white surface / deep blue accent
+   brand corporate palette — white surface / deep blue
 ───────────────────────────────────────────────────── */
 [data-theme="light"] {
-  --bg:          #f0f3fa;
+  --bg:          #f0f4fa;
   --surface:     #ffffff;
-  --surface2:    #e8edf8;
-  --border:      #d0dae8;
-  --border2:     #b8c6dc;
+  --surface2:    #edf1f8;
+  --border:      #dce4f0;
+  --border2:     #c8d4e8;
 
   /* brand deep blue accent */
   --accent:      #0632A0;
-  --accent-dim:  rgba(6,50,160,0.25);
+  --accent-dim:  rgba(6,50,160,0.2);
   --accent-glow: rgba(6,50,160,0.06);
   --accent-bg:   rgba(6,50,160,0.05);
 
   /* Legacy aliases */
   --green:       #0632A0;
-  --green-dim:   rgba(6,50,160,0.25);
+  --green-dim:   rgba(6,50,160,0.2);
   --green-glow:  rgba(6,50,160,0.06);
   --green-bg:    rgba(6,50,160,0.05);
 
-  --amber:       #c87000;
+  --amber:       #b86000;
   --red:         #c82020;
-  --blue:        #1eb4e6;
+  --blue:        #0f7ac8;
 
-  --text:        #0f1e3c;
-  --text-dim:    #8a9ab8;
-  --text-mid:    #4a5a7a;
+  --text:        #0d1e40;
+  --text-dim:    #94a8c4;
+  --text-mid:    #5a6e90;
 
-  --logo-filter: none;
-  --scanline-opacity: 0;
+  --shadow-sm:   0 1px 3px rgba(0,0,0,0.08);
+  --shadow-md:   0 4px 12px rgba(0,0,0,0.1);
 }
 
 /* ─────────────────────────────────────────────────────
@@ -83,32 +83,17 @@ body {
   margin: 0;
   background-color: var(--bg);
   color: var(--text);
-  font-family: var(--font-mono);
-  font-size: 12.5px;
-  line-height: 1.6;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
   transition: background-color 0.2s, color 0.2s;
 }
 
-/* Scanline overlay — visible only in dark mode */
-body::after {
-  content: '';
-  position: fixed;
-  inset: 0;
-  background: repeating-linear-gradient(
-    0deg,
-    transparent,
-    transparent 2px,
-    rgba(0,0,0,var(--scanline-opacity, 0.022)) 2px,
-    rgba(0,0,0,var(--scanline-opacity, 0.022)) 4px
-  );
-  pointer-events: none;
-  z-index: 9998;
-}
-
 /* ── Scrollbar ── */
-::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: var(--bg); }
-::-webkit-scrollbar-thumb { background: var(--border2); }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 99px; }
 
 /* ── Pulse animations ── */
 @keyframes pulse-accent {
@@ -131,9 +116,13 @@ body::after {
 
 /* ── Theme transition ── */
 *, *::before, *::after {
-  transition-property: background-color, border-color, color;
+  transition-property: background-color, border-color, color, box-shadow;
   transition-duration: 0.15s;
   transition-timing-function: ease;
 }
-/* Don't slow down transforms/opacity */
 .animate-spin, .animate-pulse { transition: none; }
+
+/* ── Spin keyframe ── */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}

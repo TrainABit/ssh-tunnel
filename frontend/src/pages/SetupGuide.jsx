@@ -15,16 +15,27 @@ function CodeBlock({ children, copyText }) {
     setTimeout(() => setCopied(false), 2000);
   };
   return (
-    <div style={{ position: 'relative', marginTop: '10px', background: 'var(--bg)', border: '1px solid var(--border2)', padding: '12px 14px', fontFamily: 'inherit', fontSize: '11.5px', lineHeight: 1.7 }}
+    <div style={{
+      position: 'relative', marginTop: '10px',
+      background: 'var(--bg)', border: '1px solid var(--border)',
+      borderRadius: '8px', padding: '14px 16px',
+      fontFamily: 'var(--font-mono)', fontSize: '12px', lineHeight: 1.8,
+    }}
       className="group">
       <button
         onClick={handleCopy}
-        style={{ position: 'absolute', top: '8px', right: '8px', background: 'var(--surface)', border: '1px solid var(--border2)', cursor: 'pointer', padding: '4px 6px', display: 'flex', alignItems: 'center', color: 'var(--text-dim)', opacity: 0, transition: 'opacity .15s' }}
+        style={{
+          position: 'absolute', top: '10px', right: '10px',
+          background: 'var(--surface)', border: '1px solid var(--border)',
+          borderRadius: '6px', cursor: 'pointer', padding: '4px 8px',
+          display: 'flex', alignItems: 'center', color: 'var(--text-dim)',
+          opacity: 0, transition: 'opacity .15s',
+        }}
         className="group-hover:opacity-100"
         onMouseEnter={e => e.currentTarget.style.opacity = 1}
         onMouseLeave={e => e.currentTarget.style.opacity = 0}
       >
-        {copied ? <Check size={11} style={{ color: 'var(--green)' }} /> : <Copy size={11} />}
+        {copied ? <Check size={11} style={{ color: 'var(--accent)' }} /> : <Copy size={11} />}
       </button>
       <div style={{ overflowX: 'auto', color: 'var(--text-dim)' }}>{children}</div>
     </div>
@@ -32,17 +43,29 @@ function CodeBlock({ children, copyText }) {
 }
 
 function Kw({ children }) { return <span style={{ color: 'var(--blue)' }}>{children}</span>; }
-function Val({ children }) { return <span style={{ color: 'var(--green)' }}>{children}</span>; }
-function Cmt({ children }) { return <span style={{ color: 'var(--border2)' }}>{children}</span>; }
+function Val({ children }) { return <span style={{ color: 'var(--accent)' }}>{children}</span>; }
+function Cmt({ children }) { return <span style={{ color: 'var(--text-dim)', opacity: 0.6 }}>{children}</span>; }
 
 function SectionCard({ icon: Icon, title, id, children }) {
   return (
-    <div id={id} style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
-      <div className="px-4 py-3 flex items-center gap-3" style={{ borderBottom: '1px solid var(--border)' }}>
-        <Icon size={13} style={{ color: 'var(--green)' }} />
-        <span className="text-[10px] uppercase tracking-[0.15em]" style={{ color: 'var(--text-mid)' }}>{title}</span>
+    <div id={id} style={{
+      background: 'var(--surface)',
+      border: '1px solid var(--border)',
+      borderRadius: '10px',
+      boxShadow: 'var(--shadow-sm)',
+      overflow: 'hidden',
+    }}>
+      <div className="px-5 py-4 flex items-center gap-3" style={{ borderBottom: '1px solid var(--border)' }}>
+        <div style={{
+          width: '28px', height: '28px', borderRadius: '8px',
+          background: 'var(--accent-bg)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          flexShrink: 0,
+        }}>
+          <Icon size={13} style={{ color: 'var(--accent)' }} />
+        </div>
+        <span className="text-sm font-semibold" style={{ color: 'var(--text)' }}>{title}</span>
       </div>
-      <div className="p-4 space-y-3">{children}</div>
+      <div className="p-5 space-y-3">{children}</div>
     </div>
   );
 }
@@ -51,14 +74,19 @@ function Step({ number, title, children }) {
   return (
     <div className="flex gap-4">
       <div className="flex flex-col items-center">
-        <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '22px', height: '22px', border: '1px solid var(--green-dim)', color: 'var(--green)', fontSize: '10px', flexShrink: 0 }}>
+        <span style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          width: '26px', height: '26px', borderRadius: '50%',
+          background: 'var(--accent-bg)', border: '1px solid var(--accent-dim)',
+          color: 'var(--accent)', fontSize: '11px', fontWeight: 700, flexShrink: 0,
+        }}>
           {number}
         </span>
-        <div style={{ flex: 1, width: '1px', background: 'var(--border)', marginTop: '4px' }} />
+        <div style={{ flex: 1, width: '1px', background: 'var(--border)', marginTop: '6px' }} />
       </div>
       <div className="pb-5 flex-1 min-w-0">
-        <p className="text-[11.5px] mb-1" style={{ color: 'var(--text)' }}>{title}</p>
-        <div className="text-[11px] space-y-1" style={{ color: 'var(--text-dim)' }}>{children}</div>
+        <p className="text-sm font-semibold mb-1.5" style={{ color: 'var(--text)' }}>{title}</p>
+        <div className="text-sm space-y-1" style={{ color: 'var(--text-dim)' }}>{children}</div>
       </div>
     </div>
   );
@@ -70,16 +98,19 @@ function TroubleshootItem({ question, children }) {
     <div style={{ borderBottom: '1px solid var(--border)' }} className="last:border-0">
       <button
         onClick={() => setOpen(!open)}
-        style={{ display: 'flex', width: '100%', alignItems: 'center', gap: '8px', padding: '10px 0', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left' }}
+        style={{
+          display: 'flex', width: '100%', alignItems: 'center', gap: '10px',
+          padding: '12px 0', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left',
+        }}
       >
         {open
-          ? <ChevronDown size={11} style={{ color: 'var(--green)', flexShrink: 0 }} />
-          : <ChevronRight size={11} style={{ color: 'var(--text-dim)', flexShrink: 0 }} />}
-        <AlertCircle size={11} style={{ color: 'var(--amber)', flexShrink: 0 }} />
-        <span className="text-[11px]" style={{ color: 'var(--text-mid)' }}>{question}</span>
+          ? <ChevronDown size={13} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+          : <ChevronRight size={13} style={{ color: 'var(--text-dim)', flexShrink: 0 }} />}
+        <AlertCircle size={13} style={{ color: 'var(--amber)', flexShrink: 0 }} />
+        <span className="text-sm" style={{ color: 'var(--text-mid)' }}>{question}</span>
       </button>
       {open && (
-        <div className="pb-3 text-[11px] leading-relaxed" style={{ paddingLeft: '31px', color: 'var(--text-dim)' }}>
+        <div className="pb-4 text-sm leading-relaxed" style={{ paddingLeft: '36px', color: 'var(--text-dim)' }}>
           {children}
         </div>
       )}
@@ -89,12 +120,12 @@ function TroubleshootItem({ question, children }) {
 
 function DataTable({ headers, rows }) {
   return (
-    <div style={{ marginTop: '8px', border: '1px solid var(--border)', overflowX: 'auto' }}>
+    <div style={{ marginTop: '10px', border: '1px solid var(--border)', borderRadius: '8px', overflowX: 'auto' }}>
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
-          <tr style={{ borderBottom: '1px solid var(--border)' }}>
+          <tr style={{ borderBottom: '1px solid var(--border)', background: 'var(--surface2)' }}>
             {headers.map(h => (
-              <th key={h} className="px-3 py-2 text-left text-[9px] uppercase tracking-[0.18em] font-normal" style={{ color: 'var(--text-dim)' }}>{h}</th>
+              <th key={h} className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-dim)' }}>{h}</th>
             ))}
           </tr>
         </thead>
@@ -102,7 +133,7 @@ function DataTable({ headers, rows }) {
           {rows.map((row, i) => (
             <tr key={i} style={{ borderBottom: i < rows.length - 1 ? '1px solid var(--border)' : 'none' }}>
               {row.map((cell, j) => (
-                <td key={j} className="px-3 py-2 text-[11px]" style={{ color: cell.color || 'var(--text-dim)', fontFamily: cell.mono ? 'inherit' : undefined }}>
+                <td key={j} className="px-4 py-2.5 text-sm" style={{ color: cell.color || 'var(--text-dim)', fontFamily: cell.mono ? 'var(--font-mono)' : 'inherit' }}>
                   {cell.text}
                 </td>
               ))}
@@ -116,14 +147,18 @@ function DataTable({ headers, rows }) {
 
 function InlineCode({ children }) {
   return (
-    <code style={{ background: 'var(--bg)', border: '1px solid var(--border2)', padding: '1px 6px', fontSize: '10.5px', color: 'var(--blue)' }}>
+    <code style={{
+      background: 'var(--surface2)', borderRadius: '4px',
+      padding: '1px 6px', fontSize: '12px', color: 'var(--blue)',
+      fontFamily: 'var(--font-mono)',
+    }}>
       {children}
     </code>
   );
 }
 
 function Label({ children }) {
-  return <p className="text-[9.5px] uppercase tracking-[0.15em] mb-1 mt-4" style={{ color: 'var(--text-dim)' }}>{children}</p>;
+  return <p className="text-xs font-semibold uppercase tracking-wide mb-1 mt-5" style={{ color: 'var(--text-dim)' }}>{children}</p>;
 }
 
 const tocItems = [
@@ -146,34 +181,40 @@ export default function SetupGuide() {
       {/* Header */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-[16px] font-normal tracking-[0.06em]" style={{ color: 'var(--text)' }}>
-            Setup Guide <span style={{ color: 'var(--green)' }}>//</span> Docs
-          </h1>
-          <p className="mt-0.5 text-[10.5px]" style={{ color: 'var(--text-dim)' }}>
+          <h1 className="text-xl font-semibold" style={{ color: 'var(--text)' }}>Setup Guide</h1>
+          <p className="mt-1 text-sm" style={{ color: 'var(--text-dim)' }}>
             Deployment, configuration, and usage reference
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <BookOpen size={12} style={{ color: 'var(--green)' }} />
-          <span className="text-[10px] uppercase tracking-[0.12em]" style={{ color: 'var(--text-dim)' }}>TunnelVault Docs</span>
+          <BookOpen size={14} style={{ color: 'var(--accent)' }} />
+          <span className="text-sm font-medium" style={{ color: 'var(--text-dim)' }}>TunnelVault Docs</span>
         </div>
       </div>
 
       {/* Table of Contents */}
-      <div style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
-        <div className="px-4 py-3" style={{ borderBottom: '1px solid var(--border)' }}>
-          <span className="text-[10px] uppercase tracking-[0.15em]" style={{ color: 'var(--text-mid)' }}>Contents</span>
+      <div style={{
+        background: 'var(--surface)', border: '1px solid var(--border)',
+        borderRadius: '10px', boxShadow: 'var(--shadow-sm)', overflow: 'hidden',
+      }}>
+        <div className="px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
+          <span className="text-sm font-semibold" style={{ color: 'var(--text)' }}>Contents</span>
         </div>
         <div className="p-4 grid gap-1 sm:grid-cols-2 lg:grid-cols-4">
           {tocItems.map(({ href, label, icon: Icon }) => (
             <a
               key={href}
               href={href}
-              style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 8px', color: 'var(--text-dim)', textDecoration: 'none', fontSize: '11px', transition: 'color .15s' }}
-              onMouseEnter={e => { e.currentTarget.style.color = 'var(--text)'; }}
-              onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-dim)'; }}
+              style={{
+                display: 'flex', alignItems: 'center', gap: '8px',
+                padding: '8px 10px', color: 'var(--text-mid)',
+                textDecoration: 'none', fontSize: '13px',
+                borderRadius: '6px', transition: 'all .15s',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'var(--accent-bg)'; e.currentTarget.style.color = 'var(--accent)'; }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-mid)'; }}
             >
-              <Icon size={11} style={{ color: 'var(--green)', flexShrink: 0 }} />
+              <Icon size={13} style={{ color: 'var(--accent)', flexShrink: 0 }} />
               {label}
             </a>
           ))}
@@ -184,12 +225,12 @@ export default function SetupGuide() {
 
         {/* 1. Server Installation */}
         <SectionCard icon={Server} title="Server Installation" id="server-install">
-          <p className="text-[11px]" style={{ color: 'var(--text-dim)' }}>
+          <p className="text-sm" style={{ color: 'var(--text-dim)' }}>
             Deploy TunnelVault on an EC2 instance (Ubuntu 22.04 recommended). The install script sets up Node.js, builds the frontend, and creates systemd services.
           </p>
 
           <Label>Prerequisites</Label>
-          <ul className="space-y-1 text-[11px]" style={{ color: 'var(--text-dim)' }}>
+          <ul className="space-y-1.5 text-sm" style={{ color: 'var(--text-dim)' }}>
             {[
               'EC2 instance: t3.micro minimum (1 vCPU, 1 GB RAM)',
               'Ubuntu 22.04 LTS (x86_64 or ARM)',
@@ -197,7 +238,7 @@ export default function SetupGuide() {
               'Public IP or Elastic IP assigned',
             ].map((item, i) => (
               <li key={i} className="flex items-start gap-2">
-                <span style={{ color: 'var(--green)', marginTop: '1px' }}>›</span>
+                <span style={{ color: 'var(--accent)', marginTop: '2px', flexShrink: 0 }}>›</span>
                 {item}
               </li>
             ))}
@@ -225,7 +266,7 @@ export default function SetupGuide() {
 
         {/* 2. Client Installation */}
         <SectionCard icon={Terminal} title="Client Installation" id="client-install">
-          <p className="text-[11px]" style={{ color: 'var(--text-dim)' }}>
+          <p className="text-sm" style={{ color: 'var(--text-dim)' }}>
             Install the <InlineCode>tunnelvault</InlineCode> CLI on any device (e.g. Raspberry Pi) that needs to expose a port. Creates a systemd service that auto-connects on boot and a 12h auto-updater.
           </p>
 
@@ -254,16 +295,16 @@ export default function SetupGuide() {
           </CodeBlock>
 
           <Label>Config Priority</Label>
-          <p className="text-[11px]" style={{ color: 'var(--text-dim)' }}>
+          <p className="text-sm" style={{ color: 'var(--text-dim)' }}>
             CLI flag → env var (<InlineCode>TUNNELVAULT_SERVER</InlineCode>, <InlineCode>TUNNELVAULT_AUTH_TOKEN</InlineCode>) → <InlineCode>~/.tunnelvault/config.json</InlineCode> → defaults.
           </p>
         </SectionCard>
 
         {/* 3. Quick Start */}
         <SectionCard icon={Cpu} title="Quick Start" id="quick-start">
-          <p className="text-[11px]" style={{ color: 'var(--text-dim)' }}>Get up and running in four steps.</p>
+          <p className="text-sm" style={{ color: 'var(--text-dim)' }}>Get up and running in four steps.</p>
 
-          <div className="mt-3">
+          <div className="mt-4">
             <Step number="1" title="Deploy the Server">
               <p>Run <InlineCode>install-server.sh</InlineCode> on your EC2 instance.</p>
               <CodeBlock copyText="sudo bash install-server.sh --domain tunnel.yourdomain.com">
@@ -276,9 +317,17 @@ export default function SetupGuide() {
               <div className="mt-2">
                 <button
                   onClick={() => navigate('/tokens')}
-                  style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', background: 'var(--green)', border: '1px solid var(--green)', color: '#040d0a', fontFamily: 'inherit', fontSize: '10px', letterSpacing: '.09em', textTransform: 'uppercase', fontWeight: 600, padding: '6px 12px', cursor: 'pointer' }}
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: '6px',
+                    background: 'linear-gradient(90deg, #0632A0 0%, #1EB4E6 100%)',
+                    border: 'none', borderRadius: '8px', color: '#ffffff',
+                    fontFamily: 'inherit', fontSize: '12px', fontWeight: 600,
+                    padding: '8px 14px', cursor: 'pointer', transition: 'opacity .15s',
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.opacity = '0.88'}
+                  onMouseLeave={e => e.currentTarget.style.opacity = '1'}
                 >
-                  <ExternalLink size={10} /> Token Management
+                  <ExternalLink size={12} /> Token Management
                 </button>
               </div>
             </Step>
@@ -305,12 +354,12 @@ export default function SetupGuide() {
 
         {/* 4. SSH Gateway Usage */}
         <SectionCard icon={Key} title="TCP Tunnel Usage" id="ssh-gateway">
-          <p className="text-[11px]" style={{ color: 'var(--text-dim)' }}>
+          <p className="text-sm" style={{ color: 'var(--text-dim)' }}>
             TunnelVault creates a TCP listener on the server (port range 10000–10999) that forwards raw TCP data through a WebSocket to the client. This enables SSH and any other TCP protocol.
           </p>
 
           <Label>How It Works</Label>
-          <ol className="space-y-1.5 text-[11px] list-decimal list-inside" style={{ color: 'var(--text-dim)' }}>
+          <ol className="space-y-2 text-sm list-decimal list-inside" style={{ color: 'var(--text-dim)' }}>
             <li>Client connects to server WebSocket at <InlineCode>ws://host:4000/ws</InlineCode> with auth token</li>
             <li>Server allocates a TCP port (10000–10999) and starts a listener</li>
             <li>The port is persisted — reconnects and reboots always reuse the same port</li>
@@ -337,7 +386,7 @@ export default function SetupGuide() {
 
         {/* 5. Webhooks */}
         <SectionCard icon={Bell} title="Webhook Notifications" id="webhooks">
-          <p className="text-[11px]" style={{ color: 'var(--text-dim)' }}>
+          <p className="text-sm" style={{ color: 'var(--text-dim)' }}>
             Receive push notifications when tunnels connect or disconnect. Set two env vars in <InlineCode>backend/.env</InlineCode> on the server, then restart the service.
           </p>
 
@@ -354,10 +403,10 @@ export default function SetupGuide() {
           <DataTable
             headers={['Type', 'WEBHOOK_URL', 'Payload']}
             rows={[
-              [{ text: 'ntfy', mono: true, color: 'var(--green)' }, { text: 'https://ntfy.sh/your-topic' }, { text: 'Plain text push notification' }],
-              [{ text: 'slack', mono: true, color: 'var(--green)' }, { text: 'Slack Incoming Webhook URL' }, { text: '{ text }' }],
-              [{ text: 'discord', mono: true, color: 'var(--green)' }, { text: 'Discord Webhook URL' }, { text: '{ content }' }],
-              [{ text: 'json', mono: true, color: 'var(--green)' }, { text: 'Any HTTPS endpoint' }, { text: '{ event, text, tunnelName, tunnelId, allocatedPort, timestamp }' }],
+              [{ text: 'ntfy', mono: true, color: 'var(--accent)' }, { text: 'https://ntfy.sh/your-topic' }, { text: 'Plain text push notification' }],
+              [{ text: 'slack', mono: true, color: 'var(--accent)' }, { text: 'Slack Incoming Webhook URL' }, { text: '{ text }' }],
+              [{ text: 'discord', mono: true, color: 'var(--accent)' }, { text: 'Discord Webhook URL' }, { text: '{ content }' }],
+              [{ text: 'json', mono: true, color: 'var(--accent)' }, { text: 'Any HTTPS endpoint' }, { text: '{ event, text, tunnelName, tunnelId, allocatedPort, timestamp }' }],
             ]}
           />
 
@@ -372,9 +421,9 @@ export default function SetupGuide() {
           <DataTable
             headers={['Command', 'Description', 'Example']}
             rows={[
-              [{ text: 'connect <port>', mono: true, color: 'var(--green)' }, { text: 'Expose a local port via WebSocket tunnel' }, { text: 'tunnelvault connect 22 --name my-pi', mono: true }],
-              [{ text: 'list', mono: true, color: 'var(--green)' }, { text: 'List all active tunnels on the server' }, { text: 'tunnelvault list', mono: true }],
-              [{ text: 'status', mono: true, color: 'var(--green)' }, { text: 'Show server status (uptime, tunnels, connections)' }, { text: 'tunnelvault status', mono: true }],
+              [{ text: 'connect <port>', mono: true, color: 'var(--accent)' }, { text: 'Expose a local port via WebSocket tunnel' }, { text: 'tunnelvault connect 22 --name my-pi', mono: true }],
+              [{ text: 'list', mono: true, color: 'var(--accent)' }, { text: 'List all active tunnels on the server' }, { text: 'tunnelvault list', mono: true }],
+              [{ text: 'status', mono: true, color: 'var(--accent)' }, { text: 'Show server status (uptime, tunnels, connections)' }, { text: 'tunnelvault status', mono: true }],
             ]}
           />
 
@@ -402,9 +451,9 @@ export default function SetupGuide() {
           </CodeBlock>
         </SectionCard>
 
-        {/* 6. API Endpoints */}
+        {/* 7. API Endpoints */}
         <SectionCard icon={Globe} title="API Endpoints" id="api-endpoints">
-          <p className="text-[11px]" style={{ color: 'var(--text-dim)' }}>
+          <p className="text-sm" style={{ color: 'var(--text-dim)' }}>
             All routes require <InlineCode>Authorization: Bearer {'<AUTH_TOKEN>'}</InlineCode> unless noted. When <InlineCode>AUTH_TOKEN</InlineCode> is unset, auth is disabled (dev mode).
           </p>
 
@@ -412,8 +461,8 @@ export default function SetupGuide() {
           <DataTable
             headers={['Method', 'Path', 'Auth', 'Description']}
             rows={[
-              [{ text: 'GET', mono: true, color: 'var(--green)' }, { text: '/api/health', mono: true }, { text: 'No' }, { text: 'Health check with uptime' }],
-              [{ text: 'GET', mono: true, color: 'var(--green)' }, { text: '/api/stats', mono: true }, { text: 'Yes' }, { text: 'Aggregated stats (tunnels, connections, bytes, tokens, sessions)' }],
+              [{ text: 'GET', mono: true, color: 'var(--accent)' }, { text: '/api/health', mono: true }, { text: 'No' }, { text: 'Health check with uptime' }],
+              [{ text: 'GET', mono: true, color: 'var(--accent)' }, { text: '/api/stats', mono: true }, { text: 'Yes' }, { text: 'Aggregated stats (tunnels, connections, bytes, tokens, sessions)' }],
             ]}
           />
 
@@ -421,8 +470,8 @@ export default function SetupGuide() {
           <DataTable
             headers={['Method', 'Path', 'Description']}
             rows={[
-              [{ text: 'GET', mono: true, color: 'var(--green)' }, { text: '/api/tunnels', mono: true }, { text: 'List all active tunnels' }],
-              [{ text: 'GET', mono: true, color: 'var(--green)' }, { text: '/api/tunnels/:id', mono: true }, { text: 'Get single tunnel' }],
+              [{ text: 'GET', mono: true, color: 'var(--accent)' }, { text: '/api/tunnels', mono: true }, { text: 'List all active tunnels' }],
+              [{ text: 'GET', mono: true, color: 'var(--accent)' }, { text: '/api/tunnels/:id', mono: true }, { text: 'Get single tunnel' }],
               [{ text: 'POST', mono: true, color: 'var(--blue)' }, { text: '/api/tunnels', mono: true }, { text: 'Create tunnel (body: name, localPort, subdomain)' }],
               [{ text: 'DELETE', mono: true, color: 'var(--amber)' }, { text: '/api/tunnels/:id', mono: true }, { text: 'Remove tunnel' }],
             ]}
@@ -432,8 +481,8 @@ export default function SetupGuide() {
           <DataTable
             headers={['Method', 'Path', 'Description']}
             rows={[
-              [{ text: 'GET', mono: true, color: 'var(--green)' }, { text: '/api/tokens', mono: true }, { text: 'List all tokens with session counts' }],
-              [{ text: 'GET', mono: true, color: 'var(--green)' }, { text: '/api/tokens/:token', mono: true }, { text: 'Token details + last 50 sessions' }],
+              [{ text: 'GET', mono: true, color: 'var(--accent)' }, { text: '/api/tokens', mono: true }, { text: 'List all tokens with session counts' }],
+              [{ text: 'GET', mono: true, color: 'var(--accent)' }, { text: '/api/tokens/:token', mono: true }, { text: 'Token details + last 50 sessions' }],
               [{ text: 'POST', mono: true, color: 'var(--blue)' }, { text: '/api/tokens', mono: true }, { text: 'Create token (body: token, label, target_ip, target_port, public_key)' }],
               [{ text: 'PATCH', mono: true, color: 'var(--blue)' }, { text: '/api/tokens/:token', mono: true }, { text: 'Update fields (target_ip, target_port, label, active, public_key)' }],
               [{ text: 'DELETE', mono: true, color: 'var(--amber)' }, { text: '/api/tokens/:token', mono: true }, { text: 'Delete token + associated sessions' }],
@@ -444,15 +493,15 @@ export default function SetupGuide() {
           <DataTable
             headers={['Method', 'Path', 'Description']}
             rows={[
-              [{ text: 'GET', mono: true, color: 'var(--green)' }, { text: '/api/sessions', mono: true }, { text: 'List sessions (?active=1 for active only)' }],
+              [{ text: 'GET', mono: true, color: 'var(--accent)' }, { text: '/api/sessions', mono: true }, { text: 'List sessions (?active=1 for active only)' }],
               [{ text: 'POST', mono: true, color: 'var(--blue)' }, { text: '/api/sessions', mono: true }, { text: 'Create session (body: token, client_ip, pid)' }],
               [{ text: 'PATCH', mono: true, color: 'var(--blue)' }, { text: '/api/sessions/:id', mono: true }, { text: 'Mark session disconnected' }],
-              [{ text: 'GET', mono: true, color: 'var(--green)' }, { text: '/api/connections', mono: true }, { text: 'Active connections (?tunnel=id to filter)' }],
+              [{ text: 'GET', mono: true, color: 'var(--accent)' }, { text: '/api/connections', mono: true }, { text: 'Active connections (?tunnel=id to filter)' }],
             ]}
           />
         </SectionCard>
 
-        {/* 7. Security Checklist */}
+        {/* 8. Security Checklist */}
         <SectionCard icon={Shield} title="Security Checklist" id="security">
           <div className="space-y-0.5">
             {[
@@ -467,19 +516,19 @@ export default function SetupGuide() {
               'Use private IPs only for target_ip values',
               'Review active sessions periodically on the Sessions page',
             ].map((item, i) => (
-              <label key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', padding: '7px 8px', cursor: 'pointer' }}
-                onMouseEnter={e => e.currentTarget.style.background = 'var(--green-bg)'}
+              <label key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', padding: '8px 10px', cursor: 'pointer', borderRadius: '6px' }}
+                onMouseEnter={e => e.currentTarget.style.background = 'var(--accent-bg)'}
                 onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
-                <input type="checkbox" style={{ marginTop: '2px', accentColor: 'var(--green)', flexShrink: 0 }} />
-                <span className="text-[11px]" style={{ color: 'var(--text-dim)' }}>{item}</span>
+                <input type="checkbox" style={{ marginTop: '3px', accentColor: 'var(--accent)', flexShrink: 0 }} />
+                <span className="text-sm" style={{ color: 'var(--text-dim)' }}>{item}</span>
               </label>
             ))}
           </div>
         </SectionCard>
 
-        {/* 8. Troubleshooting */}
+        {/* 9. Troubleshooting */}
         <SectionCard icon={AlertCircle} title="Troubleshooting" id="troubleshooting">
-          <p className="text-[11px]" style={{ color: 'var(--text-dim)' }}>Click an issue to expand the solution.</p>
+          <p className="text-sm" style={{ color: 'var(--text-dim)' }}>Click an issue to expand the solution.</p>
           <div style={{ marginTop: '8px' }}>
             <TroubleshootItem question="Server won't start: EADDRINUSE error">
               Ports 4000 or 4001 are already in use. Find the process with <InlineCode>sudo lsof -i :4000</InlineCode> and stop it, or change the port in <InlineCode>.env</InlineCode>.

@@ -19,13 +19,6 @@ function formatBytes(bytes) {
   return bytes + ' B';
 }
 
-const btnStyle = {
-  borderColor: 'var(--border2)', color: 'var(--text-mid)', background: 'transparent',
-  border: '1px solid', cursor: 'pointer', padding: '5px 12px', fontFamily: 'inherit',
-  fontSize: '10px', letterSpacing: '.09em', textTransform: 'uppercase',
-  display: 'inline-flex', alignItems: 'center', gap: '6px', transition: 'all .15s',
-};
-
 export default function Connections() {
   const [connections, setConnections] = useState([]);
   const [tunnels, setTunnels] = useState([]);
@@ -57,7 +50,7 @@ export default function Connections() {
   if (loading) {
     return (
       <div className="flex h-64 items-center justify-center">
-        <div className="h-6 w-6 animate-spin rounded-full border-2 border-t-transparent" style={{ borderColor: 'var(--green)', borderTopColor: 'transparent' }} />
+        <div className="h-6 w-6 animate-spin rounded-full border-2 border-t-transparent" style={{ borderColor: 'var(--accent)', borderTopColor: 'transparent' }} />
       </div>
     );
   }
@@ -66,20 +59,23 @@ export default function Connections() {
     <div className="space-y-5">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-[16px] font-normal tracking-[0.06em]" style={{ color: 'var(--text)' }}>
-            Connections <span style={{ color: 'var(--green)' }}>//</span> Live
-          </h1>
-          <p className="mt-0.5 text-[10.5px]" style={{ color: 'var(--text-dim)' }}>
-            Active TCP connections — auto-refreshes every 5s
+          <h1 className="text-xl font-semibold" style={{ color: 'var(--text)' }}>Connections</h1>
+          <p className="mt-1 text-sm" style={{ color: 'var(--text-dim)' }}>
+            Active TCP connections · auto-refreshes every 5s
           </p>
         </div>
         <button
           onClick={() => load(true)}
-          style={btnStyle}
-          onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--green-dim)'; e.currentTarget.style.color = 'var(--text)'; }}
-          onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border2)'; e.currentTarget.style.color = 'var(--text-mid)'; }}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: '6px',
+            padding: '7px 16px', fontFamily: 'inherit', fontSize: '13px',
+            fontWeight: 500, borderRadius: '8px', border: '1px solid var(--border)',
+            color: 'var(--text-mid)', background: 'transparent', cursor: 'pointer', transition: 'all .15s',
+          }}
+          onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent-dim)'; e.currentTarget.style.color = 'var(--text)'; }}
+          onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-mid)'; }}
         >
-          <RefreshCw size={11} className={refreshing ? 'animate-spin' : ''} />
+          <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />
           Refresh
         </button>
       </div>
@@ -91,27 +87,33 @@ export default function Connections() {
             key={id}
             onClick={() => setFilter(id)}
             style={{
-              border: '1px solid', cursor: 'pointer', padding: '3px 10px',
-              fontFamily: 'inherit', fontSize: '9.5px', letterSpacing: '.08em',
-              textTransform: 'uppercase', background: 'transparent', transition: 'all .15s',
-              borderColor: filter === id ? 'var(--green-dim)' : 'var(--border2)',
-              color: filter === id ? 'var(--green)' : 'var(--text-mid)',
-              background: filter === id ? 'var(--green-bg)' : 'transparent',
+              padding: '5px 14px', fontFamily: 'inherit', fontSize: '12px',
+              fontWeight: 500, borderRadius: '9999px', border: '1px solid',
+              cursor: 'pointer', transition: 'all .15s',
+              borderColor: filter === id ? 'var(--accent-dim)' : 'var(--border)',
+              color: filter === id ? 'var(--accent)' : 'var(--text-mid)',
+              background: filter === id ? 'var(--accent-bg)' : 'transparent',
             }}
           >
-            {id === 'all' ? 'All' : (tunnelNameMap[id] || id)}
+            {id === 'all' ? 'All tunnels' : (tunnelNameMap[id] || id)}
           </button>
         ))}
       </div>
 
       {/* Table */}
-      <div style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+      <div style={{
+        background: 'var(--surface)',
+        border: '1px solid var(--border)',
+        borderRadius: '10px',
+        boxShadow: 'var(--shadow-sm)',
+        overflow: 'hidden',
+      }}>
         <div className="overflow-x-auto">
           <table className="w-full" style={{ borderCollapse: 'collapse' }}>
             <thead>
-              <tr style={{ borderBottom: '1px solid var(--border)' }}>
+              <tr style={{ borderBottom: '1px solid var(--border)', background: 'var(--surface2)' }}>
                 {['Source IP', 'Tunnel', 'Duration', 'Bytes'].map(h => (
-                  <th key={h} className="px-4 py-2.5 text-left text-[9px] uppercase tracking-[0.18em] font-normal whitespace-nowrap" style={{ color: 'var(--text-dim)' }}>
+                  <th key={h} className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide whitespace-nowrap" style={{ color: 'var(--text-dim)' }}>
                     {h}
                   </th>
                 ))}
@@ -120,7 +122,7 @@ export default function Connections() {
             <tbody>
               {filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="px-4 py-12 text-center text-[11px]" style={{ color: 'var(--text-dim)' }}>
+                  <td colSpan={4} className="px-5 py-14 text-center text-sm" style={{ color: 'var(--text-dim)' }}>
                     No active connections
                   </td>
                 </tr>
@@ -128,17 +130,22 @@ export default function Connections() {
                 <tr
                   key={conn.connectionId}
                   style={{ borderBottom: '1px solid var(--border)' }}
-                  onMouseEnter={e => e.currentTarget.style.background = 'var(--green-bg)'}
+                  onMouseEnter={e => e.currentTarget.style.background = 'var(--accent-bg)'}
                   onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
                 >
-                  <td className="px-4 py-2.5 text-[11.5px]" style={{ color: 'var(--text)' }}>{conn.sourceIp}</td>
-                  <td className="px-4 py-2.5">
-                    <span className="border px-2 py-0.5 text-[9.5px]" style={{ color: 'var(--green)', borderColor: 'var(--green-dim)', background: 'var(--green-bg)' }}>
-                      ● {tunnelNameMap[conn.tunnelId] || conn.tunnelId}
+                  <td className="px-5 py-3 text-sm" style={{ color: 'var(--text)', fontFamily: 'var(--font-mono)' }}>{conn.sourceIp}</td>
+                  <td className="px-5 py-3">
+                    <span style={{
+                      display: 'inline-flex', alignItems: 'center', gap: '5px',
+                      fontSize: '12px', fontWeight: 500, padding: '2px 10px', borderRadius: '9999px',
+                      color: 'var(--accent)', background: 'var(--accent-bg)',
+                    }}>
+                      <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--accent)', display: 'inline-block' }} />
+                      {tunnelNameMap[conn.tunnelId] || conn.tunnelId}
                     </span>
                   </td>
-                  <td className="px-4 py-2.5 text-[11.5px]" style={{ color: 'var(--text-mid)' }}>{formatDuration(conn.startTime)}</td>
-                  <td className="px-4 py-2.5 text-[11.5px]" style={{ color: 'var(--text-mid)' }}>{formatBytes((conn.bytesIn || 0) + (conn.bytesOut || 0))}</td>
+                  <td className="px-5 py-3 text-sm" style={{ color: 'var(--text-mid)' }}>{formatDuration(conn.startTime)}</td>
+                  <td className="px-5 py-3 text-sm" style={{ color: 'var(--text-mid)' }}>{formatBytes((conn.bytesIn || 0) + (conn.bytesOut || 0))}</td>
                 </tr>
               ))}
             </tbody>

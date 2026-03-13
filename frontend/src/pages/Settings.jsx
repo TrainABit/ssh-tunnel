@@ -5,35 +5,36 @@ import { copyToClipboard } from '../utils/clipboard';
 
 function Card({ title, children }) {
   return (
-    <div style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
-      <div className="px-4 py-3" style={{ borderBottom: '1px solid var(--border)' }}>
-        <span className="text-[10px] uppercase tracking-[0.15em]" style={{ color: 'var(--text-mid)' }}>{title}</span>
+    <div style={{
+      background: 'var(--surface)',
+      border: '1px solid var(--border)',
+      borderRadius: '10px',
+      boxShadow: 'var(--shadow-sm)',
+      overflow: 'hidden',
+    }}>
+      <div className="px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
+        <span className="text-sm font-semibold" style={{ color: 'var(--text)' }}>{title}</span>
       </div>
-      <div className="p-4">{children}</div>
+      <div className="p-5">{children}</div>
     </div>
   );
 }
 
 function Row({ label, value }) {
   return (
-    <div className="flex items-center justify-between py-2" style={{ borderBottom: '1px solid var(--border)' }}>
-      <span className="text-[11px]" style={{ color: 'var(--text-dim)' }}>{label}</span>
-      <span className="text-[11px]" style={{ color: 'var(--text)' }}>{value}</span>
+    <div className="flex items-center justify-between py-2.5" style={{ borderBottom: '1px solid var(--border)' }}>
+      <span className="text-sm" style={{ color: 'var(--text-mid)' }}>{label}</span>
+      <span className="text-sm font-medium" style={{ color: 'var(--text)' }}>{value}</span>
     </div>
   );
 }
 
-const btnStyle = (variant = 'ghost') => ({
+const btnBase = {
   display: 'inline-flex', alignItems: 'center', gap: '6px',
-  padding: '6px 14px', fontFamily: 'inherit', fontSize: '10px',
-  letterSpacing: '.09em', textTransform: 'uppercase', border: '1px solid',
+  padding: '8px 16px', fontFamily: 'inherit', fontSize: '13px',
+  fontWeight: 500, borderRadius: '8px', border: '1px solid',
   cursor: 'pointer', transition: 'all .15s', background: 'transparent',
-  ...(variant === 'primary'
-    ? { background: 'linear-gradient(90deg, #0632A0 0%, #1EB4E6 100%)', borderColor: 'transparent', color: '#ffffff', fontWeight: 600 }
-    : variant === 'danger'
-    ? { borderColor: '#2a1212', color: 'var(--red)' }
-    : { borderColor: 'var(--border2)', color: 'var(--text-mid)' }),
-});
+};
 
 export default function Settings() {
   const [showToken, setShowToken] = useState(false);
@@ -50,10 +51,8 @@ export default function Settings() {
   return (
     <div className="space-y-5">
       <div>
-        <h1 className="text-[16px] font-normal tracking-[0.06em]" style={{ color: 'var(--text)' }}>
-          Settings <span style={{ color: 'var(--green)' }}>//</span> Config
-        </h1>
-        <p className="mt-0.5 text-[10.5px]" style={{ color: 'var(--text-dim)' }}>
+        <h1 className="text-xl font-semibold" style={{ color: 'var(--text)' }}>Settings</h1>
+        <p className="mt-1 text-sm" style={{ color: 'var(--text-dim)' }}>
           Server configuration and authentication
         </p>
       </div>
@@ -61,31 +60,37 @@ export default function Settings() {
       <div className="grid gap-4 xl:grid-cols-2">
         {/* Auth Token */}
         <Card title="API Authentication">
-          <p className="mb-3 text-[10.5px]" style={{ color: 'var(--text-dim)' }}>
+          <p className="mb-4 text-sm" style={{ color: 'var(--text-dim)' }}>
             Enter the AUTH_TOKEN from your server&apos;s .env file.
           </p>
-          <div className="flex items-center gap-2 mb-3 px-3 py-2" style={{ background: 'var(--bg)', border: '1px solid var(--border2)' }}>
+          <div className="flex items-center gap-2 mb-4 px-3 py-2.5" style={{
+            background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: '8px',
+            transition: 'border-color .15s',
+          }}>
             <input
               type={showToken ? 'text' : 'password'}
               value={authToken}
               onChange={e => setAuthTokenLocal(e.target.value)}
-              placeholder="Enter your AUTH_TOKEN..."
-              style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', fontFamily: 'inherit', fontSize: '12px', color: 'var(--text)' }}
+              placeholder="Enter your AUTH_TOKEN…"
+              style={{
+                flex: 1, background: 'transparent', border: 'none', outline: 'none',
+                fontFamily: 'var(--font-mono)', fontSize: '13px', color: 'var(--text)',
+              }}
             />
-            <button onClick={() => setShowToken(!showToken)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-dim)', display: 'flex' }}>
-              {showToken ? <EyeOff size={13} /> : <Eye size={13} />}
+            <button onClick={() => setShowToken(!showToken)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-dim)', display: 'flex', padding: '2px' }}>
+              {showToken ? <EyeOff size={14} /> : <Eye size={14} />}
             </button>
-            <button onClick={handleCopy} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-dim)', display: 'flex' }}>
-              {copied ? <Check size={13} style={{ color: 'var(--green)' }} /> : <Copy size={13} />}
+            <button onClick={handleCopy} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-dim)', display: 'flex', padding: '2px' }}>
+              {copied ? <Check size={14} style={{ color: 'var(--accent)' }} /> : <Copy size={14} />}
             </button>
           </div>
           <div className="flex gap-2">
-            <button onClick={handleSave} style={btnStyle('primary')}>
-              {saved ? <><Check size={11} /> Saved</> : <><Save size={11} /> Save & Reconnect</>}
+            <button onClick={handleSave} style={{ ...btnBase, background: 'linear-gradient(90deg, #0632A0 0%, #1EB4E6 100%)', borderColor: 'transparent', color: '#ffffff', fontWeight: 600 }}>
+              {saved ? <><Check size={13} /> Saved</> : <><Save size={13} /> Save & Reconnect</>}
             </button>
             {getAuthToken() && (
-              <button onClick={handleLogout} style={btnStyle('danger')}>
-                <LogOut size={11} /> Clear
+              <button onClick={handleLogout} style={{ ...btnBase, borderColor: 'rgba(200,32,32,0.3)', color: 'var(--red)' }}>
+                <LogOut size={13} /> Clear
               </button>
             )}
           </div>
@@ -109,26 +114,39 @@ export default function Settings() {
             <Row label="TLS" value="Managed by Nginx" />
             <Row label="Auto-updater" value="Every 72h via systemd timer" />
           </div>
-          <p className="mt-3 text-[10.5px]" style={{ color: 'var(--text-dim)' }}>
+          <p className="mt-4 text-sm" style={{ color: 'var(--text-dim)' }}>
             To change server settings, edit the .env file on the server and restart the service.
           </p>
         </Card>
 
         {/* Webhook Notifications */}
         <Card title="Webhook Notifications">
-          <div className="flex items-start gap-3 mb-3">
-            <Bell size={13} style={{ color: 'var(--green)', marginTop: '1px', flexShrink: 0 }} />
-            <p className="text-[10.5px]" style={{ color: 'var(--text-dim)' }}>
-              Receive push alerts when tunnels connect or disconnect. Configure in <code style={{ background: 'var(--bg)', border: '1px solid var(--border2)', padding: '1px 5px', fontSize: '10px', color: 'var(--blue)' }}>backend/.env</code> on the server.
+          <div className="flex items-start gap-3 mb-4">
+            <Bell size={15} style={{ color: 'var(--accent)', marginTop: '2px', flexShrink: 0 }} />
+            <p className="text-sm" style={{ color: 'var(--text-dim)' }}>
+              Receive push alerts when tunnels connect or disconnect. Configure in{' '}
+              <code style={{
+                background: 'var(--surface2)', borderRadius: '4px',
+                padding: '1px 6px', fontSize: '12px', color: 'var(--blue)',
+                fontFamily: 'var(--font-mono)',
+              }}>backend/.env</code> on the server.
             </p>
           </div>
-          <div style={{ background: 'var(--bg)', border: '1px solid var(--border2)', padding: '10px 14px', fontSize: '11px', lineHeight: 1.8 }}>
+          <div style={{
+            background: 'var(--bg)', border: '1px solid var(--border)',
+            borderRadius: '8px', padding: '12px 16px',
+            fontSize: '12px', lineHeight: 1.9, fontFamily: 'var(--font-mono)',
+          }}>
             <div><span style={{ color: 'var(--text-dim)' }}># Set one of: ntfy | slack | discord | json</span></div>
-            <div><span style={{ color: 'var(--blue)' }}>WEBHOOK_URL</span>=<span style={{ color: 'var(--green)' }}>https://ntfy.sh/your-topic</span></div>
-            <div><span style={{ color: 'var(--blue)' }}>WEBHOOK_TYPE</span>=<span style={{ color: 'var(--green)' }}>ntfy</span></div>
+            <div><span style={{ color: 'var(--blue)' }}>WEBHOOK_URL</span>=<span style={{ color: 'var(--accent)' }}>https://ntfy.sh/your-topic</span></div>
+            <div><span style={{ color: 'var(--blue)' }}>WEBHOOK_TYPE</span>=<span style={{ color: 'var(--accent)' }}>ntfy</span></div>
           </div>
-          <p className="mt-2 text-[10px]" style={{ color: 'var(--text-dim)' }}>
-            Then: <code style={{ background: 'var(--bg)', border: '1px solid var(--border2)', padding: '1px 5px', fontSize: '10px', color: 'var(--text-mid)' }}>sudo systemctl restart tunnelvault</code>
+          <p className="mt-3 text-xs" style={{ color: 'var(--text-dim)' }}>
+            Then:{' '}
+            <code style={{
+              background: 'var(--surface2)', borderRadius: '4px',
+              padding: '1px 6px', color: 'var(--text-mid)', fontFamily: 'var(--font-mono)',
+            }}>sudo systemctl restart tunnelvault</code>
           </p>
         </Card>
       </div>
