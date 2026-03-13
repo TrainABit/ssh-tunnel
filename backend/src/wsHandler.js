@@ -75,6 +75,8 @@ function initWebSocket(server, tunnelManager, connectionTracker, db, tcpProxy) {
     const clientIp = req.socket.remoteAddress;
     // Track ALL tunnel IDs for this WS connection (not just the last one)
     const clientTunnelIds = [];
+    // Unique ID shared by all tunnels from this WS connection
+    ws.clientId = crypto.randomUUID();
 
     const clientToken = req._clientToken || null;
     ws.clientToken = clientToken;
@@ -123,6 +125,7 @@ function initWebSocket(server, tunnelManager, connectionTracker, db, tcpProxy) {
               : undefined,
             protocol,
             clientToken: ws.clientToken?.token,
+            clientId: ws.clientId,
           };
           const tunnel = tunnelManager.createTunnel(config, ws);
           clientTunnelIds.push(tunnel.id);

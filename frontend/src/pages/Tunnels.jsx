@@ -370,18 +370,18 @@ function groupTunnels(tunnels) {
   const groups = {};
   const ungrouped = [];
   for (const t of tunnels) {
-    if (t.clientToken) {
-      if (!groups[t.clientToken]) groups[t.clientToken] = [];
-      groups[t.clientToken].push(t);
+    if (t.clientId) {
+      if (!groups[t.clientId]) groups[t.clientId] = [];
+      groups[t.clientId].push(t);
     } else {
       ungrouped.push(t);
     }
   }
-  // Only group tokens with >1 tunnel; single-tunnel tokens stay as TunnelCard
+  // Only group connections with >1 tunnel; single-tunnel connections stay as TunnelCard
   const grouped = [];
-  for (const [token, list] of Object.entries(groups)) {
+  for (const [clientId, list] of Object.entries(groups)) {
     if (list.length > 1) {
-      grouped.push({ token, tunnels: list });
+      grouped.push({ clientId, tunnels: list });
     } else {
       ungrouped.push(list[0]);
     }
@@ -485,9 +485,9 @@ export default function Tunnels() {
         </div>
       ) : (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {grouped.map(({ token, tunnels: group }) => (
+          {grouped.map(({ clientId, tunnels: group }) => (
             <ClientCard
-              key={token}
+              key={clientId}
               tunnels={group}
               onDelete={async (id) => { await deleteTunnel(id); load(); }}
               onToggle={async (id) => { await toggleTunnel(id); load(); }}

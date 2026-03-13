@@ -94,6 +94,7 @@ class TunnelManager extends EventEmitter {
       allocatedPort: config.allocatedPort || null,
       preferredPort: null, // Set after TCP listener allocates a port
       clientToken: config.clientToken || null,
+      clientId: config.clientId || null,
     };
 
     this.tunnels.set(id, tunnel);
@@ -341,6 +342,7 @@ class TunnelManager extends EventEmitter {
       protocol: t.protocol || 'http',
       allocatedPort: t.allocatedPort || null,
       clientToken: t.clientToken || null,
+      clientId: t.clientId || null,
       // ownerSecret intentionally excluded
     };
   }
