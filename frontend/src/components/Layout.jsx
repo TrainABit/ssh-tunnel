@@ -119,29 +119,13 @@ export default function Layout() {
       >
         {/* Logo area */}
         <div
-          className="flex h-16 items-center px-5 gap-3 relative overflow-hidden"
-          style={{
-            background: 'linear-gradient(135deg, #04133e 0%, #0632A0 60%, #1EB4E6 100%)',
-            borderBottom: '1px solid rgba(30,180,230,0.25)',
-          }}
+          className="flex h-16 items-center px-5 relative"
+          style={{ borderBottom: '1px solid var(--border)' }}
         >
-          <div style={{
-            position: 'absolute', inset: 0, opacity: 0.05,
-            backgroundImage: 'linear-gradient(rgba(255,255,255,.5) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.5) 1px, transparent 1px)',
-            backgroundSize: '20px 20px',
-          }} />
-          <div className="relative flex flex-col gap-0.5 min-w-0">
-            <BrandLogo height={18} />
-            <div
-              className="text-[9px] font-medium tracking-widest pl-0.5"
-              style={{ color: 'rgba(255,255,255,0.5)', letterSpacing: '0.2em' }}
-            >
-              TUNNELVAULT
-            </div>
-          </div>
+          <BrandLogo height={22} />
           <button
-            className="ml-auto lg:hidden relative"
-            style={{ color: 'rgba(255,255,255,0.7)', background: 'none', border: 'none', cursor: 'pointer' }}
+            className="ml-auto lg:hidden"
+            style={{ color: 'var(--text-dim)', background: 'none', border: 'none', cursor: 'pointer' }}
             onClick={() => setSidebarOpen(false)}
           >
             <X size={16} />
