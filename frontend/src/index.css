@@ -2,27 +2,83 @@
 
 @theme {
   --font-mono: 'IBM Plex Mono', 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+  --font-sans: 'Inter', 'Segoe UI', system-ui, sans-serif;
 }
 
-/* ── Color tokens matching reference terminal aesthetic ── */
-:root {
-  --bg:         #080c0d;
-  --surface:    #0e1416;
-  --surface2:   #131b1d;
-  --border:     #1a2426;
-  --border2:    #223033;
-  --green:      #00d47e;
-  --green-dim:  #007a49;
-  --green-glow: rgba(0,212,126,0.07);
-  --green-bg:   rgba(0,212,126,0.05);
-  --amber:      #f0a500;
-  --red:        #e84040;
-  --blue:       #38b6ff;
-  --text:       #b8ceca;
-  --text-dim:   #44605a;
-  --text-mid:   #7a9e98;
+/* ─────────────────────────────────────────────────────
+   DARK MODE (default)
+   brand corporate palette — deep navy / cyan accent
+───────────────────────────────────────────────────── */
+:root,
+[data-theme="dark"] {
+  --bg:          #060b18;
+  --surface:     #0b1428;
+  --surface2:    #0f1a30;
+  --border:      #162040;
+  --border2:     #1d2d50;
+
+  /* brand cyan accent */
+  --accent:      #1eb4e6;
+  --accent-dim:  #0a5878;
+  --accent-glow: rgba(30,180,230,0.08);
+  --accent-bg:   rgba(30,180,230,0.06);
+
+  /* Legacy aliases — page components use --green* unchanged */
+  --green:       #1eb4e6;
+  --green-dim:   #0a5878;
+  --green-glow:  rgba(30,180,230,0.08);
+  --green-bg:    rgba(30,180,230,0.06);
+
+  --amber:       #f0a500;
+  --red:         #e84040;
+  --blue:        #4aa3ff;
+
+  --text:        #c0d4e8;
+  --text-dim:    #3a5272;
+  --text-mid:    #6a8aaa;
+
+  --logo-filter: brightness(0) invert(1);  /* white logo on dark */
+  --scanline-opacity: 0.022;
 }
 
+/* ─────────────────────────────────────────────────────
+   LIGHT MODE
+   brand corporate palette — white surface / deep blue accent
+───────────────────────────────────────────────────── */
+[data-theme="light"] {
+  --bg:          #f0f3fa;
+  --surface:     #ffffff;
+  --surface2:    #e8edf8;
+  --border:      #d0dae8;
+  --border2:     #b8c6dc;
+
+  /* brand deep blue accent */
+  --accent:      #0632A0;
+  --accent-dim:  rgba(6,50,160,0.25);
+  --accent-glow: rgba(6,50,160,0.06);
+  --accent-bg:   rgba(6,50,160,0.05);
+
+  /* Legacy aliases */
+  --green:       #0632A0;
+  --green-dim:   rgba(6,50,160,0.25);
+  --green-glow:  rgba(6,50,160,0.06);
+  --green-bg:    rgba(6,50,160,0.05);
+
+  --amber:       #c87000;
+  --red:         #c82020;
+  --blue:        #1eb4e6;
+
+  --text:        #0f1e3c;
+  --text-dim:    #8a9ab8;
+  --text-mid:    #4a5a7a;
+
+  --logo-filter: none;
+  --scanline-opacity: 0;
+}
+
+/* ─────────────────────────────────────────────────────
+   BASE
+───────────────────────────────────────────────────── */
 body {
   margin: 0;
   background-color: var(--bg);
@@ -30,9 +86,10 @@ body {
   font-family: var(--font-mono);
   font-size: 12.5px;
   line-height: 1.6;
+  transition: background-color 0.2s, color 0.2s;
 }
 
-/* Scanline overlay */
+/* Scanline overlay — visible only in dark mode */
 body::after {
   content: '';
   position: fixed;
@@ -41,8 +98,8 @@ body::after {
     0deg,
     transparent,
     transparent 2px,
-    rgba(0,0,0,0.022) 2px,
-    rgba(0,0,0,0.022) 4px
+    rgba(0,0,0,var(--scanline-opacity, 0.022)) 2px,
+    rgba(0,0,0,var(--scanline-opacity, 0.022)) 4px
   );
   pointer-events: none;
   z-index: 9998;
@@ -54,11 +111,11 @@ body::after {
 ::-webkit-scrollbar-thumb { background: var(--border2); }
 
 /* ── Pulse animations ── */
-@keyframes pulse-green {
-  0%, 100% { opacity: 1; box-shadow: 0 0 5px var(--green); }
+@keyframes pulse-accent {
+  0%, 100% { opacity: 1; box-shadow: 0 0 5px var(--accent); }
   50%       { opacity: 0.5; box-shadow: none; }
 }
-.pulse-dot { animation: pulse-green 2s ease-in-out infinite; }
+.pulse-dot { animation: pulse-accent 2s ease-in-out infinite; }
 
 @keyframes pulse-amber {
   0%, 100% { opacity: 1; box-shadow: 0 0 5px var(--amber); }
@@ -66,9 +123,17 @@ body::after {
 }
 .pulse-amber { animation: pulse-amber 2s ease-in-out infinite; }
 
-/* ── Stat card top bar ── */
 @keyframes pulse-bar {
   0%, 100% { opacity: 1; }
   50%       { opacity: 0.3; }
 }
 .stat-bar-live { animation: pulse-bar 2s infinite; }
+
+/* ── Theme transition ── */
+*, *::before, *::after {
+  transition-property: background-color, border-color, color;
+  transition-duration: 0.15s;
+  transition-timing-function: ease;
+}
+/* Don't slow down transforms/opacity */
+.animate-spin, .animate-pulse { transition: none; }

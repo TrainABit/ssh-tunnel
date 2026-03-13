@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import { Shield } from 'lucide-react';
 import { getAuthToken, setAuthToken } from '../services/api';
+import BrandLogo from '../assets/BrandLogo';
 
 export default function AuthGate({ children }) {
   const [authenticated, setAuthenticated] = useState(null);
@@ -38,7 +38,7 @@ export default function AuthGate({ children }) {
   if (authenticated === null) {
     return (
       <div style={{ display: 'flex', height: '100vh', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)' }}>
-        <div style={{ width: '24px', height: '24px', borderRadius: '50%', border: '2px solid var(--green)', borderTopColor: 'transparent', animation: 'spin 0.8s linear infinite' }} />
+        <div style={{ width: '24px', height: '24px', borderRadius: '50%', border: '2px solid var(--accent)', borderTopColor: 'transparent', animation: 'spin 0.8s linear infinite' }} />
       </div>
     );
   }
@@ -47,69 +47,85 @@ export default function AuthGate({ children }) {
 
   return (
     <div style={{ display: 'flex', height: '100vh', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)', padding: '16px' }}>
-      <div style={{ width: '100%', maxWidth: '380px' }}>
-        {/* Logo */}
-        <div style={{ textAlign: 'center', marginBottom: '32px' }}>
+      <div style={{ width: '100%', maxWidth: '400px' }}>
+
+        {/* Brand header */}
+        <div style={{
+          background: 'linear-gradient(135deg, #04133e 0%, #0632A0 60%, #1EB4E6 100%)',
+          padding: '28px 32px 24px',
+          marginBottom: '0',
+          textAlign: 'center',
+          position: 'relative',
+          overflow: 'hidden',
+        }}>
+          {/* Grid overlay */}
           <div style={{
-            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-            width: '48px', height: '48px', border: '1.5px solid var(--green)',
-            color: 'var(--green)', marginBottom: '12px', position: 'relative',
-          }}>
-            <div style={{ position: 'absolute', inset: '5px', border: '1px solid var(--green-dim)', opacity: 0.5 }} />
-            <Shield size={18} strokeWidth={1.5} />
-          </div>
-          <div style={{ fontSize: '12px', letterSpacing: '.18em', textTransform: 'uppercase', color: 'var(--text)' }}>
-            TunnelVault
-          </div>
-          <div style={{ fontSize: '10px', color: 'var(--text-dim)', marginTop: '4px' }}>
-            Enter AUTH_TOKEN to access the dashboard
+            position: 'absolute', inset: 0, opacity: 0.07,
+            backgroundImage: 'linear-gradient(rgba(255,255,255,.5) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.5) 1px, transparent 1px)',
+            backgroundSize: '24px 24px',
+          }} />
+          <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
+            <BrandLogo height={24} />
+            <div style={{ fontSize: '9.5px', letterSpacing: '0.28em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.5)' }}>
+              TunnelVault Dashboard
+            </div>
           </div>
         </div>
 
-        <form onSubmit={handleLogin}>
-          <div style={{ marginBottom: '12px' }}>
-            <label style={{ display: 'block', fontSize: '9.5px', letterSpacing: '.15em', textTransform: 'uppercase', color: 'var(--text-dim)', marginBottom: '6px' }}>
-              AUTH_TOKEN
-            </label>
-            <input
-              type="password"
-              value={token}
-              onChange={e => setToken(e.target.value)}
-              placeholder="Enter token from server .env..."
-              autoFocus
-              style={{
-                width: '100%', background: 'var(--surface)', border: '1px solid var(--border2)',
-                color: 'var(--text)', fontFamily: 'inherit', fontSize: '12px',
-                padding: '10px 12px', outline: 'none', boxSizing: 'border-box',
-              }}
-              onFocus={e => e.target.style.borderColor = 'var(--green-dim)'}
-              onBlur={e => e.target.style.borderColor = 'var(--border2)'}
-            />
-            {error && (
-              <p style={{ fontSize: '11px', color: 'var(--red)', marginTop: '6px' }}>{error}</p>
-            )}
-          </div>
-
-          <button
-            type="submit"
-            style={{
-              width: '100%', background: 'var(--green)', border: '1px solid var(--green)',
-              color: '#040d0a', fontFamily: 'inherit', fontSize: '10.5px',
-              letterSpacing: '.09em', textTransform: 'uppercase', fontWeight: 600,
-              padding: '10px', cursor: 'pointer', transition: 'background .15s',
-            }}
-            onMouseEnter={e => e.currentTarget.style.background = '#00f599'}
-            onMouseLeave={e => e.currentTarget.style.background = 'var(--green)'}
-          >
-            Authenticate
-          </button>
-
-          <p style={{ marginTop: '12px', textAlign: 'center', fontSize: '10.5px', color: 'var(--text-dim)' }}>
-            Find your token in{' '}
-            <code style={{ color: 'var(--blue)', background: 'var(--surface)', padding: '1px 6px' }}>backend/.env</code>
-            {' '}→ AUTH_TOKEN
+        {/* Login form */}
+        <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderTop: 'none', padding: '24px 28px 28px' }}>
+          <p style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '20px', marginTop: 0, textAlign: 'center' }}>
+            Enter your AUTH_TOKEN to access the dashboard
           </p>
-        </form>
+
+          <form onSubmit={handleLogin}>
+            <div style={{ marginBottom: '14px' }}>
+              <label style={{ display: 'block', fontSize: '9.5px', letterSpacing: '.15em', textTransform: 'uppercase', color: 'var(--text-dim)', marginBottom: '6px' }}>
+                AUTH_TOKEN
+              </label>
+              <input
+                type="password"
+                value={token}
+                onChange={e => setToken(e.target.value)}
+                placeholder="Enter token from server .env..."
+                autoFocus
+                style={{
+                  width: '100%', background: 'var(--bg)', border: '1px solid var(--border2)',
+                  color: 'var(--text)', fontFamily: 'inherit', fontSize: '12px',
+                  padding: '10px 12px', outline: 'none', boxSizing: 'border-box',
+                }}
+                onFocus={e => e.target.style.borderColor = 'var(--accent)'}
+                onBlur={e => e.target.style.borderColor = 'var(--border2)'}
+              />
+              {error && (
+                <p style={{ fontSize: '11px', color: 'var(--red)', marginTop: '6px', marginBottom: 0 }}>{error}</p>
+              )}
+            </div>
+
+            <button
+              type="submit"
+              style={{
+                width: '100%',
+                background: 'linear-gradient(90deg, #0632A0 0%, #1EB4E6 100%)',
+                border: 'none',
+                color: '#ffffff', fontFamily: 'inherit', fontSize: '10.5px',
+                letterSpacing: '.12em', textTransform: 'uppercase', fontWeight: 600,
+                padding: '11px', cursor: 'pointer', transition: 'opacity .15s',
+              }}
+              onMouseEnter={e => e.currentTarget.style.opacity = '0.88'}
+              onMouseLeave={e => e.currentTarget.style.opacity = '1'}
+            >
+              Authenticate
+            </button>
+
+            <p style={{ marginTop: '14px', textAlign: 'center', fontSize: '10.5px', color: 'var(--text-dim)', marginBottom: 0 }}>
+              Find your token in{' '}
+              <code style={{ color: 'var(--blue)', background: 'var(--surface2)', padding: '1px 6px' }}>backend/.env</code>
+              {' '}→ AUTH_TOKEN
+            </p>
+          </form>
+        </div>
+
       </div>
     </div>
   );

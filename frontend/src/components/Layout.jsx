@@ -4,15 +4,17 @@ import {
   Globe,
   Network,
   Settings,
-  Shield,
   Key,
   Radio,
   BookOpen,
   Menu,
   X,
+  Sun,
+  Moon,
 } from 'lucide-react';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { getStats } from '../services/api';
+import BrandLogo from '../assets/BrandLogo';
 
 const NAV_MAIN = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard },
@@ -36,8 +38,8 @@ function NavItem({ to, label, icon: Icon, onClick }) {
       className={({ isActive }) =>
         `flex items-center gap-2.5 border-l-2 px-4 py-2 text-[11.5px] uppercase tracking-widest transition-all duration-150 ${
           isActive
-            ? 'border-[var(--green)] bg-[var(--green-bg)] text-[var(--green)]'
-            : 'border-transparent text-[var(--text-mid)] hover:bg-[var(--green-glow)] hover:text-[var(--text)]'
+            ? 'border-[var(--accent)] bg-[var(--accent-bg)] text-[var(--accent)]'
+            : 'border-transparent text-[var(--text-mid)] hover:bg-[var(--accent-glow)] hover:text-[var(--text)]'
         }`
       }
     >
@@ -47,9 +49,43 @@ function NavItem({ to, label, icon: Icon, onClick }) {
   );
 }
 
+function ThemeToggle({ theme, onToggle }) {
+  return (
+    <button
+      onClick={onToggle}
+      title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+      style={{
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        width: '30px', height: '30px',
+        background: 'var(--surface2)', border: '1px solid var(--border2)',
+        cursor: 'pointer', color: 'var(--text-mid)',
+        flexShrink: 0,
+        transition: 'all .15s',
+      }}
+      onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)'; }}
+      onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border2)'; e.currentTarget.style.color = 'var(--text-mid)'; }}
+    >
+      {theme === 'dark' ? <Sun size={13} /> : <Moon size={13} />}
+    </button>
+  );
+}
+
 export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [headerStats, setHeaderStats] = useState({ activeTunnels: 0, liveSessions: 0, activeTokens: 0 });
+  const [theme, setTheme] = useState(() => {
+    try { return localStorage.getItem('tv-theme') || 'dark'; } catch { return 'dark'; }
+  });
+
+  // Apply theme to <html> element
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    try { localStorage.setItem('tv-theme', theme); } catch {}
+  }, [theme]);
+
+  const toggleTheme = useCallback(() => {
+    setTheme(t => t === 'dark' ? 'light' : 'dark');
+  }, []);
 
   useEffect(() => {
     const load = async () => {
@@ -82,28 +118,32 @@ export default function Layout() {
         }`}
         style={{ background: 'var(--surface)', borderRight: '1px solid var(--border)' }}
       >
-        {/* Logo */}
+        {/* Logo area — brand gradient header */}
         <div
-          className="flex h-14 items-center gap-3 px-5"
-          style={{ borderBottom: '1px solid var(--border)' }}
+          className="flex h-16 items-center px-4 gap-3 relative overflow-hidden"
+          style={{
+            background: 'linear-gradient(135deg, #04133e 0%, #0632A0 60%, #1EB4E6 100%)',
+            borderBottom: '1px solid rgba(30,180,230,0.3)',
+          }}
         >
-          <div
-            className="flex h-8 w-8 items-center justify-center"
-            style={{ border: '1.5px solid var(--green)', color: 'var(--green)', fontSize: '14px' }}
-          >
-            <Shield size={14} strokeWidth={1.5} />
-          </div>
-          <div>
-            <div className="text-[11px] uppercase tracking-[0.18em]" style={{ color: 'var(--text)' }}>
+          {/* Subtle grid overlay */}
+          <div style={{
+            position: 'absolute', inset: 0, opacity: 0.06,
+            backgroundImage: 'linear-gradient(rgba(255,255,255,.5) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.5) 1px, transparent 1px)',
+            backgroundSize: '20px 20px',
+          }} />
+          <div className="relative flex flex-col gap-0.5 min-w-0">
+            <BrandLogo height={18} />
+            <div
+              className="text-[8.5px] uppercase tracking-[0.22em] pl-0.5"
+              style={{ color: 'rgba(255,255,255,0.55)', letterSpacing: '0.22em' }}
+            >
               TunnelVault
-            </div>
-            <div className="text-[9px] uppercase tracking-[0.1em]" style={{ color: 'var(--text-dim)' }}>
-              v0.1.0
             </div>
           </div>
           <button
-            className="ml-auto lg:hidden"
-            style={{ color: 'var(--text-dim)' }}
+            className="ml-auto lg:hidden relative"
+            style={{ color: 'rgba(255,255,255,0.7)', background: 'none', border: 'none', cursor: 'pointer' }}
             onClick={() => setSidebarOpen(false)}
           >
             <X size={16} />
@@ -119,10 +159,7 @@ export default function Layout() {
             <NavItem key={item.to} {...item} onClick={() => setSidebarOpen(false)} />
           ))}
 
-          <div
-            className="my-3 mx-4"
-            style={{ borderTop: '1px solid var(--border)' }}
-          />
+          <div className="my-3 mx-4" style={{ borderTop: '1px solid var(--border)' }} />
 
           <div className="mb-1.5 px-4 text-[9px] uppercase tracking-[0.22em]" style={{ color: 'var(--text-dim)' }}>
             Clients
@@ -137,7 +174,7 @@ export default function Layout() {
           className="flex items-center gap-2 px-4 py-3 text-[10px]"
           style={{ borderTop: '1px solid var(--border)', color: 'var(--text-dim)' }}
         >
-          <div className="h-1.5 w-1.5 rounded-full pulse-dot" style={{ background: 'var(--green)' }} />
+          <div className="h-1.5 w-1.5 rounded-full pulse-dot" style={{ background: 'var(--accent)' }} />
           Server online
         </div>
       </aside>
@@ -151,27 +188,32 @@ export default function Layout() {
         >
           <button
             className="mr-4 lg:hidden"
-            style={{ color: 'var(--text-dim)' }}
+            style={{ color: 'var(--text-dim)', background: 'none', border: 'none', cursor: 'pointer' }}
             onClick={() => setSidebarOpen(true)}
           >
             <Menu size={18} />
           </button>
 
-          {/* Header stats (like reference) */}
-          <div className="ml-auto flex items-center gap-6 text-[11px]">
+          {/* Header stats */}
+          <div className="ml-auto flex items-center gap-4 text-[11px]">
             <div className="flex items-center gap-2" style={{ color: 'var(--text-dim)' }}>
-              <div className="h-1.5 w-1.5 rounded-full pulse-dot" style={{ background: 'var(--green)' }} />
-              <span style={{ color: 'var(--green)', fontWeight: 600 }}>{headerStats.liveSessions}</span>
+              <div className="h-1.5 w-1.5 rounded-full pulse-dot" style={{ background: 'var(--accent)' }} />
+              <span style={{ color: 'var(--accent)', fontWeight: 600 }}>{headerStats.liveSessions}</span>
               {' '}Live
             </div>
-            <div className="flex items-center gap-1.5 hidden sm:flex" style={{ color: 'var(--text-dim)' }}>
-              <span style={{ color: 'var(--green)', fontWeight: 600 }}>{headerStats.activeTunnels}</span>
+            <div className="hidden sm:flex items-center gap-1.5" style={{ color: 'var(--text-dim)' }}>
+              <span style={{ color: 'var(--accent)', fontWeight: 600 }}>{headerStats.activeTunnels}</span>
               {' '}Tunnels
             </div>
-            <div className="flex items-center gap-1.5 hidden sm:flex" style={{ color: 'var(--text-dim)' }}>
-              <span style={{ color: 'var(--green)', fontWeight: 600 }}>{headerStats.activeTokens}</span>
+            <div className="hidden sm:flex items-center gap-1.5" style={{ color: 'var(--text-dim)' }}>
+              <span style={{ color: 'var(--accent)', fontWeight: 600 }}>{headerStats.activeTokens}</span>
               {' '}Tokens
             </div>
+
+            {/* Divider */}
+            <div style={{ width: '1px', height: '18px', background: 'var(--border2)' }} />
+
+            <ThemeToggle theme={theme} onToggle={toggleTheme} />
           </div>
         </header>
 

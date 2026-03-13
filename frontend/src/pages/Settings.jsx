@@ -29,7 +29,7 @@ const btnStyle = (variant = 'ghost') => ({
   letterSpacing: '.09em', textTransform: 'uppercase', border: '1px solid',
   cursor: 'pointer', transition: 'all .15s', background: 'transparent',
   ...(variant === 'primary'
-    ? { background: 'var(--green)', borderColor: 'var(--green)', color: '#040d0a', fontWeight: 600 }
+    ? { background: 'linear-gradient(90deg, #0632A0 0%, #1EB4E6 100%)', borderColor: 'transparent', color: '#ffffff', fontWeight: 600 }
     : variant === 'danger'
     ? { borderColor: '#2a1212', color: 'var(--red)' }
     : { borderColor: 'var(--border2)', color: 'var(--text-mid)' }),
