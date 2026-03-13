@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { Copy, Trash2, Power, Check, RefreshCw, ArrowRight, RotateCcw, Terminal } from 'lucide-react';
+import { Copy, Trash2, Power, Check, RefreshCw, ArrowRight, RotateCcw, Terminal, Globe } from 'lucide-react';
 import { getTunnels, deleteTunnel, toggleTunnel, rebootTunnel } from '../services/api';
 import { copyToClipboard } from '../utils/clipboard';
 import SshTerminalModal from '../components/SshTerminalModal';
@@ -18,6 +18,189 @@ const btn = {
   active: { ...btnBase, borderColor: 'var(--accent-dim)', color: 'var(--accent)' },
 };
 
+function portLabel(port) {
+  if (port === 22) return 'SSH';
+  if (port === 80 || port === 443) return 'HTTP';
+  if (port === 8080 || port === 3000 || port === 5000 || port === 8000) return 'Web';
+  return `Port ${port}`;
+}
+
+// ── Grouped card: multiple tunnels from one client token ─────
+function ClientCard({ tunnels, onDelete, onToggle, onCopy, onReboot, onSsh }) {
+  const anyActive = tunnels.some(t => t.status === 'active');
+  const allInactive = tunnels.every(t => t.status === 'inactive');
+  const clientName = tunnels[0].name;
+
+  const overallStatus = anyActive ? 'active' : allInactive ? 'inactive' : tunnels[0].status;
+  const statusColor = anyActive ? 'var(--accent)' : overallStatus === 'paused' ? 'var(--amber)' : 'var(--border2)';
+
+  const [rebootStep, setRebootStep] = useState(0);
+  const rebootTimerRef = useRef(null);
+
+  // Use any tunnel's id for reboot — they're all on the same device
+  const rebootId = tunnels.find(t => t.status === 'active')?.id ?? tunnels[0].id;
+
+  const handleRebootClick = () => {
+    if (rebootStep === 0) {
+      setRebootStep(1);
+      rebootTimerRef.current = setTimeout(() => setRebootStep(0), 4000);
+    } else if (rebootStep === 1) {
+      clearTimeout(rebootTimerRef.current);
+      setRebootStep(2);
+      onReboot(rebootId).finally(() => setTimeout(() => setRebootStep(0), 3000));
+    }
+  };
+
+  return (
+    <div style={{
+      background: 'var(--surface)',
+      border: '1px solid var(--border)',
+      borderRadius: '10px',
+      boxShadow: 'var(--shadow-sm)',
+      overflow: 'hidden',
+    }}>
+      {/* Status bar */}
+      <div style={{ height: '3px', background: statusColor, opacity: anyActive ? 1 : 0.4 }} />
+
+      <div className="p-5">
+        {/* Header */}
+        <div className="mb-4 flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div
+              className={`h-2 w-2 rounded-full ${anyActive ? 'pulse-dot' : ''}`}
+              style={{ background: statusColor, flexShrink: 0 }}
+            />
+            <span className="text-sm font-semibold" style={{ color: 'var(--text)' }}>{clientName}</span>
+          </div>
+          <span style={{
+            fontSize: '11px', fontWeight: 500, padding: '2px 10px', borderRadius: '9999px',
+            color: anyActive ? 'var(--accent)' : overallStatus === 'paused' ? 'var(--amber)' : 'var(--text-dim)',
+            background: anyActive ? 'var(--accent-bg)' : overallStatus === 'paused' ? 'rgba(240,165,0,0.1)' : 'var(--surface2)',
+          }}>
+            {tunnels.length} tunnels · {overallStatus === 'inactive' ? 'disconnected' : overallStatus}
+          </span>
+        </div>
+
+        {/* Tunnel rows */}
+        <div className="mb-4 space-y-2">
+          {tunnels.map(tunnel => {
+            const isActive = tunnel.status === 'active';
+            const isPaused = tunnel.status === 'paused';
+            const label = portLabel(tunnel.localPort);
+            const isSsh = tunnel.localPort === 22 && tunnel.protocol === 'tcp';
+            const isWeb = tunnel.protocol === 'http';
+
+            return (
+              <div key={tunnel.id} style={{
+                background: 'var(--bg)',
+                border: '1px solid var(--border)',
+                borderRadius: '8px',
+                padding: '8px 12px',
+              }}>
+                <div className="flex items-center justify-between gap-2">
+                  {/* Port info */}
+                  <div className="flex items-center gap-2 text-sm min-w-0">
+                    <span style={{
+                      fontSize: '10px', fontWeight: 600, padding: '1px 6px', borderRadius: '4px',
+                      background: 'var(--surface2)', color: 'var(--text-mid)', flexShrink: 0,
+                    }}>{label}</span>
+                    {tunnel.protocol === 'tcp' ? (
+                      <>
+                        <span style={{ color: 'var(--accent)', fontFamily: 'var(--font-mono)', fontWeight: 600, flexShrink: 0 }}>
+                          :{tunnel.allocatedPort ?? '—'}
+                        </span>
+                        <ArrowRight size={10} style={{ color: 'var(--text-dim)', flexShrink: 0 }} />
+                        <span style={{ color: 'var(--text-dim)', fontFamily: 'var(--font-mono)', fontSize: '11px' }}>
+                          :{tunnel.localPort}
+                        </span>
+                      </>
+                    ) : (
+                      <span className="truncate" style={{ color: 'var(--accent)', fontFamily: 'var(--font-mono)', fontSize: '11px' }}>
+                        {tunnel.publicUrl || '—'}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Row actions */}
+                  <div className="flex items-center gap-1.5 flex-shrink-0">
+                    {isActive && isSsh && tunnel.allocatedPort && (
+                      <button
+                        onClick={() => onSsh(tunnel)}
+                        title="Open SSH terminal"
+                        style={{ ...btnBase, padding: '3px 8px', fontSize: '11px', borderColor: 'var(--accent-dim)', color: 'var(--accent)' }}
+                      >
+                        <Terminal size={10} /> SSH
+                      </button>
+                    )}
+                    {isActive && isWeb && tunnel.publicUrl && (
+                      <button
+                        onClick={() => onCopy(tunnel.publicUrl)}
+                        title="Copy URL"
+                        style={{ ...btnBase, padding: '3px 8px', fontSize: '11px', borderColor: 'var(--border)', color: 'var(--text-mid)' }}
+                      >
+                        <Globe size={10} /> URL
+                      </button>
+                    )}
+                    {isActive && (
+                      <button
+                        onClick={() => onCopy(
+                          tunnel.protocol === 'tcp' && tunnel.allocatedPort
+                            ? `ssh user@${window.location.hostname} -p ${tunnel.allocatedPort}`
+                            : tunnel.publicUrl
+                        )}
+                        title="Copy"
+                        style={{ ...btnBase, padding: '3px 8px', fontSize: '11px', borderColor: 'var(--border)', color: 'var(--text-mid)' }}
+                      >
+                        <Copy size={10} />
+                      </button>
+                    )}
+                    {(isActive || isPaused) && (
+                      <button
+                        onClick={() => onToggle(tunnel.id)}
+                        title={isActive ? 'Stop tunnel' : 'Resume tunnel'}
+                        style={{ ...btnBase, padding: '3px 8px', fontSize: '11px', ...(isActive ? btn.amber : btn.active) }}
+                      >
+                        <Power size={10} /> {isActive ? 'Stop' : 'Resume'}
+                      </button>
+                    )}
+                    <button
+                      onClick={() => onDelete(tunnel.id)}
+                      title="Delete tunnel"
+                      style={{ ...btnBase, padding: '3px 8px', fontSize: '11px', ...btn.danger }}
+                    >
+                      <Trash2 size={10} />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Card footer: reboot */}
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleRebootClick}
+            title={rebootStep === 1 ? 'Click again to confirm reboot' : 'Reboot device'}
+            style={{
+              ...btnBase,
+              ...(rebootStep === 1
+                ? { borderColor: 'rgba(200,32,32,0.4)', color: 'var(--red)' }
+                : rebootStep === 2
+                ? { borderColor: 'var(--border)', color: 'var(--text-dim)', opacity: 0.5 }
+                : btn.ghost),
+            }}
+          >
+            <RotateCcw size={11} />
+            {rebootStep === 1 ? 'Confirm?' : rebootStep === 2 ? 'Rebooting…' : 'Reboot Device'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Single tunnel card ────────────────────────────────────────
 function TunnelCard({ tunnel, onDelete, onToggle, onCopy, onReboot, onSsh }) {
   const isActive = tunnel.status === 'active';
   const isInactive = tunnel.status === 'inactive';
@@ -182,6 +365,30 @@ function TunnelCard({ tunnel, onDelete, onToggle, onCopy, onReboot, onSsh }) {
   );
 }
 
+// ── Group tunnels by clientToken ──────────────────────────────
+function groupTunnels(tunnels) {
+  const groups = {};
+  const ungrouped = [];
+  for (const t of tunnels) {
+    if (t.clientToken) {
+      if (!groups[t.clientToken]) groups[t.clientToken] = [];
+      groups[t.clientToken].push(t);
+    } else {
+      ungrouped.push(t);
+    }
+  }
+  // Only group tokens with >1 tunnel; single-tunnel tokens stay as TunnelCard
+  const grouped = [];
+  for (const [token, list] of Object.entries(groups)) {
+    if (list.length > 1) {
+      grouped.push({ token, tunnels: list });
+    } else {
+      ungrouped.push(list[0]);
+    }
+  }
+  return { grouped, ungrouped };
+}
+
 export default function Tunnels() {
   const [tunnels, setTunnels] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -217,6 +424,9 @@ export default function Tunnels() {
       </div>
     );
   }
+
+  const { grouped, ungrouped } = groupTunnels(tunnels);
+  const totalCards = grouped.length + ungrouped.length;
 
   return (
     <div className="space-y-5">
@@ -265,7 +475,7 @@ export default function Tunnels() {
         </div>
       )}
 
-      {tunnels.length === 0 ? (
+      {totalCards === 0 ? (
         <div className="flex flex-col items-center justify-center py-20" style={{
           border: '2px dashed var(--border)',
           borderRadius: '10px',
@@ -275,7 +485,18 @@ export default function Tunnels() {
         </div>
       ) : (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {tunnels.map((tunnel) => (
+          {grouped.map(({ token, tunnels: group }) => (
+            <ClientCard
+              key={token}
+              tunnels={group}
+              onDelete={async (id) => { await deleteTunnel(id); load(); }}
+              onToggle={async (id) => { await toggleTunnel(id); load(); }}
+              onCopy={handleCopy}
+              onReboot={async (id) => { await rebootTunnel(id); }}
+              onSsh={(t) => setSshTunnel(t)}
+            />
+          ))}
+          {ungrouped.map((tunnel) => (
             <TunnelCard
               key={tunnel.id}
               tunnel={tunnel}

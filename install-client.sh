@@ -164,24 +164,20 @@ SUDOEOF
 chmod 440 "$SUDOERS_FILE"
 info "Sudoers rule added for remote reboot"
 
-# ── Step 3: Write config (skipped on upgrade) ────────────────
-if $UPGRADE; then
-  step "Configuration (preserved)"
-  skipped "Config unchanged at ${CONFIG_DIR}/config.json"
-else
-  step "Writing configuration"
-  mkdir -p "$CONFIG_DIR"
+# ── Step 3: Write config ─────────────────────────────────────
+step "Writing configuration"
+mkdir -p "$CONFIG_DIR"
 
-  # Build tunnels JSON array
-  TUNNELS_JSON="    {\"port\": ${LOCAL_PORT}, \"protocol\": \"${PROTOCOL}\", \"name\": \"ssh\"}"
-  for entry in "${EXTRA_PORTS[@]}"; do
-    IFS=':' read -r ep_port ep_proto ep_name <<< "$entry"
-    ep_proto="${ep_proto:-tcp}"
-    ep_name="${ep_name:-port-${ep_port}}"
-    TUNNELS_JSON+=",\n    {\"port\": ${ep_port}, \"protocol\": \"${ep_proto}\", \"name\": \"${ep_name}\"}"
-  done
+# Build tunnels JSON array
+TUNNELS_JSON="    {\"port\": ${LOCAL_PORT}, \"protocol\": \"${PROTOCOL}\", \"name\": \"ssh\"}"
+for entry in "${EXTRA_PORTS[@]}"; do
+  IFS=':' read -r ep_port ep_proto ep_name <<< "$entry"
+  ep_proto="${ep_proto:-tcp}"
+  ep_name="${ep_name:-port-${ep_port}}"
+  TUNNELS_JSON+=",\n    {\"port\": ${ep_port}, \"protocol\": \"${ep_proto}\", \"name\": \"${ep_name}\"}"
+done
 
-  cat > "${CONFIG_DIR}/config.json" <<CFGEOF
+cat > "${CONFIG_DIR}/config.json" <<CFGEOF
 {
   "server": "${SERVER_URL}",
   "auth_token": "${AUTH_TOKEN}",
@@ -190,17 +186,16 @@ $(printf '%b' "$TUNNELS_JSON")
   ]
 }
 CFGEOF
-  chmod 600 "${CONFIG_DIR}/config.json"
-  info "Config written to ${CONFIG_DIR}/config.json"
+chmod 600 "${CONFIG_DIR}/config.json"
+info "Config written to ${CONFIG_DIR}/config.json"
 
-  if id "$SERVICE_USER" &>/dev/null; then
-    USER_HOME=$(getent passwd "$SERVICE_USER" | cut -d: -f6)
-    if [[ -n "$USER_HOME" && -d "$USER_HOME" ]]; then
-      mkdir -p "${USER_HOME}/.tunnelvault"
-      cp "${CONFIG_DIR}/config.json" "${USER_HOME}/.tunnelvault/config.json"
-      chown -R "${SERVICE_USER}:${SERVICE_USER}" "${USER_HOME}/.tunnelvault"
-      info "Config also written to ${USER_HOME}/.tunnelvault/config.json"
-    fi
+if id "$SERVICE_USER" &>/dev/null; then
+  USER_HOME=$(getent passwd "$SERVICE_USER" | cut -d: -f6)
+  if [[ -n "$USER_HOME" && -d "$USER_HOME" ]]; then
+    mkdir -p "${USER_HOME}/.tunnelvault"
+    cp "${CONFIG_DIR}/config.json" "${USER_HOME}/.tunnelvault/config.json"
+    chown -R "${SERVICE_USER}:${SERVICE_USER}" "${USER_HOME}/.tunnelvault"
+    info "Config also written to ${USER_HOME}/.tunnelvault/config.json"
   fi
 fi
 
