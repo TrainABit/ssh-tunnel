@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useLayoutEffect } from 'react';
 import { X, Terminal, Loader, AlertCircle, KeyRound, Eye, EyeOff } from 'lucide-react';
 import { getSshWsUrl } from '../services/api';
 
@@ -86,6 +86,18 @@ export default function SshTerminalModal({ tunnel, onClose }) {
     return () => window.removeEventListener('resize', handleResize);
   }, [handleResize]);
 
+  // Init terminal AFTER React has rendered the termRef div (phase === 'connected')
+  useLayoutEffect(() => {
+    if (phase !== 'connected') return;
+    initTerminal().then(() => {
+      // Send an initial resize so the shell sends its prompt immediately
+      if (xtermRef.current && wsRef.current?.readyState === 1) {
+        const { cols, rows } = xtermRef.current;
+        wsRef.current.send(JSON.stringify({ type: 'resize', cols, rows }));
+      }
+    });
+  }, [phase]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const initTerminal = useCallback(async () => {
     await loadXterm();
     const XTerminal = loadXterm._Terminal;
@@ -131,6 +143,9 @@ export default function SshTerminalModal({ tunnel, onClose }) {
     setTimeout(() => fitAddon.fit(), 50);
   }, []);
 
+  const phaseRef = useRef(phase);
+  useEffect(() => { phaseRef.current = phase; }, [phase]);
+
   const connect = useCallback(async () => {
     if (!username.trim()) return;
 
@@ -163,8 +178,7 @@ export default function SshTerminalModal({ tunnel, onClose }) {
       }
 
       if (msg.type === 'connected') {
-        setPhase('connected');
-        await initTerminal();
+        setPhase('connected'); // initTerminal is triggered by useLayoutEffect below
         return;
       }
 
@@ -196,14 +210,14 @@ export default function SshTerminalModal({ tunnel, onClose }) {
     };
 
     ws.onclose = (evt) => {
-      if (phase === 'connecting') {
+      if (phaseRef.current === 'connecting') {
         setPhase('error');
         setErrorMsg(`Connection closed (${evt.code})`);
       } else if (xtermRef.current) {
         xtermRef.current.write('\r\n\x1b[31m[Connection closed]\x1b[0m\r\n');
       }
     };
-  }, [tunnel, username, password, authMode, privateKey, initTerminal, phase]);
+  }, [tunnel, username, password, authMode, privateKey]);
 
   // Backdrop click to close (only when not connected)
   const handleBackdrop = (e) => {
