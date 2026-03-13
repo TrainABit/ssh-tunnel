@@ -119,12 +119,12 @@ export default function Layout() {
       >
         {/* Logo area */}
         <div
-          className="flex h-16 items-center px-5 relative"
+          className="flex h-16 items-center justify-center px-5 relative"
           style={{ borderBottom: '1px solid var(--border)' }}
         >
-          <BrandLogo height={30} />
+          <BrandLogo height={35} />
           <button
-            className="ml-auto lg:hidden"
+            className="absolute right-4 lg:hidden"
             style={{ color: 'var(--text-dim)', background: 'none', border: 'none', cursor: 'pointer' }}
             onClick={() => setSidebarOpen(false)}
           >
