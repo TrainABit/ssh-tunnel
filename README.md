@@ -4,9 +4,9 @@
 
 ---
 
-## Schnellstart — SSH in einen Raspberry Pi via EC2
+## Schnellstart
 
-**1. Server deployen** (auf EC2):
+**1. Server deployen** (auf einem Linux-Server, z.B. EC2):
 ```bash
 git clone https://github.com/TrainABit/ssh-tunnel.git ~/tunnelvault
 cd ~/tunnelvault
@@ -16,29 +16,29 @@ Den Auth-Token am Ende der Ausgabe notieren.
 
 **2. Client-Token erstellen:**
 
-Dashboard öffnen: `http://DEINE-EC2-IP:4000` → Tokens → New Token (z.B. "Raspberry Pi")
+Dashboard öffnen: `http://SERVER-IP:4000` → Tokens → New Token (z.B. "Gerät A")
 
-**3. Client installieren** (auf dem Pi):
+**3. Client installieren** (auf dem Zielgerät):
 ```bash
 git clone https://github.com/TrainABit/ssh-tunnel.git ~/tunnelvault
 cd ~/tunnelvault
-sudo bash install-client.sh --server ws://DEINE-EC2-IP:4000 --token CLIENT_TOKEN
+sudo bash install-client.sh --server ws://SERVER-IP:4000 --token CLIENT_TOKEN
 ```
 
 Optional: mehrere Ports gleichzeitig tunneln (z.B. SSH + Web-Dashboard):
 ```bash
-sudo bash install-client.sh --server ws://DEINE-EC2-IP:4000 --token CLIENT_TOKEN \
+sudo bash install-client.sh --server ws://SERVER-IP:4000 --token CLIENT_TOKEN \
   --extra-port 8080:tcp:dashboard
 ```
 
-**4. Von überall einloggen:**
+**4. Von überall verbinden:**
 
-Der Dashboard zeigt den zugewiesenen Port unter Tunnels:
+Das Dashboard zeigt den zugewiesenen Port unter Tunnels:
 ```bash
-ssh pi@DEINE-EC2-IP -p PORT_AUS_DASHBOARD
+ssh user@SERVER-IP -p PORT_AUS_DASHBOARD
 ```
 
-> EC2 Security Group muss eingehend TCP auf den Ports **22**, **4000**, **4001** und **10000–10999** freigeben.
+> Firewall/Security Group muss eingehend TCP auf den Ports **22**, **4000**, **4001** und **10000–10999** freigeben.
 
 ---
 
@@ -84,13 +84,15 @@ Der Client baut eine persistente WebSocket-Verbindung zum Server auf. Der Server
 
 ---
 
-## Server-Deployment (EC2)
+## Server-Deployment
 
 ```bash
 git clone https://github.com/TrainABit/ssh-tunnel.git ~/tunnelvault
 cd ~/tunnelvault
 sudo bash install-server.sh --domain tunnel.example.com
 ```
+
+Läuft auf jedem Linux-Server (Ubuntu 22.04 empfohlen) — lokal, EC2, VPS, etc.
 
 ### install-server.sh Optionen
 
@@ -103,19 +105,19 @@ sudo bash install-server.sh --domain tunnel.example.com
 | `--upgrade` | Upgrade (DB + Config behalten, Frontend neu bauen) | — |
 | `--tls` | Nginx + Let's Encrypt automatisch einrichten | — |
 
-### EC2 Anforderungen
+### Server-Anforderungen
 
 | | Minimum | Empfohlen |
 |---|---------|-----------|
-| Instance | t3.micro (1 vCPU, 1 GB) | t3.small (2 vCPU, 2 GB) |
-| AMI | Ubuntu 22.04 LTS | Ubuntu 22.04 LTS |
-| Storage | 8 GB gp3 | 20 GB gp3 |
+| CPU / RAM | 1 vCPU, 1 GB | 2 vCPU, 2 GB |
+| OS | Ubuntu 22.04 LTS | Ubuntu 22.04 LTS |
+| Storage | 8 GB | 20 GB |
 
-### Security Group Regeln
+### Firewall-Regeln
 
 | Port | Protokoll | Zweck |
 |------|-----------|-------|
-| 22 | TCP | Admin SSH auf EC2 |
+| 22 | TCP | Admin SSH auf den Server |
 | 4000 | TCP | API + Dashboard + WebSocket |
 | 4001 | TCP | HTTP Proxy |
 | 10000–10999 | TCP | TCP Tunnel Ports |
@@ -130,7 +132,7 @@ Client-Token im Dashboard anlegen (Tokens → New Token), dann auf dem Gerät:
 ```bash
 git clone https://github.com/TrainABit/ssh-tunnel.git ~/tunnelvault
 cd ~/tunnelvault
-sudo bash install-client.sh --server ws://DEINE-EC2-IP:4000 --token DEIN_TOKEN
+sudo bash install-client.sh --server ws://SERVER-IP:4000 --token DEIN_TOKEN
 ```
 
 ### install-client.sh Optionen
@@ -186,7 +188,7 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ## Troubleshooting
 
 **Client verbindet nicht (ECONNREFUSED)**
-EC2 Security Group prüfen — Port 4000 muss eingehend freigegeben sein. Unternehmens-Netzwerke blockieren oft ausgehend Port 4000 → Gerät in anderen Netzwerk (z.B. Hotspot) testen.
+Firewall prüfen — Port 4000 muss eingehend freigegeben sein. Manche Unternehmensnetzwerke blockieren ausgehend Port 4000 → Gerät in einem anderen Netzwerk testen.
 
 **Tunnel aktiv, SSH schlägt fehl**
 `journalctl -u tunnelvault-client -f` auf dem Gerät prüfen. EC2 Security Group muss TCP 10000–10999 freigeben.
