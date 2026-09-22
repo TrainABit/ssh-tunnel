@@ -2,7 +2,7 @@ const express = require('express');
 const http = require('http');
 const https = require('https');
 const fs = require('fs');
-const { v4: uuidv4 } = require('uuid');
+const { randomUUID: uuidv4 } = require('crypto');
 const { createLogger } = require('./logger');
 const log = createLogger('proxy');
 
