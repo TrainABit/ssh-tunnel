@@ -1,5 +1,5 @@
 const net = require('net');
-const { v4: uuidv4 } = require('uuid');
+const { randomUUID: uuidv4 } = require('crypto');
 const { createLogger } = require('./logger');
 const { lookupGeo } = require('./geoip');
 const log = createLogger('tcp-proxy');
