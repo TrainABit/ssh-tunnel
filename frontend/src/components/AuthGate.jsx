@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { getAuthToken, setAuthToken } from '../services/api';
-import SyntaxLogo from '../assets/SyntaxLogo';
+import TunnelVaultLogo from '../assets/TunnelVaultLogo';
 
 export default function AuthGate({ children }) {
   const [authenticated, setAuthenticated] = useState(null);
@@ -64,7 +64,7 @@ export default function AuthGate({ children }) {
             backgroundSize: '24px 24px',
           }} />
           <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px' }}>
-            <SyntaxLogo height={26} />
+            <TunnelVaultLogo height={26} />
             <div style={{ fontSize: '10px', letterSpacing: '0.25em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.55)', fontWeight: 500 }}>
               TunnelVault Dashboard
             </div>
