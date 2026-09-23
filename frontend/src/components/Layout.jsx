@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 import { useState, useEffect, useCallback } from 'react';
 import { getStats } from '../services/api';
-import SyntaxLogo from '../assets/SyntaxLogo';
+import TunnelVaultLogo from '../assets/TunnelVaultLogo';
 
 const NAV_MAIN = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard },
@@ -122,7 +122,7 @@ export default function Layout() {
           className="flex h-16 items-center justify-center px-5 relative"
           style={{ borderBottom: '1px solid var(--border)' }}
         >
-          <SyntaxLogo height={35} />
+          <TunnelVaultLogo height={35} />
           <button
             className="absolute right-4 lg:hidden"
             style={{ color: 'var(--text-dim)', background: 'none', border: 'none', cursor: 'pointer' }}
