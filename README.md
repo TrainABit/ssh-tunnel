@@ -8,7 +8,7 @@
 
 **1. Server deployen** (auf einem Linux-Server, z.B. EC2):
 ```bash
-git clone https://github.com/Syntax-DMC/ssh-tunnel.git ~/tunnelvault
+git clone https://github.com/TrainABit/ssh-tunnel.git ~/tunnelvault
 cd ~/tunnelvault
 sudo bash install-server.sh
 ```
@@ -20,7 +20,7 @@ Dashboard öffnen: `http://SERVER-IP:4000` → Tokens → New Token (z.B. "Gerä
 
 **3. Client installieren** (auf dem Zielgerät):
 ```bash
-git clone https://github.com/Syntax-DMC/ssh-tunnel.git ~/tunnelvault
+git clone https://github.com/TrainABit/ssh-tunnel.git ~/tunnelvault
 cd ~/tunnelvault
 sudo bash install-client.sh --server ws://SERVER-IP:4000 --token CLIENT_TOKEN
 ```
@@ -87,7 +87,7 @@ Der Client baut eine persistente WebSocket-Verbindung zum Server auf. Der Server
 ## Server-Deployment
 
 ```bash
-git clone https://github.com/Syntax-DMC/ssh-tunnel.git ~/tunnelvault
+git clone https://github.com/TrainABit/ssh-tunnel.git ~/tunnelvault
 cd ~/tunnelvault
 sudo bash install-server.sh --domain tunnel.example.com
 ```
@@ -130,7 +130,7 @@ Läuft auf jedem Linux-Server (Ubuntu 22.04 empfohlen) — lokal, EC2, VPS, etc.
 Client-Token im Dashboard anlegen (Tokens → New Token), dann auf dem Gerät:
 
 ```bash
-git clone https://github.com/Syntax-DMC/ssh-tunnel.git ~/tunnelvault
+git clone https://github.com/TrainABit/ssh-tunnel.git ~/tunnelvault
 cd ~/tunnelvault
 sudo bash install-client.sh --server ws://SERVER-IP:4000 --token DEIN_TOKEN
 ```
