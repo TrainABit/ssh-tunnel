@@ -1,0 +1,135 @@
+# Signed releases: push a tag vX.Y.Z (equal to the VERSION file) to build,
+# test, sign and publish tunnelvault-vX.Y.Z.tar.gz + SHA256SUMS + SHA256SUMS.sig.
+#
+# The signing key (secret RELEASE_SIGNING_KEY, ECDSA P-256 PEM — see
+# scripts/release/generate-signing-key.sh) is only exposed to the 'publish' job,
+# which never runs npm; dependency install scripts in the 'build' job cannot
+# read it. Protect the 'release' environment (required reviewers, tag rule) in
+# the repository settings.
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Test and build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Tag must equal VERSION
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < VERSION)"
+          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match VERSION file (v${version})"
+            exit 1
+          fi
+
+      - name: Backend tests
+        working-directory: backend
+        run: |
+          npm ci --no-audit --no-fund
+          npm test
+
+      - name: Client tests
+        working-directory: client
+        run: |
+          npm ci --no-audit --no-fund
+          npm test
+
+      - name: Release tooling tests
+        run: node --test scripts/release/test/*.test.js
+
+      - name: Frontend tests and build
+        working-directory: frontend
+        run: |
+          npm ci --no-audit --no-fund
+          npm test
+          npm run build
+
+      - name: Build release archive (unsigned)
+        run: |
+          set -euo pipefail
+          scripts/release/build-release.sh "${GITHUB_REF_NAME#v}" \
+            --skip-frontend-build --unsigned --require-tag --out dist/release
+
+      - name: Upload unsigned release
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-unsigned
+          path: |
+            dist/release/tunnelvault-${{ github.ref_name }}.tar.gz
+            dist/release/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Sign and publish
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the tagged commit (release scripts + pinned public key)
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download unsigned release
+        uses: actions/download-artifact@v4
+        with:
+          name: release-unsigned
+          path: dist/release
+
+      - name: Check artifact integrity
+        run: |
+          set -euo pipefail
+          cd dist/release
+          test "$(ls -1 | sort | tr '\n' ' ')" = "SHA256SUMS tunnelvault-${GITHUB_REF_NAME}.tar.gz "
+          sha256sum --strict -c SHA256SUMS
+
+      - name: Sign SHA256SUMS
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: scripts/release/sign-release.sh dist/release --pubkey release-signing.pub
+
+      - name: Verify signed release with the committed public key
+        run: |
+          scripts/release/verify-release.sh --pubkey release-signing.pub \
+            "dist/release/tunnelvault-${GITHUB_REF_NAME}.tar.gz"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release create "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --verify-tag \
+            --title "TunnelVault ${GITHUB_REF_NAME}" \
+            --notes "Signed release ${GITHUB_REF_NAME}. Verify before installing: scripts/release/verify-release.sh --pubkey release-signing.pub tunnelvault-${GITHUB_REF_NAME}.tar.gz (or: openssl dgst -sha256 -verify release-signing.pub -signature SHA256SUMS.sig SHA256SUMS && sha256sum -c SHA256SUMS)." \
+            "dist/release/tunnelvault-${GITHUB_REF_NAME}.tar.gz" \
+            dist/release/SHA256SUMS \
+            dist/release/SHA256SUMS.sig

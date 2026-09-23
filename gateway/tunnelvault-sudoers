@@ -1,1 +1,13 @@
-tunnelvault ALL=(root) NOPASSWD: /opt/tunnelvault/manage-user.sh
+# /etc/sudoers.d/tunnelvault — installed by install-server.sh (mode 0440).
+#
+# Legacy SSH gateway: gateway users (gw-<token>, members of the group
+# tunnelvault-gw) may run the gateway helper as the unprivileged service user.
+# The helper derives the token from SUDO_USER, validates every argument and
+# only reads/writes rows of the caller's own token.
+#
+# The service itself has no sudo rights: gateway Linux users are created and
+# deleted by tunnelvault-usermgr.service (root) from requests the API writes to
+# /opt/tunnelvault/data/usermgr.
+Defaults:%tunnelvault-gw !requiretty
+Defaults:%tunnelvault-gw env_reset
+%tunnelvault-gw ALL=(tunnelvault) NOPASSWD: /opt/tunnelvault/gateway-helper.sh

@@ -122,6 +122,8 @@ export default function SshTerminalModal({ tunnel, onClose, onHostKeyChange }) {
 
   const hasStoredKey = tunnel?.has_private_key === true || tunnel?.has_private_key === 1;
   const pinnedFingerprint = typeof tunnel?.host_key_fingerprint === 'string' ? tunnel.host_key_fingerprint : '';
+  // The stored key can be removed while the dialog is open: fall back to password auth.
+  const mode = authMode === 'stored' && !hasStoredKey ? 'password' : authMode;
 
   const goto = useCallback((next) => {
     phaseRef.current = next;
@@ -276,9 +278,9 @@ export default function SshTerminalModal({ tunnel, onClose, onHostKeyChange }) {
     const user = username.trim();
     if (!user || !tunnel) return;
     let credentials = { type: 'credentials', username: user };
-    if (authMode === 'stored') {
+    if (mode === 'stored') {
       credentials.useStoredKey = true;
-    } else if (authMode === 'key') {
+    } else if (mode === 'key') {
       credentials.privateKey = privateKey.trim();
       if (passphrase) credentials.passphrase = passphrase;
     } else {
@@ -383,7 +385,7 @@ export default function SshTerminalModal({ tunnel, onClose, onHostKeyChange }) {
       }
       // 'hostkey-mismatch', 'error', 'closed': keep what is on screen.
     };
-  }, [tunnel, username, password, privateKey, passphrase, authMode, closeSocket, disposeTerminal, goto, writeOutput, writeNotice]);
+  }, [tunnel, username, password, privateKey, passphrase, mode, closeSocket, disposeTerminal, goto, writeOutput, writeNotice]);
 
   const acceptHostKey = () => {
     const ws = wsRef.current;
@@ -424,14 +426,22 @@ export default function SshTerminalModal({ tunnel, onClose, onHostKeyChange }) {
     goto('creds');
   };
 
+  // Escape closes the dialog, except while the terminal is shown (Escape belongs to the remote shell there).
+  useEffect(() => {
+    if (phase === 'connected' || phase === 'closed') return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [phase, onClose]);
+
   const handleBackdrop = (e) => {
     if (e.target === e.currentTarget && phase !== 'connected' && phase !== 'closed') onClose();
   };
 
   const showTerminal = phase === 'connected' || phase === 'closed';
   const canConnect = !!username.trim()
-    && !(authMode === 'password' && !password)
-    && !(authMode === 'key' && !privateKey.trim());
+    && !(mode === 'password' && !password)
+    && !(mode === 'key' && !privateKey.trim());
 
   return (
     <div
@@ -549,16 +559,16 @@ export default function SshTerminalModal({ tunnel, onClose, onHostKeyChange }) {
                       key={tab.id}
                       type="button"
                       role="tab"
-                      aria-selected={authMode === tab.id}
+                      aria-selected={mode === tab.id}
                       onClick={() => setAuthMode(tab.id)}
                       style={{
                         padding: '5px 14px', fontSize: '12px', fontWeight: 500,
                         borderRadius: '8px', border: '1px solid',
                         cursor: 'pointer', transition: 'all .15s',
                         fontFamily: 'inherit',
-                        borderColor: authMode === tab.id ? 'var(--accent-dim)' : 'var(--border)',
-                        color: authMode === tab.id ? 'var(--accent)' : 'var(--text-mid)',
-                        background: authMode === tab.id ? 'var(--accent-bg)' : 'transparent',
+                        borderColor: mode === tab.id ? 'var(--accent-dim)' : 'var(--border)',
+                        color: mode === tab.id ? 'var(--accent)' : 'var(--text-mid)',
+                        background: mode === tab.id ? 'var(--accent-bg)' : 'transparent',
                       }}
                     >
                       {tab.label}
@@ -566,7 +576,7 @@ export default function SshTerminalModal({ tunnel, onClose, onHostKeyChange }) {
                   ))}
                 </div>
 
-                {authMode === 'password' && (
+                {mode === 'password' && (
                   <div style={{ position: 'relative' }}>
                     <input
                       type={showPassword ? 'text' : 'password'}
@@ -594,7 +604,7 @@ export default function SshTerminalModal({ tunnel, onClose, onHostKeyChange }) {
                   </div>
                 )}
 
-                {authMode === 'key' && (
+                {mode === 'key' && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                     <textarea
                       value={privateKey}
@@ -629,7 +639,7 @@ export default function SshTerminalModal({ tunnel, onClose, onHostKeyChange }) {
                   </div>
                 )}
 
-                {authMode === 'stored' && (
+                {mode === 'stored' && (
                   <div style={{
                     display: 'flex', alignItems: 'center', gap: '8px',
                     padding: '12px 14px', borderRadius: '8px',

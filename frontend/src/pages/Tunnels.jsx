@@ -348,7 +348,7 @@ function TunnelCard({ tunnel, host, onDelete, onToggle, onCopy, onReboot, onSsh,
         <div className="mb-4 grid grid-cols-2 gap-3">
           <div style={{ background: 'var(--surface2)', borderRadius: '8px', padding: '10px 12px' }}>
             <p className="text-xs font-medium mb-1" style={{ color: 'var(--text-dim)' }}>Connections</p>
-            <p className="text-base font-semibold" style={{ color: 'var(--text)' }}>{tunnel.connections}</p>
+            <p className="text-base font-semibold" style={{ color: 'var(--text)' }}>{tunnel.connections ?? 0}</p>
           </div>
           <div style={{ background: 'var(--surface2)', borderRadius: '8px', padding: '10px 12px' }}>
             <p className="text-xs font-medium mb-1" style={{ color: 'var(--text-dim)' }}>Data</p>
@@ -465,7 +465,10 @@ export default function Tunnels() {
   const host = publicHostname(config);
   const [copied, setCopied] = useState(null);
   const [notice, setNotice] = useState(null); // { tone, text }
-  const [sshTunnel, setSshTunnel] = useState(null);
+  const [sshTunnelId, setSshTunnelId] = useState(null);
+  const [sshSnapshot, setSshSnapshot] = useState(null);
+  // Live data (has_private_key, host_key_fingerprint) once the list refreshes; snapshot if the tunnel vanished.
+  const sshTunnel = sshTunnelId ? (tunnels.find((t) => t.id === sshTunnelId) || sshSnapshot) : null;
 
   const handleCopy = (text) => {
     if (!text) return;
@@ -497,7 +500,7 @@ export default function Tunnels() {
       () => rebootTunnel(id),
       'Reboot command sent. The device reboots only if remote reboot is enabled on it (install-client.sh --allow-reboot).',
     ),
-    onSsh: (t) => setSshTunnel(t),
+    onSsh: (t) => { setSshSnapshot(t); setSshTunnelId(t.id); },
     onForgetHostKey: (id) => runAction(
       () => forgetHostKey(id),
       'Pinned host key removed. The next web-terminal connection will ask you to verify the device key.',
@@ -520,7 +523,7 @@ export default function Tunnels() {
       {sshTunnel && (
         <SshTerminalModal
           tunnel={sshTunnel}
-          onClose={() => { setSshTunnel(null); refresh(); }}
+          onClose={() => { setSshTunnelId(null); setSshSnapshot(null); refresh(); }}
           onHostKeyChange={refresh}
         />
       )}

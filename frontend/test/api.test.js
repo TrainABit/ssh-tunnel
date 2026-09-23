@@ -98,6 +98,21 @@ test('server error messages are surfaced; 429/5xx/network map to ApiError', asyn
   await assert.rejects(api.getSession(), (err) => err instanceof api.ApiError && err.status === 0);
 });
 
+test('{error, message} bodies surface the explanation; 401 always reads as an expired session', async () => {
+  respond(403, { error: 'Forbidden', message: 'Cross-origin request refused' });
+  await assert.rejects(api.deleteTunnel('t1'), (err) => err.status === 403 && err.message === 'Cross-origin request refused');
+
+  respond(429, { error: 'Too many requests', message: 'Rate limit exceeded. Try again later.' });
+  await assert.rejects(api.getTunnels(), (err) => err.status === 429 && /Rate limit exceeded/.test(err.message));
+
+  respond(401, { error: 'Unauthorized', message: 'Valid AUTH_TOKEN or dashboard session required' });
+  await assert.rejects(api.getTunnels(), (err) => err.status === 401 && /session has expired/.test(err.message));
+
+  const long = 'x'.repeat(1000);
+  respond(400, { error: long });
+  await assert.rejects(api.createToken({ label: 'a' }), (err) => err.status === 400 && err.message.length <= 301);
+});
+
 test('non-JSON 2xx bodies are errors, never "logged in"', async () => {
   respond(200, '<!doctype html><html></html>');
   await assert.rejects(api.getSession(), (err) => err instanceof api.ApiError);

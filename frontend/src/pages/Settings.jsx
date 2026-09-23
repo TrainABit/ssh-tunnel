@@ -172,7 +172,7 @@ function ConfigCards({ config }) {
         <p className="mt-4 text-sm" style={{ color: 'var(--text-dim)' }}>
           {autoUpdate?.enabled
             ? 'The updater installs only GitHub releases whose signature and checksum verify against the configured release key, and never downgrades. Settings: /etc/tunnelvault/update.conf.'
-            : 'Enable with install-server.sh --upgrade --auto-update (requires the release signing public key). Settings live in /etc/tunnelvault/update.conf.'}
+            : 'To enable, re-run install-server.sh --upgrade --auto-update with the release signing public key (--release-pubkey FILE, or release-signing.pub in the release). Settings live in /etc/tunnelvault/update.conf.'}
         </p>
       </Card>
     </>
