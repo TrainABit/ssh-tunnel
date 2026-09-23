@@ -3,23 +3,42 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { TunnelClient } from '../src/tunnel.js';
+import { TunnelClient, resolveAllowReboot } from '../src/tunnel.js';
+import { CLIENT_VERSION, isInsecureRemoteUrl } from '../src/protocol.js';
 
 /**
- * Load config from ~/.tunnelvault/config.json (if it exists).
+ * Config file: $TUNNELVAULT_CONFIG or ~/.tunnelvault/config.json (if it exists).
+ * Keys: server, tunnels[], allow_reboot (and legacy auth_token).
  * Priority: CLI flag > env var > config.json > hardcoded default
  */
+function configPath() {
+  return process.env.TUNNELVAULT_CONFIG || join(homedir(), '.tunnelvault', 'config.json');
+}
+
 function loadConfig() {
-  const configPath = join(homedir(), '.tunnelvault', 'config.json');
+  const path = configPath();
+  let parsed;
   try {
-    const raw = readFileSync(configPath, 'utf-8');
-    return JSON.parse(raw);
-  } catch {
+    parsed = JSON.parse(readFileSync(path, 'utf-8'));
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      // Never echo the parser message: it can quote file content (tokens).
+      console.error(chalk.yellow(`Warning: ignoring ${path} (${err.code || 'invalid JSON'})`));
+    }
     return {};
   }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+  if (parsed.auth_token) {
+    try {
+      if ((statSync(path).mode & 0o077) !== 0) {
+        console.error(chalk.yellow(`Warning: ${path} contains auth_token and is readable by other users — run: chmod 600 ${path}`));
+      }
+    } catch { /* ignore */ }
+  }
+  return parsed;
 }
 
 const config = loadConfig();
@@ -46,8 +65,11 @@ const program = new Command();
 program
   .name('tunnelvault')
   .description('TunnelVault — expose local servers to the internet')
-  .version('1.0.0')
-  .option('--auth-token <token>', 'auth token for the tunnel server (or set TUNNELVAULT_AUTH_TOKEN env var)');
+  .version(CLIENT_VERSION)
+  .option(
+    '--auth-token <token>',
+    'auth token for the tunnel server (visible in the process list — prefer the TUNNELVAULT_AUTH_TOKEN env var)',
+  );
 
 /**
  * Build fetch headers including auth token if available.
@@ -66,12 +88,34 @@ function authHeaders() {
   return {};
 }
 
+/** ws(s)://host:4000[/ws] -> http(s)://host:4000 for the REST API. */
+function apiBase(serverUrl) {
+  let u;
+  try {
+    u = new URL(String(serverUrl));
+  } catch {
+    console.error(chalk.red(`Error: invalid server URL: ${String(serverUrl).slice(0, 100)}`));
+    process.exit(1);
+  }
+  if (u.protocol === 'ws:') u.protocol = 'http:';
+  else if (u.protocol === 'wss:') u.protocol = 'https:';
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+    console.error(chalk.red('Error: server URL must start with ws://, wss://, http:// or https://'));
+    process.exit(1);
+  }
+  if (isInsecureRemoteUrl(u.toString())) {
+    console.error(chalk.yellow(`Warning: ${u.host} is reached over plain HTTP — the auth token is sent unencrypted.`));
+  }
+  const path = u.pathname.replace(/\/ws\/?$/, '').replace(/\/+$/, '');
+  return `${u.origin}${path}`;
+}
+
 program
   .command('connect [port]')
   .description('Connect local port(s) to the tunnel server. Omit port to use tunnels[] from config.')
   .option('-n, --name <name>', 'tunnel name (single-port mode)')
   .option('-s, --subdomain <sub>', 'requested subdomain (single-port mode)')
-  .option('--server <url>', 'tunnel server URL', DEFAULT_WS_SERVER)
+  .option('--server <url>', 'tunnel server URL (or TUNNELVAULT_SERVER env var)', DEFAULT_WS_SERVER)
   .option('--protocol <proto>', 'tunnel protocol: http or tcp', 'tcp')
   .action((port, options) => {
     const serverUrl = resolve(
@@ -87,40 +131,55 @@ program
 
     if (port) {
       // Single-port mode (legacy / manual)
-      const portNum = parseInt(port, 10);
-      if (isNaN(portNum) || portNum < 1 || portNum > 65535) {
+      const portNum = Number(port);
+      if (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535) {
         console.error(chalk.red('Error: port must be a number between 1 and 65535'));
+        process.exit(1);
+      }
+      if (options.protocol !== 'http' && options.protocol !== 'tcp') {
+        console.error(chalk.red('Error: --protocol must be http or tcp'));
         process.exit(1);
       }
       clientOptions = {
         port: portNum,
         name: options.name,
         subdomain: options.subdomain,
-        server: serverUrl,
-        authToken,
-        protocol: options.protocol === 'http' ? 'http' : 'tcp',
+        protocol: options.protocol,
       };
     } else {
       // Multi-tunnel mode — read tunnels[] from config
       const tunnels = config.tunnels;
-      if (!tunnels || tunnels.length === 0) {
-        console.error(chalk.red('Error: no port given and no tunnels[] found in ~/.tunnelvault/config.json'));
+      if (!Array.isArray(tunnels) || tunnels.length === 0) {
+        console.error(chalk.red(`Error: no port given and no tunnels[] found in ${configPath()}`));
         console.error(chalk.dim('  Either run: tunnelvault connect <port>'));
         console.error(chalk.dim('  Or add tunnels to your config.json'));
         process.exit(1);
       }
-      clientOptions = {
-        tunnels,
-        server: serverUrl,
-        authToken,
-      };
+      clientOptions = { tunnels };
     }
 
-    const client = new TunnelClient(clientOptions);
+    let client;
+    try {
+      client = new TunnelClient({
+        ...clientOptions,
+        server: serverUrl,
+        authToken,
+        // Remote reboot from the dashboard is opt-in: config.json "allow_reboot": true
+        // or TUNNELVAULT_ALLOW_REBOOT=1.
+        allowReboot: resolveAllowReboot(config),
+        stateDir: process.env.TUNNELVAULT_STATE_DIR || undefined,
+      });
+    } catch (err) {
+      console.error(chalk.red(`Error: ${err.message}`));
+      process.exit(1);
+    }
 
-    const shutdown = () => {
+    let stopping = false;
+    const shutdown = async () => {
+      if (stopping) return;
+      stopping = true;
       console.log(chalk.dim('\n  Shutting down...'));
-      client.disconnect();
+      await client.disconnect();
       process.exit(0);
     };
     process.on('SIGINT', shutdown);
@@ -142,7 +201,7 @@ program
       DEFAULT_HTTP_SERVER,
     );
     // Replace options.server so downstream code uses resolved value
-    options.server = serverUrl.replace(/^ws:\/\//, 'http://').replace(/^wss:\/\//, 'https://');
+    options.server = apiBase(serverUrl);
     const spinner = ora('Fetching active tunnels...').start();
     try {
       const res = await fetch(`${options.server}/api/tunnels`, { headers: authHeaders() });
@@ -168,9 +227,9 @@ program
       console.log(`  ${'─'.repeat(80)}`);
 
       for (const t of tunnels) {
-        const name = pad(t.name || '(unnamed)', 20);
-        const url = pad(t.publicUrl || t.url || '—', 35);
-        const fwd = pad(t.forward || `localhost:${t.localPort || '?'}`, 25);
+        const name = pad(clean(t.name || '(unnamed)'), 20);
+        const url = pad(clean(t.publicUrl || t.url || '—'), 35);
+        const fwd = pad(clean(t.forward || `localhost:${t.localPort || '?'}`), 25);
         console.log(`  ${chalk.white(name)} ${chalk.green(url)} ${chalk.dim(fwd)}`);
       }
       console.log('');
@@ -192,7 +251,7 @@ program
       DEFAULT_HTTP_SERVER,
       DEFAULT_HTTP_SERVER,
     );
-    options.server = serverUrl.replace(/^ws:\/\//, 'http://').replace(/^wss:\/\//, 'https://');
+    options.server = apiBase(serverUrl);
     const spinner = ora('Checking server status...').start();
     try {
       const res = await fetch(`${options.server}/api/stats`, { headers: authHeaders() });
@@ -205,13 +264,13 @@ program
 
       console.log(chalk.cyan.bold('\n  Server Status\n'));
       console.log(`  ${chalk.dim('Server:')}     ${options.server}`);
-      console.log(`  ${chalk.dim('Uptime:')}     ${status.uptime || '—'}`);
-      console.log(`  ${chalk.dim('Tunnels:')}    ${status.activeTunnels ?? '—'}`);
-      console.log(`  ${chalk.dim('Connections:')} ${status.totalConnections ?? '—'}`);
-      console.log(`  ${chalk.dim('Bytes:')}      ${status.bytesTransferred ?? '—'}`);
+      console.log(`  ${chalk.dim('Uptime:')}     ${clean(status.uptime ?? '—')}`);
+      console.log(`  ${chalk.dim('Tunnels:')}    ${clean(status.activeTunnels ?? '—')}`);
+      console.log(`  ${chalk.dim('Connections:')} ${clean(status.totalConnections ?? '—')}`);
+      console.log(`  ${chalk.dim('Bytes:')}      ${clean(status.bytesTransferred ?? '—')}`);
       if (status.total_tokens !== undefined) {
-        console.log(`  ${chalk.dim('Tokens:')}     ${status.total_tokens} (${status.active_tokens} active)`);
-        console.log(`  ${chalk.dim('Sessions:')}   ${status.total_sessions} total, ${status.live_sessions} live`);
+        console.log(`  ${chalk.dim('Tokens:')}     ${clean(status.total_tokens)} (${clean(status.active_tokens)} active)`);
+        console.log(`  ${chalk.dim('Sessions:')}   ${clean(status.total_sessions)} total, ${clean(status.live_sessions)} live`);
       }
       console.log('');
     } catch (err) {
@@ -223,6 +282,12 @@ program
 function pad(str, len) {
   if (str.length >= len) return str.slice(0, len);
   return str + ' '.repeat(len - str.length);
+}
+
+/** Strip control characters (terminal escape injection) from server-supplied values. */
+function clean(value) {
+  // eslint-disable-next-line no-control-regex
+  return String(value).replace(/[\u0000-\u001f\u007f-\u009f]/g, '');
 }
 
 

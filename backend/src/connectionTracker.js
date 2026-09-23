@@ -15,6 +15,8 @@ class ConnectionTracker {
     this._historyInterval = setInterval(() => {
       this._recordHistoryPoint();
     }, 60_000);
+    // Never keep the process alive just for chart history.
+    this._historyInterval.unref();
 
     // Record an initial point
     this._recordHistoryPoint();
@@ -25,6 +27,7 @@ class ConnectionTracker {
    * Returns the connectionId.
    */
   startConnection(tunnelId, sourceIp) {
+    // Called for every public TCP connection / proxied HTTP request: in-memory only.
     const id = uuidv4();
     this.activeConnections.set(id, {
       connectionId: id,
