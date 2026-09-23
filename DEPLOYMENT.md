@@ -1,1565 +1,1019 @@
-# TunnelVault -- AWS EC2 Deployment Guide
+# TunnelVault 2.0 — Deployment and Operations Guide
 
-> Self-hosted SSH tunneling service. This document covers deploying TunnelVault
-> on an AWS EC2 instance, configuring it for production, and troubleshooting
-> common issues.
+This guide covers installing, configuring, upgrading and operating a TunnelVault server and its
+devices in production. The short version (in German) is in the [README](README.md); the security
+model and hardening checklist are in [SECURITY.md](SECURITY.md); the device wire protocol is in
+[docs/PROTOCOL.md](docs/PROTOCOL.md).
 
----
+## Contents
 
-## Table of Contents
-
-1. [Prerequisites](#1-prerequisites)
-2. [EC2 Instance Setup](#2-ec2-instance-setup-step-by-step)
-3. [Configuration](#3-configuration)
-4. [Post-Deployment Verification](#4-post-deployment-verification)
-5. [Client Setup](#5-client-setup)
-6. [Operations](#6-operations)
-7. [Troubleshooting](#7-troubleshooting)
-8. [Security Hardening Checklist](#8-security-hardening-checklist)
-
----
-
-## 1. Prerequisites
-
-### AWS Account and EC2 Requirements
-
-| Requirement        | Minimum                 | Recommended              |
-|--------------------|-------------------------|--------------------------|
-| Instance type      | t3.micro (1 vCPU, 1 GB) | t3.small (2 vCPU, 2 GB) |
-| AMI                | Ubuntu 22.04 LTS        | Ubuntu 22.04 LTS         |
-| Storage            | 8 GB gp3                | 20 GB gp3                |
-| Architecture       | x86_64 (amd64)          | x86_64 (amd64)           |
-
-> ARM-based instances (t4g family with Ubuntu 22.04 arm64) also work and are
-> more cost-effective. The setup is identical.
-
-### Security Group Rules
-
-Create a Security Group named `tunnelvault-sg` with the following inbound rules:
-
-| Type          | Protocol | Port Range | Source        | Purpose                          |
-|---------------|----------|------------|---------------|----------------------------------|
-| SSH           | TCP      | 22         | Your IP/32    | Admin SSH access to the EC2 host |
-| SSH           | TCP      | 22         | 0.0.0.0/0    | Gateway SSH tunnels from clients |
-| Custom TCP    | TCP      | 4000       | 0.0.0.0/0    | API + Dashboard + WebSocket      |
-| Custom TCP    | TCP      | 4001       | 0.0.0.0/0    | Proxy server (tunnel traffic)    |
-| HTTP          | TCP      | 80         | 0.0.0.0/0    | (Optional) Nginx / Let's Encrypt |
-| HTTPS         | TCP      | 443        | 0.0.0.0/0    | (Optional) Nginx with TLS        |
-
-Outbound rules: Allow all traffic (default).
-
-> **Security note:** After initial setup, consider restricting port 22 admin
-> access to your IP only, while keeping port 22 open for gateway clients via a
-> separate rule (or use a second Security Group). In practice the gateway SSH
-> users (`gw-*`) are locked down by `ForceCommand` and cannot get a shell.
-
-### Domain Setup (Optional but Recommended)
-
-For wildcard subdomain routing (e.g., `myapp.tunnel.example.com`):
-
-1. Register or use an existing domain.
-2. Create DNS records:
-
-```
-A     tunnel.example.com        -> <EC2-PUBLIC-IP>
-A     *.tunnel.example.com      -> <EC2-PUBLIC-IP>
-```
-
-If you do not have a domain, you can access the service by IP address directly.
-
-### SSH Key Pair
-
-Create an EC2 key pair in the AWS Console (or import your own):
-
-```bash
-# If generating locally:
-ssh-keygen -t ed25519 -f ~/.ssh/tunnelvault-ec2 -C "tunnelvault-ec2"
-```
-
-Import the public key to AWS via the EC2 Console under **Key Pairs > Import Key Pair**.
+1. [Overview](#overview)
+2. [Requirements](#requirements)
+3. [Getting a release](#getting-a-release)
+4. [Server installation](#server-installation)
+5. [Server configuration](#server-configuration)
+6. [Dashboard and API access](#dashboard-and-api-access)
+7. [Devices](#devices)
+8. [Signed releases and automatic updates](#signed-releases-and-automatic-updates)
+9. [Web terminal and stored SSH keys](#web-terminal-and-stored-ssh-keys)
+10. [Privacy: GeoIP and data retention](#privacy-geoip-and-data-retention)
+11. [Legacy SSH gateway](#legacy-ssh-gateway)
+12. [Docker](#docker)
+13. [Backups and restore](#backups-and-restore)
+14. [Upgrading from 1.x](#upgrading-from-1x)
+15. [Operations](#operations)
+16. [Troubleshooting](#troubleshooting)
 
 ---
 
-## 2. EC2 Instance Setup (Step by Step)
+## Overview
 
-### 2.1 Launch the EC2 Instance
+| Component | What it is | Where it runs |
+|---|---|---|
+| **Server** (`tunnelvault.service`) | Node.js service: dashboard, REST API, device WebSocket (`/ws`), web terminal (`/ws/ssh`), HTTP tunnel proxy and the public TCP tunnel ports | Your internet-facing Linux server |
+| **nginx + Let's Encrypt** (optional, recommended) | Terminates TLS for the dashboard, API, WebSockets and HTTP tunnels | Same server (`install-server.sh --tls`) |
+| **Device client** (`tunnelvault-client.service`) | Keeps an outbound WebSocket to the server and forwards tunnel streams to local ports | Each device you want to reach |
+| **Signed updaters** (optional) | systemd timers that install new signed GitHub releases | Server and/or devices (`--auto-update`) |
+| **Legacy SSH gateway** (optional) | `gw-<token>` Linux users whose SSH sessions are relayed to a fixed target | Server (installed with the server) |
 
-1. Open the **EC2 Console** and click **Launch Instance**.
-2. Set the name to `tunnelvault-gateway`.
-3. Select **Ubuntu Server 22.04 LTS** AMI (64-bit x86).
-4. Choose instance type: **t3.micro** (free tier eligible) or larger.
-5. Select your key pair (e.g., `tunnelvault-ec2`).
-6. Under **Network settings**, select the `tunnelvault-sg` Security Group.
-7. Set storage to **20 GB gp3**.
-8. Click **Launch Instance**.
-9. Note the **Public IPv4 address** once the instance is running.
+How a TCP tunnel works: the device connects to `wss://DOMAIN/ws` with its device token and registers
+its configured local ports. The server assigns each TCP tunnel a public port from
+`TCP_PORT_MIN`–`TCP_PORT_MAX` (default 10000–10999). The port stays the same across reconnects,
+restarts and upgrades. When someone connects to that port, the server opens a stream over the
+device's WebSocket, and the device connects it to `localhost:<local port>`. HTTP tunnels work the
+same way, routed by host name `<subdomain>.DOMAIN`.
 
-### 2.2 SSH Into the Instance
+### Files and paths
 
-```bash
-ssh -i ~/.ssh/tunnelvault-ec2 ubuntu@<EC2-PUBLIC-IP>
-```
+Server:
 
-### 2.3 System Update
+| Path | Content |
+|---|---|
+| `/opt/tunnelvault/backend/.env` | Server configuration (0600, owned by `tunnelvault`) |
+| `/opt/tunnelvault/data/tunnelvault.db` | SQLite database: tokens, tunnels, sessions, encrypted keys (0600) |
+| `/opt/tunnelvault/logs/tunnelvault.log` | Log file (also in the journal), rotated daily (`/etc/logrotate.d/tunnelvault`) |
+| `/opt/tunnelvault/VERSION` | Installed version |
+| `/opt/tunnelvault/{backend,frontend}` | Application (owned by root, read-only for the service) |
+| `/etc/systemd/system/tunnelvault.service` | Server unit (hardened, user `tunnelvault`) |
+| `/etc/nginx/sites-available/tunnelvault` | nginx site (with `--tls`; `/etc/nginx/conf.d/tunnelvault.conf` on systems without `sites-available`) |
+| `/etc/letsencrypt/renewal-hooks/deploy/tunnelvault-reload-nginx.sh` | Reloads nginx after certificate renewal |
+| `/etc/tunnelvault/update.conf`, `/etc/tunnelvault/release-signing.pub` | Updater settings and pinned release key (with `--auto-update`) |
+| `/opt/tunnelvault/auto-update.sh`, `tunnelvault-autoupdate.{service,timer}` | Signed updater (with `--auto-update`) |
+| `/var/log/tunnelvault-update.log` | Updater log (also in the journal) |
+| `/var/backups/tunnelvault/` | Configuration backups made by the installer, full backups made by the uninstaller (0700) |
+| `/opt/tunnelvault/{ssh_router,gateway-helper,manage-user,register_token,usermgr-worker}.sh`, `/etc/sudoers.d/tunnelvault`, `tunnelvault-usermgr.{path,service}` | Legacy SSH gateway |
 
-```bash
-sudo apt update && sudo apt upgrade -y
-sudo reboot
-```
+Device:
 
-Wait 30 seconds and reconnect:
-
-```bash
-ssh -i ~/.ssh/tunnelvault-ec2 ubuntu@<EC2-PUBLIC-IP>
-```
-
-### 2.4 Install Git
-
-```bash
-sudo apt install -y git
-```
-
-### 2.5 Clone the Project
-
-```bash
-cd /home/ubuntu
-git clone <YOUR-REPO-URL> tunnelvault
-cd tunnelvault
-```
-
-Alternatively, upload the project via `scp`:
-
-```bash
-# Run from your local machine:
-scp -i ~/.ssh/tunnelvault-ec2 -r /path/to/tunnelvault ubuntu@<EC2-PUBLIC-IP>:/home/ubuntu/tunnelvault
-```
-
-### 2.6 Build the Frontend
-
-The setup script copies the built frontend to `/opt/tunnelvault`. Build it
-before running setup:
-
-```bash
-cd /home/ubuntu/tunnelvault
-```
-
-Node.js may not be installed yet. The setup script installs Node.js 20.x, so
-you can either run setup first (the frontend will be skipped with a warning) and
-build later, or install Node.js manually first:
-
-```bash
-# Quick Node.js install for the build step:
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt install -y nodejs
-
-# Install dependencies and build:
-cd /home/ubuntu/tunnelvault/frontend
-npm install
-npm run build
-cd /home/ubuntu/tunnelvault
-```
-
-### 2.7 Run the Gateway Setup Script
-
-```bash
-cd /home/ubuntu/tunnelvault/gateway
-sudo bash setup.sh
-```
-
-Expected output:
-
-```
-==> Installing system dependencies...
-==> Installing Node.js 20.x via NodeSource...   (or "already installed")
-==> Creating gateway directory: /opt/tunnelvault
-==> Copying gateway scripts...
-==> Setting up TunnelVault backend...
-==> Copying built frontend...
-==> Initialising SQLite database...
-==> Configuring sshd...
-==> sshd restarted.
-==> Creating systemd service for TunnelVault API...
-
-+======================================================+
-|        TunnelVault Gateway Setup Complete!            |
-+======================================================+
-|  Gateway IP:    <YOUR-EC2-IP>
-|  SSH Port:      22
-|  API/Dashboard: http://<YOUR-EC2-IP>:4000
-|  Proxy Port:    4001
-|  Logs:          tail -f /var/log/tunnelvault-gateway.log
-|                 journalctl -u tunnelvault-api -f
-|  DB:            /opt/tunnelvault/tokens.db
-+------------------------------------------------------+
-```
-
-### 2.8 Verify Services Are Running
-
-```bash
-# Check the systemd service
-sudo systemctl status tunnelvault-api
-
-# Expected: Active: active (running)
-
-# Check ports are listening
-sudo ss -tlnp | grep -E '4000|4001'
-
-# Expected:
-# LISTEN  0  511  *:4000  *:*  users:(("node",pid=...,fd=...))
-# LISTEN  0  511  *:4001  *:*  users:(("node",pid=...,fd=...))
-
-# Quick API test
-curl http://localhost:4000/api/health
-
-# Expected: {"status":"ok","uptime":<milliseconds>}
-```
+| Path | Content |
+|---|---|
+| `/etc/tunnelvault/client.env` | `TUNNELVAULT_SERVER`, `TUNNELVAULT_AUTH_TOKEN`, `TUNNELVAULT_ALLOW_REBOOT` (0600 root, systemd `EnvironmentFile=`) |
+| `/etc/tunnelvault/config.json` | Server URL, tunnels, `allow_reboot`; no token (root:&lt;service group&gt; 0640, read by the service) |
+| `~SERVICE_USER/.tunnelvault/config.json` | Copy of the configuration for the `tunnelvault` CLI (0600) |
+| `/var/lib/tunnelvault/state.json` | Reconnect state: tunnel IDs and owner secrets that keep the public ports (0600, directory 0700) |
+| `/opt/tunnelvault-client/` (+ `.previous`) | Client code; the previous version is kept for rollback |
+| `/usr/local/bin/tunnelvault` | CLI |
+| `/etc/systemd/system/tunnelvault-client.service` | Device unit |
+| `/etc/sudoers.d/tunnelvault-reboot` | Remote reboot rule (only with `--allow-reboot`) |
+| `/opt/tunnelvault-client/auto-update-client.sh`, `tunnelvault-client-autoupdate.{service,timer}`, `/var/log/tunnelvault-client-update.log` | Signed updater (with `--auto-update`) |
 
 ---
 
-## 3. Configuration
+## Requirements
 
-### 3.1 Environment Variables
+**Server**
 
-The systemd service sets environment variables directly in the unit file at
-`/etc/systemd/system/tunnelvault-api.service`. Here is every variable:
+- Debian or Ubuntu with systemd and `apt` (the installer refuses other systems). Minimum 1 vCPU,
+  1 GB RAM and 8 GB disk; 2 vCPU and 2 GB RAM recommended.
+- Node.js 20 or newer. If it is missing or older, the installer installs Node.js 22 from
+  NodeSource. It installs `sqlite3`, `curl`, `openssl` and friends, and with `--tls` also nginx
+  and certbot.
+- A DNS name for the server (`tunnel.example.com`, A/AAAA record), required for `--tls`. For
+  HTTP tunnels also a wildcard record `*.tunnel.example.com` pointing to the same server.
+- Inbound ports: see [Firewall](#firewall). Cloud security groups must allow the same ports.
 
-| Variable       | Default                      | Description                                                  |
-|----------------|------------------------------|--------------------------------------------------------------|
-| `PORT`         | `4000`                       | API + Dashboard + WebSocket server port                      |
-| `PROXY_PORT`   | `4001`                       | Proxy server port (handles tunneled HTTP traffic)            |
-| `DOMAIN`       | `tunnel.local`               | Base domain for subdomain routing (e.g., `tunnel.example.com`) |
-| `AUTH_TOKEN`   | `tvault-dev-token-2024`      | API authentication token -- **CHANGE THIS IN PRODUCTION**    |
-| `DB_PATH`      | `/opt/tunnelvault/tokens.db` | Path to the SQLite database                                  |
-| `GATEWAY_DIR`  | `/opt/tunnelvault`           | Base directory for gateway files                             |
-| `NODE_ENV`     | `production`                 | Node.js environment                                          |
+**Devices**
 
-To change any variable, edit the service file:
+- Linux with systemd (Debian, Ubuntu, Raspberry Pi OS, …). With `apt` the installer installs
+  Node.js 22 when needed; on other distributions install Node.js ≥ 20 first.
+- Outbound access to the server: TCP 443 (`wss://`), or the API port (default 4000) without TLS.
+  No inbound ports are needed on the device.
+- A Linux account for the service. A dedicated unprivileged user is recommended (see
+  [Installing a device](#installing-a-device)).
 
-```bash
-sudo systemctl edit tunnelvault-api
-```
+---
 
-This opens an override file. Add your overrides:
+## Getting a release
 
-```ini
-[Service]
-Environment=DOMAIN=tunnel.example.com
-Environment=AUTH_TOKEN=your-secure-random-token-here
-```
+TunnelVault is distributed as signed GitHub releases: `tunnelvault-vX.Y.Z.tar.gz`, `SHA256SUMS` and
+`SHA256SUMS.sig` (an ECDSA P-256 signature over `SHA256SUMS`). Verify every download before you run
+anything from it.
 
-Then reload and restart:
+1. Obtain the release public key `release-signing.pub` once from a trusted source (the repository,
+   or a device/server you already trust: `/etc/tunnelvault/release-signing.pub`). Compare its
+   fingerprint with the one the maintainers published through a separate channel:
 
-```bash
-sudo systemctl daemon-reload
-sudo systemctl restart tunnelvault-api
-```
+   ```bash
+   openssl pkey -pubin -in release-signing.pub -outform DER | sha256sum
+   ```
 
-Alternatively, edit the unit file directly:
+2. Download and verify:
 
-```bash
-sudo nano /etc/systemd/system/tunnelvault-api.service
-sudo systemctl daemon-reload
-sudo systemctl restart tunnelvault-api
-```
+   ```bash
+   V=2.0.0
+   BASE=https://github.com/TrainABit/ssh-tunnel/releases/download/v$V
+   curl -fLO "$BASE/tunnelvault-v$V.tar.gz" -O "$BASE/SHA256SUMS" -O "$BASE/SHA256SUMS.sig"
+   openssl dgst -sha256 -verify release-signing.pub -signature SHA256SUMS.sig SHA256SUMS   # "Verified OK"
+   sha256sum -c --ignore-missing SHA256SUMS                                                  # "...: OK"
+   tar xzf "tunnelvault-v$V.tar.gz" && cd "tunnelvault-v$V"
+   ```
 
-### 3.2 Domain and DNS Configuration
+   With a trusted checkout of the repository you can instead run
+   `scripts/release/verify-release.sh --pubkey release-signing.pub tunnelvault-v$V.tar.gz` (it checks
+   the signature first, then the checksum, and fails closed). Never trust the key or script that
+   ships *inside* the archive you are verifying.
 
-If you own `example.com` and want to use `tunnel.example.com`:
+A release tree contains a prebuilt dashboard, so the server never runs a frontend build as root.
+Installing from a git checkout (`git clone --branch vX.Y.Z https://github.com/TrainABit/ssh-tunnel.git`)
+also works, but the installer then builds the dashboard itself: as root, with `npm ci` pulling the
+frontend's build dependencies from the npm registry. Prefer release packages in production.
 
-1. Set DNS records (Route 53, Cloudflare, etc.):
+All installers must be started from the root of the extracted tree (or checkout), with `sudo bash`:
+`sudo bash install-server.sh …`, `sudo bash install-client.sh …`.
 
-```
-A     tunnel.example.com        -> <EC2-PUBLIC-IP>     TTL 300
-A     *.tunnel.example.com      -> <EC2-PUBLIC-IP>     TTL 300
-```
+---
 
-2. Update the `DOMAIN` environment variable:
+## Server installation
 
-```bash
-sudo systemctl edit tunnelvault-api
-```
-
-```ini
-[Service]
-Environment=DOMAIN=tunnel.example.com
-```
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl restart tunnelvault-api
-```
-
-### 3.3 TLS/SSL with Let's Encrypt
-
-Install Certbot and Nginx:
+### With TLS (recommended)
 
 ```bash
-sudo apt install -y nginx certbot python3-certbot-nginx
+sudo bash install-server.sh --tls --domain tunnel.example.com --email admin@example.com
 ```
 
-Obtain a wildcard certificate (requires DNS-01 challenge):
+What happens:
+
+1. Pre-flight checks (root, apt, systemd, a complete source tree, valid arguments, `DOMAIN` is a
+   public name).
+2. System packages, Node.js, the service user `tunnelvault` and the group `tunnelvault-gw`.
+3. The application is staged (`npm ci --omit=dev`), then swapped into `/opt/tunnelvault`.
+4. `/opt/tunnelvault/backend/.env` is written with a generated 64-hex-character `AUTH_TOKEN` (unless
+   `--auth-token` is given) and a generated `DATA_ENCRYPTION_KEY`.
+5. The database is created or migrated by the backend itself.
+6. Legacy SSH gateway: a `Match User "gw-*"` block is added to `sshd_config`, validated with
+   `sshd -t` and rolled back if sshd rejects it.
+7. The systemd units are installed, and the service is started and health-checked. With
+   `--auto-update` the signed updater is installed next.
+8. Firewall (see below).
+9. nginx is configured, a Let's Encrypt certificate for `DOMAIN` is obtained with the HTTP-01
+   challenge (webroot `/var/www/tunnelvault-acme`), and a deploy hook reloads nginx after every
+   renewal. certbot's own timer renews the certificate.
+10. A summary: dashboard URL, device server URL, and **the admin token, printed only on a fresh
+    install**. It is also in `/opt/tunnelvault/backend/.env` (`AUTH_TOKEN=`).
+
+In TLS mode the backend listens on `127.0.0.1` only (`BIND_HOST=127.0.0.1`), trusts `X-Forwarded-*`
+from nginx only (`TRUST_PROXY=loopback`), and advertises `PUBLIC_URL=https://DOMAIN`. Devices
+connect to `wss://DOMAIN`. Ports 4000/4001 are not opened in the firewall.
+
+The certificate covers `DOMAIN` only. Without a wildcard certificate, HTTP tunnels on
+`*.DOMAIN` are served over **plain HTTP** on port 80 (nginx forwards them to the HTTP proxy).
+
+If certbot fails (DNS not pointing to the server yet, port 80 blocked), the installer reports it and
+exits with status 1. Fix the cause and re-run
+`sudo bash install-server.sh --upgrade --tls --domain tunnel.example.com`.
+
+### HTTPS for HTTP tunnels (wildcard certificate)
+
+A certificate for `*.DOMAIN` needs the DNS-01 challenge, which depends on your DNS provider. Obtain
+it separately, for example with certbot and your provider's DNS plugin or with a manual challenge:
 
 ```bash
-# For a single domain (HTTP-01 challenge, simpler):
-sudo certbot --nginx -d tunnel.example.com
-
-# For wildcard (DNS-01 challenge, requires DNS provider plugin):
 sudo certbot certonly --manual --preferred-challenges dns \
-  -d tunnel.example.com \
-  -d "*.tunnel.example.com"
+  --cert-name tunnel.example.com-wildcard -d '*.tunnel.example.com'
 ```
 
-For automated wildcard renewal with Route 53:
+Then pass the directory that contains `fullchain.pem` and `privkey.pem`:
 
 ```bash
-sudo apt install -y python3-certbot-dns-route53
-sudo certbot certonly --dns-route53 \
-  -d tunnel.example.com \
-  -d "*.tunnel.example.com"
+sudo bash install-server.sh --upgrade --tls --domain tunnel.example.com \
+  --wildcard-cert /etc/letsencrypt/live/tunnel.example.com-wildcard
 ```
 
-Verify auto-renewal works:
+nginx then serves `https://<subdomain>.DOMAIN` (HTTP redirects to HTTPS) and the installer sets
+`HTTP_TUNNEL_URL_TEMPLATE=https://{subdomain}.DOMAIN`. Later upgrades keep the wildcard setting.
+Renewal is your responsibility: a certificate from `--manual` cannot renew automatically, so use a
+DNS plugin for unattended renewals. When certbot renews a certificate on this host, the deploy hook
+reloads nginx.
+
+### Without TLS (LAN and testing only)
 
 ```bash
-sudo certbot renew --dry-run
+sudo bash install-server.sh --domain tunnel.local
 ```
 
-### 3.4 Nginx Reverse Proxy Configuration
+The dashboard, API and device WebSocket listen on port 4000 and the HTTP proxy on 4001, all in
+plaintext: the admin token, device tokens and web-terminal passwords cross the network unencrypted.
+The installer and the server both warn about this. To switch to TLS later, run
+`sudo bash install-server.sh --upgrade --tls --domain <your domain>` and move the devices over as
+described in [Moving devices from ws:// to wss://](#moving-devices-from-ws-to-wss).
 
-Create the Nginx config:
+### Installer options
 
-```bash
-sudo nano /etc/nginx/sites-available/tunnelvault
-```
+`sudo bash install-server.sh --help` prints the same list.
 
-Paste the following (replace `tunnel.example.com` with your domain):
+| Option | Meaning | Default |
+|---|---|---|
+| `--domain DOMAIN` | Server domain (lower-cased). A public name is required with `--tls`. | `tunnel.local` (on `--upgrade`: the configured value) |
+| `--tls` | nginx + Let's Encrypt (HTTP-01, `DOMAIN` only). | off (on `--upgrade`: an existing TunnelVault nginx site is kept) |
+| `--email EMAIL` | Let's Encrypt account e-mail (expiry notices). Only with `--tls`. | none |
+| `--wildcard-cert DIR` | Directory with `fullchain.pem` + `privkey.pem` of a separately obtained `*.DOMAIN` certificate. Only with `--tls`. | none |
+| `--auth-token TOKEN` | Admin token, 16–256 characters of `[A-Za-z0-9._~-]`. On `--upgrade` it replaces the current token (all dashboard sessions end). | 64 random hex characters, fresh installs only |
+| `--port PORT` | API / dashboard port. | `4000` |
+| `--proxy-port PORT` | HTTP tunnel proxy port. | `4001` |
+| `--no-firewall` | Do not touch the firewall; the installer prints the ports to open. | off |
+| `--auto-update` | Install the signed updater (needs a release key). Kept on `--upgrade`. | off |
+| `--no-auto-update` | Remove the updater. | – |
+| `--release-pubkey FILE` | Release signing public key (ECDSA P-256 PEM). An installed key is only replaced by this option. | installed `/etc/tunnelvault/release-signing.pub`, else `release-signing.pub` next to the script |
+| `--upgrade` | Upgrade in place: code is replaced, database and configuration are kept. | – |
+| `--yes`, `-y` | Never prompt (used by the updater). A fresh install over an existing one is refused with `--yes`. | – |
 
-```nginx
-# Upstream definitions
-upstream tunnelvault_api {
-    server 127.0.0.1:4000;
-}
+Exit status: 0 on success; 1 on invalid arguments, a service that is not healthy after the
+installation, or a requested `--tls` that did not complete.
 
-upstream tunnelvault_proxy {
-    server 127.0.0.1:4001;
-}
+Re-running without `--upgrade` over an existing installation asks for confirmation and replaces the
+configuration (the old `.env` is backed up; the existing `DATA_ENCRYPTION_KEY` is kept so stored
+keys stay readable). Use `--upgrade` to keep everything.
 
-# Redirect HTTP to HTTPS
-server {
-    listen 80;
-    server_name tunnel.example.com *.tunnel.example.com;
-    return 301 https://$host$request_uri;
-}
+### Firewall
 
-# Main server — API, Dashboard, WebSocket
-server {
-    listen 443 ssl;
-    server_name tunnel.example.com;
+| Port | With `--tls` | Without `--tls` |
+|---|---|---|
+| 22/tcp (and the port(s) sshd listens on) | allowed when the installer enables ufw | allowed when the installer enables ufw |
+| 80/tcp | allowed: ACME, redirects, HTTP tunnels without a wildcard certificate | – |
+| 443/tcp | allowed: dashboard, API, `/ws`, `/ws/ssh`, HTTP tunnels with a wildcard certificate | – |
+| 4000/tcp (`PORT`) | not opened (backend on 127.0.0.1) | allowed |
+| 4001/tcp (`PROXY_PORT`) | not opened (backend on 127.0.0.1) | allowed |
+| 10000–10999/tcp (`TCP_PORT_MIN`–`TCP_PORT_MAX`) | allowed | allowed |
 
-    ssl_certificate     /etc/letsencrypt/live/tunnel.example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/tunnel.example.com/privkey.pem;
-    ssl_protocols       TLSv1.2 TLSv1.3;
-    ssl_ciphers         HIGH:!aNULL:!MD5;
+Behaviour:
 
-    client_max_body_size 10m;
+- **ufw inactive, fresh install:** default deny incoming / allow outgoing, the SSH port(s), the
+  rules above, then ufw is enabled.
+- **ufw already active:** only the TunnelVault rules are added. Existing rules are never removed,
+  and the firewall is never reset.
+- **`--upgrade` with ufw inactive or not installed:** nothing is changed; the installer prints the
+  ports to open.
+- **firewalld active:** left alone; the installer prints the ports to open.
+- **`--no-firewall`:** skipped; the installer prints the ports to open.
+- After switching an existing install to TLS, old `4000/tcp` / `4001/tcp` rules stay. The installer
+  prints the `ufw delete allow …` commands to remove them.
 
-    # API and Dashboard
-    location / {
-        proxy_pass http://tunnelvault_api;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
-    # WebSocket endpoint
-    location /ws {
-        proxy_pass http://tunnelvault_api;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_read_timeout 86400s;
-        proxy_send_timeout 86400s;
-    }
-}
-
-# Wildcard subdomains — Proxy tunnel traffic
-server {
-    listen 443 ssl;
-    server_name *.tunnel.example.com;
-
-    ssl_certificate     /etc/letsencrypt/live/tunnel.example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/tunnel.example.com/privkey.pem;
-    ssl_protocols       TLSv1.2 TLSv1.3;
-    ssl_ciphers         HIGH:!aNULL:!MD5;
-
-    client_max_body_size 10m;
-
-    location / {
-        proxy_pass http://tunnelvault_proxy;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-```
-
-Enable the site and restart Nginx:
-
-```bash
-sudo ln -sf /etc/nginx/sites-available/tunnelvault /etc/nginx/sites-enabled/tunnelvault
-sudo rm -f /etc/nginx/sites-enabled/default
-sudo nginx -t
-sudo systemctl restart nginx
-```
-
-Expected output from `nginx -t`:
-
-```
-nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
-nginx: configuration file /etc/nginx/nginx.conf test is successful
-```
-
-### 3.5 Firewall (UFW) Rules
-
-```bash
-sudo ufw default deny incoming
-sudo ufw default allow outgoing
-sudo ufw allow 22/tcp      comment 'SSH (admin + gateway tunnels)'
-sudo ufw allow 80/tcp      comment 'HTTP (Let'\''s Encrypt + redirect)'
-sudo ufw allow 443/tcp     comment 'HTTPS (Nginx reverse proxy)'
-sudo ufw enable
-sudo ufw status verbose
-```
-
-Expected output:
-
-```
-Status: active
-Logging: on (low)
-Default: deny (incoming), allow (outgoing), disabled (routed)
-
-To                         Action      From
---                         ------      ----
-22/tcp                     ALLOW IN    Anywhere       # SSH
-80/tcp                     ALLOW IN    Anywhere       # HTTP
-443/tcp                    ALLOW IN    Anywhere       # HTTPS
-```
-
-> **Without Nginx:** If you are not using a reverse proxy, open ports 4000 and
-> 4001 directly instead of 80/443:
->
-> ```bash
-> sudo ufw allow 4000/tcp comment 'TunnelVault API'
-> sudo ufw allow 4001/tcp comment 'TunnelVault Proxy'
-> ```
+If you change `TCP_PORT_MIN`/`TCP_PORT_MAX`, run `sudo bash install-server.sh --upgrade` so the new
+range is allowed, and delete the old rule with `sudo ufw delete allow 10000:10999/tcp`.
 
 ---
 
-## 4. Post-Deployment Verification
+## Server configuration
 
-Run these checks in order. Replace `<SERVER>` with your EC2 public IP or domain.
+The server reads `/opt/tunnelvault/backend/.env` (systemd `EnvironmentFile=`). The file belongs to
+the service user and is mode 0600. Every variable, with its default, is documented in
+[backend/.env.example](backend/.env.example). Apply changes with
+`sudo systemctl restart tunnelvault`. `install-server.sh --upgrade` keeps your values; it only adds
+missing settings and updates what you pass on the command line.
 
-### 4.1 API Health Check
+| Group | Variables |
+|---|---|
+| Core | `NODE_ENV=production` (refuses to start without `AUTH_TOKEN`), `AUTH_TOKEN`, `DOMAIN`, `PUBLIC_URL`, `HTTP_TUNNEL_URL_TEMPLATE` |
+| Network | `PORT` (4000), `PROXY_PORT` (4001), `BIND_HOST` (0.0.0.0), `TCP_BIND_HOST` (0.0.0.0), `TCP_PORT_MIN`/`TCP_PORT_MAX` (10000/10999), `TCP_MAX_CONNECTIONS_PER_TUNNEL` (1000), `HTTP_PROXY_IDLE_TIMEOUT_MS` (120000) |
+| Reverse proxy | `TRUST_PROXY` (unset = ignore `X-Forwarded-*`; `loopback`, a hop count, or a list of addresses/subnets), legacy alias `BEHIND_PROXY=true`, `ALLOWED_ORIGINS` (extra CORS origins for Bearer calls, never cookies) |
+| Direct TLS | `TLS_CERT`/`TLS_KEY`, `TLS_PROXY_CERT`/`TLS_PROXY_KEY` (only without nginx; files must be readable by the `tunnelvault` user) |
+| Limits | `MAX_TUNNELS_PER_TOKEN` (10), `MAX_CONNECTIONS_PER_TOKEN` (4), `WS_UPGRADE_RATE_MAX` (60/min), `WS_AUTH_FAIL_MAX` (10/min), `API_RATE_LIMIT_PER_MIN` (300), `WEB_SSH_MAX_SESSIONS` (10), `WEB_SSH_RATE_LIMIT_PER_MIN` (10) |
+| Dashboard | `SESSION_TTL_HOURS` (12, sliding) |
+| Secrets at rest | `DATA_ENCRYPTION_KEY` or `DATA_ENCRYPTION_KEY_FILE`, `DATA_ENCRYPTION_KEY_PREVIOUS` / `_PREVIOUS_FILE` (rotation) |
+| Data & privacy | `DB_PATH`, `SESSION_RETENTION_DAYS` (90), `TUNNEL_IDLE_RETENTION_DAYS` (30), `GEOIP_PROVIDER` (`off`), `GEOIP_DB` |
+| Logging | `LOG_LEVEL` (`info`), `LOG_FORMAT` (`pretty` or `json`), `LOG_FILE` |
+| Notifications | `WEBHOOK_URL`, `WEBHOOK_TYPE` (`json`, `ntfy`, `slack`, `discord`); fired when tunnels connect or disconnect |
+| Legacy gateway | `USERMGR_SPOOL_DIR` (set by the installer), `MANAGE_USER_SCRIPT` |
+| Installation | `INSTALL_DIR` (location of `VERSION`), `TUNNELVAULT_UPDATE_CONF` (updater settings shown on the Settings page) |
 
-```bash
-curl -s http://<SERVER>:4000/api/health | python3 -m json.tool
-```
+The server exits with status **78** and a single log line when the configuration is invalid (for
+example no `AUTH_TOKEN` in production, unreadable TLS files, an invalid port). systemd does not
+restart it in that case (`RestartPreventExitStatus=78`). Fix the configuration and start it again.
 
-Expected:
+### Your own reverse proxy
 
-```json
-{
-    "status": "ok",
-    "uptime": 12345
-}
-```
+If you terminate TLS with your own proxy instead of `--tls`:
 
-### 4.2 List API Endpoints
+- Forward the dashboard host to `PORT`, including WebSocket upgrades for `/ws` and `/ws/ssh` with
+  long read timeouts and no buffering. Forward `*.DOMAIN` to `PROXY_PORT` with request and response
+  buffering off.
+- Set `Host`, `X-Forwarded-For`, `X-Forwarded-Proto` and `X-Forwarded-Host`. Do not add
+  `Strict-Transport-Security` with `includeSubDomains` unless every tunnel subdomain is served over
+  HTTPS.
+- Set `BIND_HOST=127.0.0.1` (proxy on the same host), `TRUST_PROXY` to the proxy's address
+  (`loopback` on the same host), `PUBLIC_URL=https://DOMAIN` and `HTTP_TUNNEL_URL_TEMPLATE`.
 
-```bash
-# Tunnels (should return empty array initially)
-curl -s http://<SERVER>:4000/api/tunnels | python3 -m json.tool
+`TRUST_PROXY` must name only your proxy. Trusting addresses that clients can reach directly lets
+them forge their IP address and bypass rate limits.
 
-# Tokens
-curl -s http://<SERVER>:4000/api/tokens | python3 -m json.tool
-
-# Sessions
-curl -s http://<SERVER>:4000/api/sessions | python3 -m json.tool
-
-# Stats
-curl -s http://<SERVER>:4000/api/stats | python3 -m json.tool
-```
-
-### 4.3 Dashboard (Frontend)
-
-Open a browser and navigate to:
-
-```
-http://<SERVER>:4000
-```
-
-You should see the TunnelVault dashboard. If the frontend was not built before
-setup, you will see a JSON response listing available API endpoints instead.
-
-### 4.4 WebSocket Connection Test
-
-```bash
-# Install wscat if needed
-sudo npm install -g wscat
-
-# Test WebSocket connection
-wscat -c ws://<SERVER>:4000/ws
-```
-
-Once connected, send a registration message:
-
-```json
-{"type":"register","name":"test-tunnel","localPort":3000}
-```
-
-Expected response:
-
-```json
-{"type":"registered","tunnelId":"<uuid>","publicUrl":"..."}
-```
-
-Press `Ctrl+C` to disconnect.
-
-### 4.5 Token Creation Test
-
-```bash
-# Create a token via the API
-curl -s -X POST http://<SERVER>:4000/api/tokens \
-  -H "Content-Type: application/json" \
-  -d '{
-    "label": "Test Server",
-    "target_ip": "10.0.1.42",
-    "target_port": 22,
-    "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... user@host"
-  }' | python3 -m json.tool
-```
-
-Expected:
-
-```json
-{
-    "token": "<generated-20-char-token>",
-    "linux_user": "gw-<token>"
-}
-```
-
-Or create a token via the CLI script on the server:
-
-```bash
-sudo /opt/tunnelvault/register_token.sh \
-  --token mytoken123 \
-  --ip 10.0.1.42 \
-  --port 22 \
-  --label "Dev Server" \
-  --pubkey "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... user@host"
-```
-
-### 4.6 SSH Tunnel End-to-End Test
-
-From a client machine, test the SSH tunnel (the target machine at `10.0.1.42`
-must be reachable from the EC2 instance):
-
-```bash
-ssh -o StrictHostKeyChecking=no gw-mytoken123@<EC2-PUBLIC-IP>
-```
-
-If the token, target IP, and SSH keys are configured correctly, you will be
-connected through the gateway to the target machine.
-
-### 4.7 Verification Checklist
-
-- [ ] `curl /api/health` returns `{"status":"ok",...}`
-- [ ] `curl /api/tokens` returns `{"tokens":[...]}`
-- [ ] `curl /api/stats` returns server statistics
-- [ ] WebSocket connects on `ws://<SERVER>:4000/ws`
-- [ ] Dashboard loads at `http://<SERVER>:4000`
-- [ ] Token creation works (API or CLI)
-- [ ] SSH tunnel connects through the gateway
-- [ ] Proxy port 4001 responds to requests
+The nginx site that `--tls` generates is a working reference. See the `render_nginx_conf` function
+in `install-server.sh`, or `/etc/nginx/sites-available/tunnelvault` on an installed server. The
+installer regenerates that file on `--upgrade`; to keep manual changes, delete its first line (the
+"Managed by TunnelVault" marker) and the installer will leave the file alone.
 
 ---
 
-## 5. Client Setup
+## Dashboard and API access
 
-### 5.1 SSH Config for Gateway Connections
+**Dashboard login.** Open `https://DOMAIN` (or `http://SERVER:4000` without TLS) and enter the
+admin token. The server exchanges it for a session cookie: `__Host-tv_session` over HTTPS,
+`tv_session` over plain HTTP. The cookie is HttpOnly and SameSite=Strict, and it expires after
+`SESSION_TTL_HOURS` (default 12) without activity. The browser never stores the token itself. Log
+out from the sidebar. Changing `AUTH_TOKEN` ends every session.
 
-On the client machine, add entries to `~/.ssh/config`:
+The login is rate limited to 10 attempts per minute per client IP; failed Bearer attempts on the API
+count too. The client IP is the socket address unless `TRUST_PROXY` says otherwise.
 
-```
-# TunnelVault Gateway — Dev Server
-Host dev-server
-    HostName <EC2-PUBLIC-IP>
-    User gw-mytoken123
-    IdentityFile ~/.ssh/id_ed25519
-    StrictHostKeyChecking no
-    UserKnownHostsFile /dev/null
-
-# TunnelVault Gateway — Staging Server
-Host staging
-    HostName <EC2-PUBLIC-IP>
-    User gw-stagingtoken456
-    IdentityFile ~/.ssh/id_ed25519
-    StrictHostKeyChecking no
-    UserKnownHostsFile /dev/null
-```
-
-Then connect with:
+**Scripts and the CLI** use the admin token as a Bearer token. Tokens in query strings are not
+accepted.
 
 ```bash
-ssh dev-server
-ssh staging
+TOKEN=$(sudo sed -n 's/^AUTH_TOKEN=//p' /opt/tunnelvault/backend/.env)
+curl -fsS -H "Authorization: Bearer $TOKEN" https://tunnel.example.com/api/tunnels
 ```
 
-The gateway intercepts the connection, looks up the token (`mytoken123`) in the
-database, and forwards the SSH session to the registered target IP via `netcat`.
+Cookie-authenticated `POST`/`PUT`/`PATCH`/`DELETE` requests must carry an `Origin` of the dashboard
+itself. Bearer requests are not affected. Browser calls from other origins with a Bearer token need
+`ALLOWED_ORIGINS`.
 
-### 5.2 TunnelVault CLI Client
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/health` | Health check, no authentication: `{"status":"ok","uptime":…}` |
+| POST | `/api/auth/login` | Body `{"token": "<AUTH_TOKEN>"}`; sets the session cookie |
+| POST | `/api/auth/logout` | Ends the session |
+| GET | `/api/auth/session` | `{authenticated, authRequired}`, no authentication |
+| GET | `/api/config` | Version, domain, ports, TCP range, public URLs, proxy trust, GeoIP, retention, limits, updater status |
+| GET | `/api/stats` | Aggregated statistics |
+| GET | `/api/tunnels`, `/api/tunnels/:id` | Tunnels (including `has_private_key`, `host_key_fingerprint`) |
+| POST | `/api/tunnels/:id/toggle` | Pause / resume a tunnel |
+| POST | `/api/tunnels/:id/reboot` | Ask the device to reboot (ignored unless the device opted in) |
+| DELETE | `/api/tunnels/:id/hostkey` | Forget the pinned SSH host key |
+| DELETE | `/api/tunnels/:id` | Remove a tunnel record |
+| GET | `/api/tokens`, `/api/tokens/:token` | Tokens (with session counts / last 50 sessions) |
+| POST | `/api/tokens` | Create a token: `token` (optional, 1–64 alphanumerics), `label`, and for the legacy gateway `target_ip`, `target_port`, `public_key` |
+| PATCH | `/api/tokens/:token` | Update `label`, `active` (0 disconnects the device at once), `target_ip`, `target_port`, `public_key`, `private_key` (`""` clears) |
+| DELETE | `/api/tokens/:token` | Delete a token: disconnects its devices, removes its tunnels, sessions and pinned host keys |
+| GET | `/api/sessions` | Connection history (`?active=1` for open sessions) |
+| GET | `/api/connections` | Live connections (`?tunnel=<id>`) |
 
-The CLI client creates HTTP tunnels over WebSocket. Install and use it from the
-`client/` directory:
+`POST /api/tunnels` no longer exists (405): tunnels are created only by connecting devices.
 
-```bash
-cd /path/to/tunnelvault/client
-npm install
-```
-
-**Expose a local port:**
-
-```bash
-# Expose local port 3000 through the tunnel server
-node bin/tunnelvault.js connect 3000 --server ws://<EC2-PUBLIC-IP>:4000
-
-# With a custom name and subdomain
-node bin/tunnelvault.js connect 8080 \
-  --name "my-app" \
-  --subdomain myapp \
-  --server ws://<EC2-PUBLIC-IP>:4000
-```
-
-If using TLS with Nginx:
-
-```bash
-node bin/tunnelvault.js connect 3000 --server wss://tunnel.example.com
-```
-
-**List active tunnels:**
-
-```bash
-node bin/tunnelvault.js list --server http://<EC2-PUBLIC-IP>:4000
-```
-
-**Check server status:**
-
-```bash
-node bin/tunnelvault.js status --server http://<EC2-PUBLIC-IP>:4000
-```
-
-### 5.3 Multiple Targets Setup
-
-Register multiple tokens on the gateway, each pointing to a different internal
-machine:
-
-```bash
-# Server A — Development
-sudo /opt/tunnelvault/register_token.sh \
-  --token devbox \
-  --ip 10.0.1.10 \
-  --port 22 \
-  --label "Dev Box" \
-  --pubkey "$(cat /path/to/user_pubkey.pub)"
-
-# Server B — Database
-sudo /opt/tunnelvault/register_token.sh \
-  --token dbserver \
-  --ip 10.0.2.20 \
-  --port 22 \
-  --label "Database Server" \
-  --pubkey "$(cat /path/to/user_pubkey.pub)"
-
-# Server C — Custom SSH port
-sudo /opt/tunnelvault/register_token.sh \
-  --token appserver \
-  --ip 10.0.3.30 \
-  --port 2222 \
-  --label "App Server (port 2222)" \
-  --pubkey "$(cat /path/to/user_pubkey.pub)"
-```
-
-List all registered tokens:
-
-```bash
-sudo /opt/tunnelvault/register_token.sh --list
-```
-
-Expected output:
-
-```
-TOKEN                    LABEL                IP              PORT  ACTIVE LAST SEEN
-------------------------------------------------------------------------------------
-devbox                   Dev Box              10.0.1.10       22    yes    2026-03-12 10:30:00
-dbserver                 Database Server      10.0.2.20       22    yes    never
-appserver                App Server (port 2222) 10.0.3.30     2222  yes    never
-```
+**Rotating the admin token:** from the installed release tree run
+`sudo bash install-server.sh --upgrade --auth-token "$(openssl rand -hex 32)"`, or edit `AUTH_TOKEN`
+in `.env` and restart. Every dashboard session ends. Devices use their own tokens and are not
+affected, unless one was set up with the admin token. Don't do that.
 
 ---
 
-## 6. Operations
+## Devices
 
-### 6.1 Viewing Logs
+### Creating a device token
 
-```bash
-# TunnelVault API logs (systemd journal)
-sudo journalctl -u tunnelvault-api -f
+Dashboard → **Tokens** → **New Token**. Give it a label (for example the device's location). Leave
+the token field empty to get a random 20-character token. Use one token per device: deactivating a
+token disconnects exactly that device, at once (close code 4000; the public ports stop accepting
+within seconds), and it keeps retrying until the token is active again. Deleting a token also
+removes its tunnels and pinned host keys.
 
-# Last 100 lines
-sudo journalctl -u tunnelvault-api -n 100 --no-pager
+### Installing a device
 
-# Logs since a specific time
-sudo journalctl -u tunnelvault-api --since "2026-03-12 08:00:00"
-
-# Gateway SSH router logs
-sudo tail -f /var/log/tunnelvault-gateway.log
-
-# Nginx access logs (if using reverse proxy)
-sudo tail -f /var/log/nginx/access.log
-
-# Nginx error logs
-sudo tail -f /var/log/nginx/error.log
-```
-
-### 6.2 Restarting Services
+On the device, from a verified release tree ([Getting a release](#getting-a-release)):
 
 ```bash
-# Restart the TunnelVault API
-sudo systemctl restart tunnelvault-api
+# optional: a dedicated, unprivileged service account (no home directory needed)
+sudo useradd --system --shell /usr/sbin/nologin tvclient
 
-# Restart Nginx (if using reverse proxy)
-sudo systemctl restart nginx
-
-# Restart SSH daemon (caution: will briefly drop SSH connections)
-sudo systemctl restart sshd
-
-# Reload systemd after editing unit files
-sudo systemctl daemon-reload
-sudo systemctl restart tunnelvault-api
+sudo bash install-client.sh --server wss://tunnel.example.com --token-file /root/tv-token --user tvclient
 ```
 
-### 6.3 Backup the Database
+`--token TOKEN` works too, but the token then shows up in `ps` and in the shell history while the
+installer runs. Without `--user`, the service runs as the user who invoked `sudo`. Avoid running it
+as root. On hosts that also run the server, don't use the server's `tunnelvault` account.
 
-The SQLite database at `/opt/tunnelvault/tokens.db` contains all tokens and
-session history. Back it up regularly:
+| Option | Meaning | Default |
+|---|---|---|
+| `--server URL` | `wss://HOST[:PORT][/PATH]`, or `ws://HOST[:PORT][/PATH]` for LAN/testing. No credentials, query string or fragment. | required for a fresh install |
+| `--token TOKEN` | Device token (1–64 letters and digits). | required for a fresh install (or `--token-file`) |
+| `--token-file FILE` | Read the token from a file. | – |
+| `--port PORT` | Local port of the main tunnel. | `22` |
+| `--protocol tcp\|http` | Protocol of the main tunnel. With `--upgrade` it needs `--port`. | `tcp` |
+| `--extra-port PORT[:PROTO[:NAME]]` | Additional tunnel, repeatable. `PROTO` is `tcp` or `http`; `NAME` is `[A-Za-z0-9._-]{1,64}`. | `PROTO` `tcp`, `NAME` `tunnel-PORT` |
+| `--user USER` | Account the service runs as (must exist). | the sudo user; kept on `--upgrade` |
+| `--allow-reboot` / `--no-reboot` | Allow / forbid remote reboot from the dashboard. | forbidden; kept on `--upgrade` |
+| `--auto-update` / `--no-auto-update` | Install / remove the signed updater. | off; kept on `--upgrade` |
+| `--release-pubkey FILE` | Release signing public key (ECDSA P-256 PEM). | installed key, else `release-signing.pub` next to the script |
+| `--upgrade` | Upgrade or reconfigure in place. Server, token, tunnels, service user, reboot and updater settings are kept unless given again. | – |
+| `--yes`, `-y` | Accepted for symmetry; the client installer never prompts. | – |
+
+Examples:
 
 ```bash
-# One-time backup
-sudo sqlite3 /opt/tunnelvault/tokens.db ".backup /opt/tunnelvault/backups/tokens-$(date +%Y%m%d-%H%M%S).db"
+# SSH plus a web UI (HTTP tunnel on <subdomain>.DOMAIN) and a database port
+sudo bash install-client.sh --server wss://tunnel.example.com --token-file /root/tv-token \
+  --extra-port 8080:http:webui --extra-port 5432:tcp:postgres
 
-# Create a backup directory
-sudo mkdir -p /opt/tunnelvault/backups
+# change the tunnels later: --port / --extra-port replace the whole list (main port defaults to 22)
+sudo bash install-client.sh --upgrade --port 22 --extra-port 8080:http:webui
 
-# Automated daily backup via cron
-sudo crontab -e
+# new token
+sudo bash install-client.sh --upgrade --token-file /root/new-token
 ```
 
-Add this line:
+After the installation the device appears on the **Tunnels** page with its public port(s). HTTP
+tunnels get `http(s)://<subdomain>.DOMAIN` (according to `HTTP_TUNNEL_URL_TEMPLATE`).
 
-```
-0 2 * * * sqlite3 /opt/tunnelvault/tokens.db ".backup /opt/tunnelvault/backups/tokens-$(date +\%Y\%m\%d).db" && find /opt/tunnelvault/backups -name "tokens-*.db" -mtime +30 -delete
-```
+The device authenticates the server through TLS only: use `wss://` with a publicly trusted
+certificate (Let's Encrypt). The device warns when a `ws://` URL points to a public address.
 
-This creates a backup at 2:00 AM daily and deletes backups older than 30 days.
+### What the device accepts
 
-To restore from a backup:
+The device opens local connections only to the ports it was configured with, and only for its own
+tunnels. Any other request from the server is refused. Remote reboot works only with
+`--allow-reboot`: that installs a sudoers rule that allows exactly `systemctl reboot` / `reboot`
+for the service user. Without the rule, the device logs and ignores the command. For a non-root
+service with remote reboot enabled, the unit keeps only the systemd protections that do not imply
+`NoNewPrivileges` (otherwise sudo could not work). Without remote reboot the full hardening applies.
+
+### Upgrading and reconfiguring a device
+
+From a newer verified release tree: `sudo bash install-client.sh --upgrade`. If the service is
+running, and so an SSH session may be going through the tunnel, the new version is started about
+**30 seconds** later by a transient systemd timer. The session drops once and you reconnect.
+The previous version is kept in `/opt/tunnelvault-client.previous`.
+
+### Device logs and CLI
 
 ```bash
-sudo systemctl stop tunnelvault-api
-sudo cp /opt/tunnelvault/backups/tokens-20260312.db /opt/tunnelvault/tokens.db
-sudo systemctl start tunnelvault-api
+journalctl -u tunnelvault-client -f
+sudo systemctl restart tunnelvault-client
 ```
 
-### 6.4 Updating the Software
+The `tunnelvault` CLI (`tunnelvault connect [port]`, `list`, `status`) reads `TUNNELVAULT_SERVER`,
+`TUNNELVAULT_AUTH_TOKEN`, `TUNNELVAULT_ALLOW_REBOOT`, `TUNNELVAULT_STATE_DIR` and
+`TUNNELVAULT_CONFIG`. It looks for its configuration in `$TUNNELVAULT_CONFIG`, then
+`~/.tunnelvault/config.json`, then `/etc/tunnelvault/config.json`. `list` and `status` query the
+REST API and need the admin token.
+
+### Uninstalling a device
 
 ```bash
-# On the EC2 instance
-cd /home/ubuntu/tunnelvault
-git pull origin main
-
-# Rebuild frontend
-cd frontend
-npm install
-npm run build
-
-# Re-run setup to copy updated files
-cd ../gateway
-sudo bash setup.sh
-
-# The setup script restarts the service automatically.
-# Verify:
-sudo systemctl status tunnelvault-api
-curl -s http://localhost:4000/api/health
+sudo bash uninstall-client.sh               # asks for confirmation
+sudo bash uninstall-client.sh --keep-config # keep token, tunnels and reconnect state (same ports after reinstall)
 ```
 
-### 6.5 Monitoring the Health Endpoint
-
-Set up a simple uptime check with cron:
-
-```bash
-sudo nano /opt/tunnelvault/health-check.sh
-```
-
-```bash
-#!/bin/bash
-RESPONSE=$(curl -s --max-time 5 http://localhost:4000/api/health)
-if echo "$RESPONSE" | grep -q '"status":"ok"'; then
-    exit 0
-else
-    echo "[$(date)] TunnelVault health check FAILED: $RESPONSE" >> /var/log/tunnelvault-health.log
-    systemctl restart tunnelvault-api
-fi
-```
-
-```bash
-sudo chmod +x /opt/tunnelvault/health-check.sh
-sudo crontab -e
-```
-
-Add:
-
-```
-*/5 * * * * /opt/tunnelvault/health-check.sh
-```
+It removes the service, the updater, the reboot rule, `/opt/tunnelvault-client`, the CLI, the
+device configuration and state, and the updater log. `update.conf` and the release key are kept
+while the TunnelVault server is installed on the same host. `--remove-source` also deletes the
+directory the script is in.
 
 ---
 
-## 7. Troubleshooting
+## Signed releases and automatic updates
 
-### Problem 1: "Connection refused" on port 4000
+### How the updaters work
 
-**Symptoms:** `curl http://localhost:4000/api/health` returns "Connection refused".
+`auto-update.sh` (server) and `auto-update-client.sh` (device) run as root from a systemd timer.
+Each run:
 
-**Causes and solutions:**
+1. Reads `/etc/tunnelvault/update.conf`. It refuses to run if that file, the pinned key or
+   `/etc/tunnelvault` is not root-owned or is group/world-writable.
+2. Resolves the target release: `PINNED_VERSION`, or the latest release of `UPDATE_REPO`. It skips
+   the run if that version is installed and never downgrades.
+3. Downloads the tarball, `SHA256SUMS` and `SHA256SUMS.sig` over HTTPS.
+4. Verifies the signature with the pinned public key, **then** the checksum.
+5. Extracts into a private staging directory (rejecting links, absolute paths and `..`) and checks
+   that `VERSION` matches the tag.
+6. Runs `install-server.sh --upgrade --yes` or `install-client.sh --upgrade` from the verified tree,
+   non-interactively.
 
-```bash
-# Check if the service is running
-sudo systemctl status tunnelvault-api
+Any failure aborts the run and leaves the installation untouched. A lock prevents concurrent runs.
 
-# If it shows "inactive" or "failed":
-sudo journalctl -u tunnelvault-api -n 50 --no-pager
+### Enabling, pausing, pinning
 
-# Common causes:
-# - Node.js not installed or wrong version
-node -v   # should show v20.x
-
-# - npm dependencies not installed
-cd /opt/tunnelvault/backend && sudo npm install --omit=dev
-
-# - Port already in use
-sudo ss -tlnp | grep 4000
-# Kill the conflicting process if needed:
-sudo kill <PID>
-
-# Restart the service
-sudo systemctl restart tunnelvault-api
-```
-
-### Problem 2: WebSocket Connection Fails
-
-**Symptoms:** CLI client shows "Failed to connect to server" or WebSocket
-immediately closes.
-
-**Solutions:**
+Enable at install time or later, from a verified release tree:
 
 ```bash
-# Verify WebSocket is listening
-curl -i -N \
-  -H "Connection: Upgrade" \
-  -H "Upgrade: websocket" \
-  -H "Sec-WebSocket-Version: 13" \
-  -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
-  http://<SERVER>:4000/ws
-
-# Should return HTTP 101 Switching Protocols
-
-# If using Nginx, check the proxy config includes WebSocket headers:
-grep -A5 "location /ws" /etc/nginx/sites-available/tunnelvault
-# Must have: proxy_http_version 1.1; proxy_set_header Upgrade ...
-
-# Check Security Group allows port 4000 (or 443 if behind Nginx)
-
-# If using wss://, ensure the SSL certificate is valid:
-openssl s_client -connect tunnel.example.com:443 -servername tunnel.example.com </dev/null 2>&1 | head -20
+sudo bash install-server.sh --upgrade --auto-update --release-pubkey /path/to/release-signing.pub
+sudo bash install-client.sh --upgrade --auto-update --release-pubkey /path/to/release-signing.pub
 ```
 
-### Problem 3: SSH Tunnel Timeout
+`/etc/tunnelvault/update.conf`:
 
-**Symptoms:** `ssh gw-mytoken@<SERVER>` hangs and eventually times out.
+| Key | Default | Meaning |
+|---|---|---|
+| `ENABLED` | `1` | `0` pauses updates (the timer keeps running and does nothing) |
+| `SCHEDULE` | `12h` | Timer interval (`30min`, `6h`, `1d`, …). It is applied to the timer by the installer: re-run `--upgrade`, or wait for the next update, which does it. |
+| `UPDATE_REPO` | `TrainABit/ssh-tunnel` | GitHub repository to take releases from |
+| `PINNED_VERSION` | empty | Empty = latest release; `X.Y.Z` = exactly this version (never lower than the installed one) |
+| `PUBKEY` | `/etc/tunnelvault/release-signing.pub` | Pinned release key |
 
-**Solutions:**
+On a host that runs **both** the server and the client, `update.conf` and the key are shared.
+`ENABLED=0` pauses both updaters, and `UPDATE_REPO`, `PINNED_VERSION` and `SCHEDULE` apply to both;
+each keeps its own timer. `--no-auto-update` on one side removes only that side's updater and leaves
+`ENABLED` alone while the other side's updater is installed. A plain `--upgrade` keeps a pause;
+`--auto-update` sets `ENABLED=1` again.
+
+Run and inspect:
 
 ```bash
-# Test basic SSH connectivity to the gateway
-ssh -v gw-mytoken@<EC2-PUBLIC-IP>
+sudo /opt/tunnelvault/auto-update.sh --dry-run                 # server: what would happen
+sudo systemctl start tunnelvault-autoupdate.service            # server: update now
+journalctl -u tunnelvault-autoupdate; sudo tail /var/log/tunnelvault-update.log
+systemctl list-timers 'tunnelvault*'
 
-# Check if sshd is running
-sudo systemctl status sshd
-
-# Verify the sshd config has the TunnelVault block
-sudo grep -A8 "TUNNELVAULT-GATEWAY" /etc/ssh/sshd_config
-
-# Verify the gateway user exists
-id gw-mytoken
-
-# Check if the target machine is reachable FROM the EC2 instance
-nc -zv 10.0.1.42 22 -w 5
-# If this fails, the target is unreachable. Check VPC routing, security
-# groups on the target, and whether the target's SSH is running.
-
-# Check the gateway log
-sudo tail -20 /var/log/tunnelvault-gateway.log
+sudo /opt/tunnelvault-client/auto-update-client.sh --dry-run   # device
+journalctl -u tunnelvault-client-autoupdate; sudo tail /var/log/tunnelvault-client-update.log
 ```
 
-### Problem 4: Token Not Working
-
-**Symptoms:** SSH connection is denied with "Unknown token" or "Token disabled".
-
-**Solutions:**
-
-```bash
-# Check if the token exists in the database
-sudo sqlite3 /opt/tunnelvault/tokens.db "SELECT token, active, target_ip FROM tokens;"
-
-# If the token is disabled (active=0), re-enable it:
-sudo sqlite3 /opt/tunnelvault/tokens.db "UPDATE tokens SET active=1 WHERE token='mytoken';"
-
-# If the token does not exist, register it:
-sudo /opt/tunnelvault/register_token.sh \
-  --token mytoken --ip 10.0.1.42 --label "My Server" \
-  --pubkey "ssh-ed25519 AAAA..."
-
-# Verify the Linux user was created:
-id gw-mytoken
-```
-
-### Problem 5: "Permission denied" SSH Errors
-
-**Symptoms:** `Permission denied (publickey)` when connecting via SSH.
-
-**Solutions:**
-
-```bash
-# Verify the public key is in the authorized_keys file
-sudo cat /home/gw-mytoken/.ssh/authorized_keys
-
-# Compare it with the key stored in the database
-sudo sqlite3 /opt/tunnelvault/tokens.db "SELECT public_key FROM tokens WHERE token='mytoken';"
-
-# Check file permissions (must be exact)
-sudo ls -la /home/gw-mytoken/.ssh/
-# Expected:
-# drwx------ ... .ssh
-# -rw------- ... authorized_keys
-
-# Fix permissions if needed
-sudo chmod 700 /home/gw-mytoken/.ssh
-sudo chmod 600 /home/gw-mytoken/.ssh/authorized_keys
-sudo chown -R gw-mytoken:gw-mytoken /home/gw-mytoken/.ssh
-
-# On the client side, verify you're using the correct key:
-ssh -i ~/.ssh/id_ed25519 -v gw-mytoken@<SERVER>
-# Look for "Offering public key" in the verbose output
-
-# Check sshd auth log for detailed errors
-sudo tail -30 /var/log/auth.log | grep gw-mytoken
-```
-
-### Problem 6: Database Locked Errors
-
-**Symptoms:** API returns 500 errors with "SQLITE_BUSY" or "database is locked".
-
-**Solutions:**
-
-```bash
-# The database uses WAL mode, which helps with concurrency.
-# Check if another process is holding a lock:
-sudo fuser /opt/tunnelvault/tokens.db
-
-# Check for stale WAL/SHM files
-ls -la /opt/tunnelvault/tokens.db*
-# You should see: tokens.db, tokens.db-wal, tokens.db-shm
-
-# If the database is corrupted, run an integrity check:
-sudo sqlite3 /opt/tunnelvault/tokens.db "PRAGMA integrity_check;"
-# Should output: ok
-
-# Force a WAL checkpoint:
-sudo sqlite3 /opt/tunnelvault/tokens.db "PRAGMA wal_checkpoint(TRUNCATE);"
-
-# As a last resort, restore from backup (see Section 6.3)
-```
-
-### Problem 7: High Memory Usage
-
-**Symptoms:** The EC2 instance becomes slow or unresponsive. Node process uses
-excessive memory.
-
-**Solutions:**
-
-```bash
-# Check memory usage
-free -h
-ps aux --sort=-%mem | head -10
-
-# Check the Node.js process specifically
-ps -o pid,rss,vsz,comm -p $(pgrep -f "server.js")
-
-# If memory is over 80%, restart the service
-sudo systemctl restart tunnelvault-api
-
-# Add swap space if the instance is a t3.micro with only 1 GB RAM:
-sudo fallocate -l 1G /swapfile
-sudo chmod 600 /swapfile
-sudo mkswap /swapfile
-sudo swapon /swapfile
-
-# Make it permanent:
-echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
-
-# Set a memory limit in the systemd service:
-sudo systemctl edit tunnelvault-api
-```
-
-```ini
-[Service]
-MemoryMax=512M
-MemoryHigh=400M
-```
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl restart tunnelvault-api
-```
-
-### Problem 8: Service Not Starting After Reboot
-
-**Symptoms:** After a reboot, `curl localhost:4000` fails.
-
-**Solutions:**
-
-```bash
-# Check if the service is enabled for boot
-sudo systemctl is-enabled tunnelvault-api
-# Should output: enabled
-
-# If not enabled:
-sudo systemctl enable tunnelvault-api
-
-# Check what failed during boot
-sudo journalctl -u tunnelvault-api -b --no-pager
-
-# Common cause: service started before network was ready
-# The unit file includes "After=network.target" which should handle this.
-# If the issue persists, add a delay:
-sudo systemctl edit tunnelvault-api
-```
-
-```ini
-[Service]
-ExecStartPre=/bin/sleep 5
-```
-
-```bash
-sudo systemctl daemon-reload
-sudo reboot
-# Wait and verify:
-ssh ubuntu@<EC2-PUBLIC-IP>
-sudo systemctl status tunnelvault-api
-```
-
-### Problem 9: Proxy Not Forwarding
-
-**Symptoms:** Requests to `myapp.tunnel.example.com` return "Tunnel not found"
-or 502 errors.
-
-**Solutions:**
-
-```bash
-# Verify the tunnel is registered and active
-curl -s http://localhost:4000/api/tunnels | python3 -m json.tool
-# Look for a tunnel with the matching subdomain
-
-# The proxy matches tunnels by subdomain from the Host header.
-# Test directly against port 4001:
-curl -s -H "Host: myapp.tunnel.example.com" http://localhost:4001/
-# If this returns "Tunnel not found", the subdomain does not match any tunnel.
-
-# Check the tunnel client is connected (status should be "active"):
-curl -s http://localhost:4000/api/tunnels | python3 -m json.tool
-# Look for: "status": "active"
-
-# If using Nginx, ensure wildcard subdomain block forwards to port 4001
-grep -B2 -A5 "tunnelvault_proxy" /etc/nginx/sites-available/tunnelvault
-
-# Verify DNS resolves the subdomain:
-dig myapp.tunnel.example.com +short
-# Should return the EC2 public IP
-```
-
-### Problem 10: Let's Encrypt Certificate Renewal Fails
-
-**Symptoms:** Certificate expires, HTTPS stops working.
-
-**Solutions:**
-
-```bash
-# Check certificate expiry
-sudo certbot certificates
-
-# Test renewal
-sudo certbot renew --dry-run
-
-# If renewal fails due to port 80 conflict:
-sudo systemctl stop nginx
-sudo certbot renew
-sudo systemctl start nginx
-
-# For DNS-01 wildcard certs, ensure the DNS plugin credentials are valid:
-sudo cat /root/.aws/credentials   # for Route 53
-# or check the relevant provider config
-
-# Force renewal:
-sudo certbot renew --force-renewal
-
-# Check the renewal timer:
-sudo systemctl status certbot.timer
-sudo systemctl list-timers | grep certbot
-
-# If the timer is not active:
-sudo systemctl enable --now certbot.timer
-```
-
-### Problem 11: DNS Not Resolving
-
-**Symptoms:** `tunnel.example.com` does not resolve. Browser shows
-"DNS_PROBE_FINISHED_NXDOMAIN".
-
-**Solutions:**
-
-```bash
-# Check DNS from your local machine
-dig tunnel.example.com
-dig myapp.tunnel.example.com
-
-# Verify the A record points to the correct IP
-dig +short tunnel.example.com
-# Should return the EC2 public IP
-
-# Check if the EC2 public IP changed (e.g., after stop/start without Elastic IP)
-curl -s http://169.254.169.254/latest/meta-data/public-ipv4
-# Compare with your DNS records
-
-# If the IP changed, either:
-# 1. Update DNS records, OR
-# 2. Allocate an Elastic IP and associate it with the instance:
-#    AWS Console > EC2 > Elastic IPs > Allocate > Associate
-
-# DNS propagation can take up to 48 hours. Check propagation:
-# https://www.whatsmydns.net/#A/tunnel.example.com
-```
-
-### Problem 12: Session Not Tracked
-
-**Symptoms:** SSH connections succeed but do not appear in the dashboard or
-`/api/sessions`.
-
-**Solutions:**
-
-```bash
-# Check if the ssh_router.sh script is running
-# Look for recent entries in the gateway log:
-sudo tail -20 /var/log/tunnelvault-gateway.log
-
-# If you see "API_TRACK_SKIPPED", the API was unreachable when the SSH
-# session started. Verify the API is running:
-curl -s http://127.0.0.1:4000/api/health
-
-# Check the sessions table directly:
-sudo sqlite3 /opt/tunnelvault/tokens.db "SELECT * FROM sessions ORDER BY id DESC LIMIT 10;"
-
-# Session tracking uses two mechanisms:
-# 1. SQLite INSERT in ssh_router.sh (always works if DB is accessible)
-# 2. API POST to /api/connections (requires API to be running)
-
-# Verify ssh_router.sh has the correct API_URL:
-grep API_URL /opt/tunnelvault/ssh_router.sh
-# Should be: API_URL="http://127.0.0.1:4000"
-```
-
-### Problem 13: API Returns 500 Errors
-
-**Symptoms:** API endpoints return `{"error":"..."}` with HTTP 500 status.
-
-**Solutions:**
-
-```bash
-# Check the API logs for the stack trace
-sudo journalctl -u tunnelvault-api -n 50 --no-pager
-
-# Common causes:
-# 1. Database file missing or corrupted
-ls -la /opt/tunnelvault/tokens.db
-sudo sqlite3 /opt/tunnelvault/tokens.db "PRAGMA integrity_check;"
-
-# 2. Database schema mismatch (after an update)
-# Re-run setup to reinitialise tables (CREATE TABLE IF NOT EXISTS is safe):
-cd /home/ubuntu/tunnelvault/gateway
-sudo bash setup.sh
-
-# 3. Missing npm dependencies
-cd /opt/tunnelvault/backend
-sudo npm install --omit=dev
-
-# 4. Native module (better-sqlite3) needs rebuild after Node.js upgrade
-cd /opt/tunnelvault/backend
-sudo npm rebuild better-sqlite3
-
-# Restart after fixing:
-sudo systemctl restart tunnelvault-api
-```
-
-### Problem 14: Frontend Shows Blank Page
-
-**Symptoms:** Browser loads `http://<SERVER>:4000` but shows a blank white page.
-
-**Solutions:**
-
-```bash
-# Check if the frontend was built and copied
-ls -la /opt/tunnelvault/frontend/dist/
-ls -la /opt/tunnelvault/frontend/dist/index.html
-
-# If the dist/ directory is empty or missing, build the frontend:
-cd /home/ubuntu/tunnelvault/frontend
-npm install
-npm run build
-
-# Copy the built files to the gateway directory
-sudo cp -r dist/ /opt/tunnelvault/frontend/dist/
-
-# Or re-run setup:
-cd /home/ubuntu/tunnelvault/gateway
-sudo bash setup.sh
-
-# Check browser developer console (F12) for JavaScript errors.
-# Common issues:
-# - API URL mismatch (frontend expects a different API host)
-# - CORS errors (check the server logs for CORS warnings)
-# - Mixed content (HTTP page loading HTTPS resources or vice versa)
-
-# Verify the static files are being served:
-curl -s http://localhost:4000/ | head -20
-# Should return HTML content, not JSON
-```
-
-### Problem 15: Port Already in Use
-
-**Symptoms:** Service fails to start with "EADDRINUSE" error.
-
-**Solutions:**
-
-```bash
-# Find what is using the port
-sudo ss -tlnp | grep 4000
-sudo ss -tlnp | grep 4001
-
-# Or use lsof:
-sudo lsof -i :4000
-sudo lsof -i :4001
-
-# Kill the conflicting process
-sudo kill <PID>
-
-# If a zombie TunnelVault process is running:
-sudo pkill -f "node.*server.js"
-
-# Wait a moment, then restart the service
-sudo systemctl restart tunnelvault-api
-
-# If the port is stuck in TIME_WAIT, it will free up within 60 seconds.
-# You can also allow reuse:
-sudo sysctl -w net.ipv4.tcp_tw_reuse=1
-```
-
-### Problem 16: "No such user" When SSH Connecting
-
-**Symptoms:** SSH returns "no matching user found" in sshd logs.
-
-**Solutions:**
-
-```bash
-# The register_token.sh script creates a Linux user "gw-<TOKEN>".
-# Verify the user exists:
-id gw-mytoken
-
-# If the user does not exist, re-register the token:
-sudo /opt/tunnelvault/register_token.sh \
-  --token mytoken --ip 10.0.1.42 \
-  --label "My Server" \
-  --pubkey "ssh-ed25519 AAAA..."
-
-# Check that useradd did not fail:
-grep gw-mytoken /etc/passwd
-```
-
-### Problem 17: Tunnel Client Disconnects Frequently
-
-**Symptoms:** The CLI client reconnects every 30 seconds or drops intermittently.
-
-**Solutions:**
-
-```bash
-# The WebSocket server pings every 30 seconds. If the client does not
-# respond to a pong, it is terminated.
-
-# Check for network issues between client and server
-ping -c 10 <EC2-PUBLIC-IP>
-
-# If using Nginx, ensure proxy timeout is long enough:
-grep proxy_read_timeout /etc/nginx/sites-available/tunnelvault
-# Should be: proxy_read_timeout 86400s;
-
-# If not using Nginx, check if a load balancer or firewall is killing
-# idle connections. AWS NLB has a 350-second idle timeout by default.
-
-# Increase client-side keep-alive (if configurable)
-```
+The server updater exits non-zero, and the timer run shows as failed, when the upgraded service is
+not healthy afterwards.
+
+### Release process (maintainers)
+
+One-time setup:
+
+1. Generate the signing key pair outside any git work tree:
+   `scripts/release/generate-signing-key.sh` (or `--out DIR`). It creates `release-signing.key`
+   (private, 0600) and `release-signing.pub`, and prints the key fingerprint.
+2. In GitHub → Settings → Environments, create the environment **`release`** with required
+   reviewers and a deployment rule for tags `v*.*.*`. Store the private key as the environment
+   secret `RELEASE_SIGNING_KEY`:
+   `gh secret set RELEASE_SIGNING_KEY --env release --repo TrainABit/ssh-tunnel < release-signing.key`
+3. Commit the public key as `release-signing.pub` at the repository root. Publish its fingerprint
+   through a second channel, keep an offline backup of the private key, and delete the local copy
+   (`shred -u release-signing.key`).
+
+Every release:
+
+1. Set `VERSION` to `X.Y.Z` and date the entry in `CHANGELOG.md`; merge to `main` with CI green.
+2. Tag and push: `git tag -a vX.Y.Z -m "TunnelVault X.Y.Z" && git push origin vX.Y.Z`. The tag must
+   equal `VERSION`.
+3. The `Release` workflow runs all tests and builds `tunnelvault-vX.Y.Z.tar.gz` + `SHA256SUMS`
+   without access to the key. Then, in the `release` environment (after a reviewer approves, if you
+   configured required reviewers), it signs `SHA256SUMS`, checks the signature against the
+   committed `release-signing.pub`, and publishes the GitHub release.
+4. Verify the published release as an operator would ([Getting a release](#getting-a-release)).
+
+A local, unsigned test build: `scripts/release/build-release.sh X.Y.Z --unsigned` (output in
+`dist/release/`; the tree must be clean and `VERSION` must match).
+
+**Key rotation / compromise:** generate a new pair, replace the secret and `release-signing.pub`,
+and publish the new fingerprint. Installations never switch keys on their own. Operators install
+the new key explicitly, with `install-server.sh --upgrade --release-pubkey NEW.pub` /
+`install-client.sh --upgrade --release-pubkey NEW.pub` from a release they verified by hand.
 
 ---
 
-## 8. Security Hardening Checklist
+## Web terminal and stored SSH keys
 
-### 8.1 Change the Default AUTH_TOKEN
+The **Tunnels** page opens an in-browser SSH terminal to a device's TCP tunnel. The SSH client runs
+on the server and reaches the device through the device's tunnel stream. Log in with a password, a
+pasted private key, or a key stored for the device's token.
 
-The default token `tvault-dev-token-2024` is public. Change it immediately:
+**Host keys:** the first connection shows the device's host key fingerprint (`SHA256:…`) and
+waits up to 60 s for you to accept it. Compare it with
+`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` (or the key type shown) on the device. After
+that, the key is pinned per device token and local port, and a different key is refused with a
+mismatch warning. If the change is legitimate (the device was reinstalled), forget the pin on the
+Tunnels page and connect again.
 
-```bash
-# Generate a secure random token
-openssl rand -hex 32
+**Stored keys** (Tokens page → a token → stored SSH key) are encrypted with AES-256-GCM using
+`DATA_ENCRYPTION_KEY`, which the installer generates. Keys must be unencrypted OpenSSH or PEM keys
+(no passphrase), because the server has to use them without asking. No API response ever contains
+a stored key. Without `DATA_ENCRYPTION_KEY` the feature is disabled.
 
-# Set it in the service
-sudo systemctl edit tunnelvault-api
-```
+**`DATA_ENCRYPTION_KEY`** is 64 hex characters (`openssl rand -hex 32`) or base64 of 32 bytes; any
+other string is stretched with scrypt. `DATA_ENCRYPTION_KEY_FILE` reads it from a file that the
+`tunnelvault` user can read, for example under `/opt/tunnelvault/data`. Back it up together with the
+database: without it, stored keys cannot be decrypted.
 
-```ini
-[Service]
-Environment=AUTH_TOKEN=<paste-your-generated-token>
-```
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl restart tunnelvault-api
-```
-
-### 8.2 Restrict API Access
-
-If the API should only be accessible from specific IPs, use iptables or
-Security Group rules:
+Rotating the key:
 
 ```bash
-# Option A: Security Group — restrict port 4000 to your office IP
-# In AWS Console, edit the Security Group inbound rule for port 4000:
-# Source: <YOUR-OFFICE-IP>/32
+NEW=$(openssl rand -hex 32)
+sudo sed -i "s/^DATA_ENCRYPTION_KEY=\(.*\)$/DATA_ENCRYPTION_KEY_PREVIOUS=\1\nDATA_ENCRYPTION_KEY=$NEW/" /opt/tunnelvault/backend/.env
+sudo systemctl restart tunnelvault
+sleep 3; sudo journalctl -u tunnelvault -n 50 | grep -i 're-encrypted'   # "Re-encrypted stored SSH keys with the current key"
+sudo sed -i '/^DATA_ENCRYPTION_KEY_PREVIOUS=/d' /opt/tunnelvault/backend/.env
+sudo systemctl restart tunnelvault
+```
 
-# Option B: UFW (if not using Nginx)
+On startup the server re-encrypts every stored key with the new key (no log line appears when no
+keys are stored). With `DATA_ENCRYPTION_KEY_FILE`, point `DATA_ENCRYPTION_KEY_PREVIOUS_FILE` at the
+old key file instead. Database backups taken before
+the rotation need the old key. If the log says that stored keys are "encrypted with an unknown
+key", set the old key as `DATA_ENCRYPTION_KEY_PREVIOUS`, or clear the affected keys on the Tokens
+page and upload them again.
+
+---
+
+## Privacy: GeoIP and data retention
+
+Every public TCP connection creates a session row with the visitor's IP address, which is personal
+data.
+
+- `SESSION_RETENTION_DAYS` (default 90) deletes older sessions every hour (`0` keeps them forever).
+- `TUNNEL_IDLE_RETENTION_DAYS` (default 30) removes tunnels that have been offline that long. The
+  device registers again when it comes back, possibly on a new port.
+- At startup, tunnel sessions left open by a restart are closed. Expired dashboard sessions are
+  deleted.
+
+GeoIP (country/city in the Sessions page):
+
+| `GEOIP_PROVIDER` | Behaviour |
+|---|---|
+| `off` (default) | No lookups. |
+| `maxmind` | Local lookups in a MaxMind GeoLite2-City database (`GEOIP_DB=/var/lib/GeoIP/GeoLite2-City.mmdb`, free MaxMind account; `geoipupdate` keeps it current, and the server reloads the file when it changes). The file must be readable by the `tunnelvault` user and must not be under `/home` (the service cannot see `/home`). Setting `GEOIP_DB` alone selects `maxmind`. |
+| `ip-api` | Sends every visitor IP to ip-api.com over **plain HTTP**. Their free tier is for non-commercial use only. The server logs a warning at startup. |
+
+Private, CGNAT and link-local addresses are never looked up.
+
+---
+
+## Legacy SSH gateway
+
+The gateway predates the WebSocket tunnels. A token with an SSH public key becomes a Linux user
+`gw-<token>` on the server. When that user logs in by SSH (key only), sshd runs
+`/opt/tunnelvault/ssh_router.sh`, which relays the connection to the token's fixed `target_ip:target_port`
+(an IPv4 address the server can reach, for example in the same private network). The SSH handshake
+is end-to-end with the target, so clients use the gateway as a `ProxyCommand`:
+
+```
+# ~/.ssh/config on the client.
+# HostName is only used for the target's known_hosts entry; User is the account on the target.
+Host app-server
+    HostName app-server
+    User ubuntu
+    ProxyCommand ssh -T -i ~/.ssh/id_ed25519 gw-TOKEN@tunnel.example.com
+```
+
+Then `ssh app-server` (also `scp`/`sftp`) reaches the target through the gateway. A plain
+`ssh gw-TOKEN@tunnel.example.com` without `ProxyCommand` does not give you a shell: the session
+carries the raw SSH stream of the target.
+
+Managing gateway tokens:
+
+- API: `POST /api/tokens` with `public_key`, `target_ip` and `target_port` (tokens with a public key
+  can have at most **29** characters, because Linux user names are limited to 32). The response
+  reports `linux_user_queued` / `linux_user_created` / `linux_user_error`. `PATCH` updates the key or
+  target; `active: 0` disables the token.
+- Shell: `sudo /opt/tunnelvault/register_token.sh --token TOKEN --ip 10.0.1.42 --pubkey "ssh-ed25519 AAAA… user@laptop" [--port 22] [--label TEXT]`,
+  plus `--disable`, `--enable`, `--delete TOKEN` and `--list`.
+
+How it works: the API cannot create Linux users itself (the service is sandboxed). It writes a
+request file into `/opt/tunnelvault/data/usermgr/` (`USERMGR_SPOOL_DIR`). The
+`tunnelvault-usermgr.path` unit notices it, and the root worker `usermgr-worker.sh` validates the
+request and calls `manage-user.sh`. Gateway users belong to the group `tunnelvault-gw` and may run
+only `gateway-helper.sh` as the `tunnelvault` user (via `/etc/sudoers.d/tunnelvault`). That helper
+looks up their target and records their sessions in the database.
+
+Logs: `journalctl -t tunnelvault-gateway -t tunnelvault-usermgr`.
+
+`gateway/setup.sh` from 1.x is deprecated. It prints a notice and runs `install-server.sh` with the
+same arguments. If you do not need the gateway, do not create tokens with public keys. The sshd
+`Match User "gw-*"` block does nothing without such users.
+
+---
+
+## Docker
+
+The image contains the server only (dashboard, API, WebSockets, HTTP proxy, TCP tunnels). The legacy
+SSH gateway, nginx, certbot and the updaters are not part of it. Update containers by rebuilding
+from a verified release tree or checkout.
+
+```bash
+cd tunnelvault-v2.0.0          # verified release tree (or a checkout)
+cat > tunnelvault.env <<EOF
+AUTH_TOKEN=$(openssl rand -hex 32)
+DATA_ENCRYPTION_KEY=$(openssl rand -hex 32)
+DOMAIN=tunnel.example.com
+EOF
+chmod 600 tunnelvault.env
+docker compose up -d --build
+docker compose logs -f
+```
+
+What [docker-compose.yml](docker-compose.yml) sets up:
+
+- The image runs as the unprivileged `node` user (uid 1000). The application files are root-owned.
+  The container runs with a read-only root filesystem, all capabilities dropped and
+  `no-new-privileges`.
+- The database lives in the named volume `tunnelvault-data` at `/data` (`DB_PATH=/data/tunnelvault.db`).
+  A bind mount must be writable by uid 1000.
+- Container layout variables (`NODE_ENV`, `BIND_HOST`, `PORT`, `PROXY_PORT`, `DB_PATH`, TCP range) are
+  fixed in the compose file, so the env file cannot break them. Everything else comes from the env
+  file (see [backend/.env.example](backend/.env.example)).
+- The published TCP range is **10000–10099**. By default Docker starts one `docker-proxy` process
+  per published port, so the example uses 100 ports instead of 1000. Widen `TCP_PORT_MAX` and the
+  port mapping together.
+- The image has a `HEALTHCHECK` on `/api/health`. The server shuts down cleanly on `SIGTERM`
+  (`stop_grace_period: 20s`).
+- Exit code 78 means a configuration error (for example a missing `AUTH_TOKEN`). Check
+  `docker compose logs`.
+
+**TLS for the container.** The container serves plain HTTP. On the internet, put a TLS reverse
+proxy in front of it:
+
+1. Publish the API and proxy on loopback only (`127.0.0.1:4000:4000`, `127.0.0.1:4001:4001`). The TCP
+   tunnel ports stay public.
+2. Configure the proxy as in [Your own reverse proxy](#your-own-reverse-proxy): `DOMAIN` →
+   `127.0.0.1:4000` (WebSockets on `/ws` and `/ws/ssh`), `*.DOMAIN` → `127.0.0.1:4001`.
+3. In `tunnelvault.env`, set `PUBLIC_URL=https://tunnel.example.com`,
+   `HTTP_TUNNEL_URL_TEMPLATE=https://{subdomain}.tunnel.example.com` (or `http://…` without a
+   wildcard certificate) and `TRUST_PROXY` to the address the container sees the proxy connect
+   from. For a proxy on the host that is the gateway of the compose network:
+   `docker network inspect <project>_default --format '{{(index .IPAM.Config 0).Gateway}}'`.
+   Do not set `TRUST_PROXY=loopback` here: inside the container the proxy does not appear as
+   loopback.
+
+The Docker daemon rewrites published ports with its own firewall rules, which bypass ufw. Restrict
+access with the port bindings above, not with ufw.
+
+---
+
+## Backups and restore
+
+What to back up:
+
+- `/opt/tunnelvault/data/tunnelvault.db`: tokens, tunnels (owner secrets keep device ports),
+  sessions, pinned host keys, encrypted stored keys.
+- `/opt/tunnelvault/backend/.env`: `AUTH_TOKEN` and `DATA_ENCRYPTION_KEY`. Without the key, stored
+  SSH keys in a restored database cannot be used.
+- Optional: `/etc/tunnelvault/` (updater settings and pinned key) and your nginx/certificate
+  configuration.
+
+Both files are secrets. Keep backups encrypted and access-controlled.
+
+An online backup (the database is in WAL mode, and `.backup` gives a consistent copy while the
+service runs):
+
+```bash
+sudo install -d -m 0700 /var/backups/tunnelvault
+sudo sh -c 'umask 077; sqlite3 /opt/tunnelvault/data/tunnelvault.db ".backup /var/backups/tunnelvault/tunnelvault-$(date +%F).db"'
+sudo sh -c 'umask 077; cp /opt/tunnelvault/backend/.env /var/backups/tunnelvault/env-$(date +%F)'
+```
+
+Daily, keeping 14 days (`/etc/cron.d/tunnelvault-backup`; `%` must be escaped in cron):
+
+```
+15 3 * * * root umask 077; sqlite3 /opt/tunnelvault/data/tunnelvault.db ".backup /var/backups/tunnelvault/tunnelvault-$(date +\%F).db" && find /var/backups/tunnelvault -name 'tunnelvault-*.db' -mtime +14 -delete
+```
+
+The installer also copies the previous `.env` to `/var/backups/tunnelvault/env.<timestamp>` on every
+run, and the previous nginx site before replacing it. `uninstall-server.sh` saves `data/`,
+`backend/.env` and `VERSION` to `/var/backups/tunnelvault/tunnelvault-backup-<timestamp>.tar.gz`
+first (skip with `--no-backup`). It does not back up the database before an upgrade, so take a
+backup yourself first.
+
+Restore onto an installed server (same or newer version):
+
+```bash
+sudo systemctl stop tunnelvault
+sudo install -m 0600 -o tunnelvault -g tunnelvault /var/backups/tunnelvault/tunnelvault-2026-01-31.db /opt/tunnelvault/data/tunnelvault.db
+sudo rm -f /opt/tunnelvault/data/tunnelvault.db-wal /opt/tunnelvault/data/tunnelvault.db-shm
+sudo install -m 0600 -o tunnelvault -g tunnelvault /var/backups/tunnelvault/env-2026-01-31 /opt/tunnelvault/backend/.env   # if needed
+sudo systemctl start tunnelvault
+```
+
+To restore from an uninstaller archive, reinstall the same or a newer version first, then:
+
+```bash
+sudo systemctl stop tunnelvault
+sudo rm -f /opt/tunnelvault/data/tunnelvault.db /opt/tunnelvault/data/tunnelvault.db-wal /opt/tunnelvault/data/tunnelvault.db-shm
+sudo tar -xzf /var/backups/tunnelvault/tunnelvault-backup-<timestamp>.tar.gz -C /opt/tunnelvault data backend/.env
+sudo chown -R tunnelvault:tunnelvault /opt/tunnelvault/data /opt/tunnelvault/backend/.env
+sudo systemctl start tunnelvault
+```
+
+ Newer versions migrate an older database automatically. Going back to an
+older version after a migration is not supported: restore the backup taken before the upgrade
+instead.
+
+---
+
+## Upgrading from 1.x
+
+What changes for you is listed in [CHANGELOG.md](CHANGELOG.md#200---unreleased) under "Breaking
+changes". In short: no tokens in URLs, cookie-based dashboard login, remote reboot opt-in,
+signed updates only, GeoIP off, `trust proxy` only when configured.
+
+1. **Stop the 1.x auto-updaters** on the server and on every device. They run `git pull` as root
+   and would only half-upgrade a 2.0 tree:
+
+   ```bash
+   sudo systemctl disable --now tunnelvault-autoupdate.timer          # server
+   sudo systemctl disable --now tunnelvault-client-autoupdate.timer   # devices
+   ```
+
+2. **Back up** the server database and `.env` ([Backups and restore](#backups-and-restore)).
+
+3. **Upgrade the server** from a verified 2.0 release tree:
+
+   ```bash
+   sudo bash install-server.sh --upgrade            # keeps plain HTTP on port 4000 for now
+   ```
+
+   The installer keeps the database (the backend migrates it), `AUTH_TOKEN`, domain and ports. It
+   adds `DATA_ENCRYPTION_KEY` (and encrypts any stored SSH keys), `GEOIP_PROVIDER=off`,
+   `SESSION_RETENTION_DAYS=90` and the spool directory for the gateway. It installs the hardened unit,
+   removes the old git-pull updater and a leftover `tunnelvault-api.service` from `gateway/setup.sh`,
+   and makes existing `gw-*` users work with the new gateway helper. The firewall is only extended,
+   never reset.
+   If the 1.x server used `--tls`, its nginx site is regenerated and `TLS_CERT`/`TLS_KEY` lines that
+   point into `/etc/letsencrypt` are commented out: nginx terminates TLS from now on, and the backend
+   moves to `127.0.0.1`. Devices that connect with `ws://SERVER:4000` then lose their connection:
+   continue right away with step 2 of
+   [Moving devices from ws:// to wss://](#moving-devices-from-ws-to-wss).
+
+4. **Upgrade the devices.** 1.x devices keep working against a 2.0 server (protocol v1) until you
+   upgrade them, but their token is still visible in `ps`, they have no port allowlist, and they
+   still obey the dashboard's reboot button unconditionally. On each
+   device, from a verified 2.0 release tree:
+
+   ```bash
+   sudo bash install-client.sh --upgrade [--allow-reboot] [--auto-update --release-pubkey /path/to/release-signing.pub]
+   ```
+
+   The token moves from the unit's command line and `config.json` into `client.env`, and the git
+   updater and the old unconditional reboot rule are removed. Reconnect state migrates to
+   `/var/lib/tunnelvault`, so the device keeps its public ports. Remote reboot is **off** unless you
+   pass `--allow-reboot`. The restart happens about 30 s later, so you can run this through the
+   device's own tunnel.
+
+5. **Log in to the dashboard again.** The old dashboard kept the admin token in the browser; 2.0
+   deletes it and asks you to log in. Update scripts that used `?auth_token=` to send
+   `Authorization: Bearer` instead.
+
+6. **Switch to TLS** if you have not already. See the next section.
+
+Tunnel records created by 1.x have no owner. The first device that reconnects with the correct
+owner secret claims such a record (and its port). After that the normal ownership rules apply.
+
+### Moving devices from ws:// to wss://
+
+`--tls` moves the backend to `127.0.0.1`. Devices that still connect to `ws://SERVER:4000` lose their
+connection. Devices that you can only reach through their own tunnel would then be unreachable.
+Keep port 4000 open during the transition:
+
+```bash
+# 1. on the server: enable TLS (DNS for DOMAIN must point to the server, port 80 must be reachable)
+sudo bash install-server.sh --upgrade --tls --domain tunnel.example.com --email admin@example.com
+
+# 2. temporarily accept direct connections on port 4000 again
+sudo sed -i 's/^BIND_HOST=127.0.0.1$/BIND_HOST=0.0.0.0/' /opt/tunnelvault/backend/.env
+sudo systemctl restart tunnelvault
+sudo ufw allow 4000/tcp            # if ufw is active
+
+# 3. on every device (e.g. through its tunnel): point it at wss://
+sudo bash install-client.sh --upgrade --server wss://tunnel.example.com
+
+# 4. on the server: list devices that still use port 4000 directly
+sudo ss -Htn state established '( sport = :4000 )' | grep -v -e '127.0.0.1' -e '\[::1\]'
+
+# 5. when that list is empty: back to loopback only
+sudo sed -i 's/^BIND_HOST=0.0.0.0$/BIND_HOST=127.0.0.1/' /opt/tunnelvault/backend/.env
+sudo systemctl restart tunnelvault
 sudo ufw delete allow 4000/tcp
-sudo ufw allow from <YOUR-IP> to any port 4000 proto tcp
 ```
 
-If using Nginx, add IP restrictions in the Nginx config:
-
-```nginx
-location /api/ {
-    allow 10.0.0.0/8;
-    allow <YOUR-IP>/32;
-    deny all;
-    proxy_pass http://tunnelvault_api;
-    # ... other proxy headers ...
-}
-```
-
-### 8.3 Enable TLS Everywhere
-
-- Always use HTTPS for the API and dashboard (see Section 3.3 and 3.4).
-- Use `wss://` instead of `ws://` for WebSocket connections.
-- Ensure `ssl_protocols TLSv1.2 TLSv1.3;` in Nginx config (no TLSv1.0/1.1).
-
-### 8.4 SSH Hardening
-
-Edit `/etc/ssh/sshd_config`:
-
-```bash
-sudo nano /etc/ssh/sshd_config
-```
-
-Ensure these settings:
-
-```
-# Disable root login
-PermitRootLogin no
-
-# Disable password authentication (use key-based only)
-PasswordAuthentication no
-
-# Limit authentication attempts
-MaxAuthTries 3
-
-# Reduce login grace time
-LoginGraceTime 30
-
-# Disable empty passwords
-PermitEmptyPasswords no
-```
-
-```bash
-sudo sshd -t && sudo systemctl restart sshd
-```
-
-### 8.5 Firewall Rules
-
-Ensure only necessary ports are open (see Section 3.5). Audit regularly:
-
-```bash
-sudo ufw status numbered
-```
-
-Remove any unnecessary rules.
-
-### 8.6 Log Rotation
-
-Prevent log files from filling the disk:
-
-```bash
-sudo nano /etc/logrotate.d/tunnelvault
-```
-
-```
-/var/log/tunnelvault-gateway.log {
-    daily
-    rotate 14
-    compress
-    delaycompress
-    missingok
-    notifempty
-    create 0644 root root
-}
-
-/var/log/tunnelvault-health.log {
-    weekly
-    rotate 4
-    compress
-    missingok
-    notifempty
-    create 0644 root root
-}
-```
-
-Test the configuration:
-
-```bash
-sudo logrotate -d /etc/logrotate.d/tunnelvault
-```
-
-### 8.7 Fail2ban Setup
-
-Protect against SSH brute-force attacks:
-
-```bash
-sudo apt install -y fail2ban
-sudo nano /etc/fail2ban/jail.local
-```
-
-```ini
-[DEFAULT]
-bantime  = 3600
-findtime = 600
-maxretry = 5
-
-[sshd]
-enabled = true
-port    = ssh
-logpath = /var/log/auth.log
-maxretry = 3
-bantime = 7200
-```
-
-```bash
-sudo systemctl enable --now fail2ban
-sudo systemctl restart fail2ban
-
-# Verify it is running
-sudo fail2ban-client status sshd
-```
-
-Expected output:
-
-```
-Status for the jail: sshd
-|- Filter
-|  |- Currently failed: 0
-|  |- Total failed:     0
-|  `- File list:        /var/log/auth.log
-`- Actions
-   |- Currently banned: 0
-   |- Total banned:     0
-   `- Banned IP list:
-```
-
-### 8.8 Keep Software Updated
-
-```bash
-# Enable automatic security updates
-sudo apt install -y unattended-upgrades
-sudo dpkg-reconfigure -plow unattended-upgrades
-```
-
-### 8.9 Additional Recommendations
-
-- **Elastic IP:** Allocate an Elastic IP so the public address does not change
-  on instance stop/start.
-- **VPC Peering / Private Subnets:** Place target machines in a private subnet.
-  The gateway EC2 instance should be in a public subnet with access to the
-  private subnet.
-- **IAM Role:** If using Route 53 for DNS-01 Let's Encrypt challenges, attach
-  an IAM role to the EC2 instance with minimal Route 53 permissions instead of
-  storing AWS credentials on disk.
-- **Secrets Management:** Consider using AWS Systems Manager Parameter Store or
-  Secrets Manager for the AUTH_TOKEN instead of environment variables.
-- **CloudWatch:** Send logs to CloudWatch for centralized monitoring and
-  alerting.
+During step 2 the dashboard is also reachable over plain HTTP on port 4000. Log in only through
+`https://DOMAIN`. `TRUST_PROXY=loopback` stays in place, so direct clients cannot spoof their
+address. Upgrades (including automatic ones) keep your `BIND_HOST` choice unless you pass `--tls`
+again.
 
 ---
 
-## Quick Reference
+## Operations
 
-| Action                          | Command                                                              |
-|---------------------------------|----------------------------------------------------------------------|
-| Check service status            | `sudo systemctl status tunnelvault-api`                              |
-| View live API logs              | `sudo journalctl -u tunnelvault-api -f`                              |
-| View gateway SSH logs           | `sudo tail -f /var/log/tunnelvault-gateway.log`                      |
-| Restart the API                 | `sudo systemctl restart tunnelvault-api`                             |
-| Health check                    | `curl -s http://localhost:4000/api/health`                           |
-| Register a token                | `sudo /opt/tunnelvault/register_token.sh --token T --ip IP --pubkey K` |
-| List all tokens                 | `sudo /opt/tunnelvault/register_token.sh --list`                     |
-| Disable a token                 | `sudo /opt/tunnelvault/register_token.sh --disable TOKEN`            |
-| Delete a token                  | `sudo /opt/tunnelvault/register_token.sh --delete TOKEN`             |
-| Backup database                 | `sudo sqlite3 /opt/tunnelvault/tokens.db ".backup /tmp/backup.db"`   |
-| Connect via SSH tunnel          | `ssh gw-TOKEN@<EC2-IP>`                                             |
-| Open HTTP tunnel (client CLI)   | `node bin/tunnelvault.js connect 3000 --server ws://<EC2-IP>:4000`   |
+**Service management**
+
+```bash
+sudo systemctl status tunnelvault
+sudo systemctl restart tunnelvault
+journalctl -u tunnelvault -f                        # also /opt/tunnelvault/logs/tunnelvault.log
+journalctl -u tunnelvault -p warning --since today
+cat /opt/tunnelvault/VERSION
+```
+
+Set `LOG_FORMAT=json` for log collectors. Logs never contain full tokens, cookies, passwords or
+keys; tokens appear as a 4-character prefix plus `***`.
+
+**Monitoring**
+
+- Health: `curl -fsS https://tunnel.example.com/api/health` → `{"status":"ok",...}` (no
+  authentication; also `http://127.0.0.1:4000/api/health` on the server).
+- Tunnel connect/disconnect notifications: `WEBHOOK_URL` + `WEBHOOK_TYPE` (`ntfy`, `slack`,
+  `discord`, `json`).
+- Certificate renewal: `sudo certbot renew --dry-run`; `systemctl list-timers certbot.timer`.
+- Updates: `systemctl list-timers 'tunnelvault*'`, updater logs as above.
+
+**Pausing a tunnel** (Tunnels page) keeps the device connected in standby; the public port refuses
+connections until you resume it. Pausing or resuming briefly reconnects the device, and with it its
+other tunnels.
+
+**Uninstalling the server**
+
+```bash
+sudo bash uninstall-server.sh            # asks; backs up data + .env to /var/backups/tunnelvault/ first
+sudo bash uninstall-server.sh --yes --no-backup
+```
+
+It removes the services and timers, `/opt/tunnelvault`, gateway users and group, the sshd block,
+sudoers/logrotate files, the nginx site, the deploy hook, the updater files and TunnelVault's
+firewall rules. `/etc/tunnelvault` is kept while the device client is installed on the same host.
+Let's Encrypt certificates, installed packages and the SSH/HTTP/HTTPS firewall rules are kept.
+
+---
+
+## Troubleshooting
+
+**The service does not start.**
+Run `journalctl -u tunnelvault -n 50`. Exit status 78 is a configuration error, and the last log
+line names it:
+
+- *AUTH_TOKEN is not set*: set it in `.env`.
+- *Cannot read the TLS certificate/key*: the files under `/etc/letsencrypt` are root-only. Use
+  `--tls` (nginx terminates TLS) instead of `TLS_CERT`/`TLS_KEY`, or copy the files somewhere the
+  `tunnelvault` user can read.
+- *BIND_HOST … is not an address of this machine*, or an invalid port.
+
+`EADDRINUSE` means another process holds the port (`sudo ss -tlnp | grep ':4000'`).
+
+**`--tls` fails.**
+`dig +short tunnel.example.com` must return this server's address, and
+`http://tunnel.example.com/.well-known/acme-challenge/x` must reach it (port 80 open in ufw and in
+the cloud firewall). Re-run `sudo bash install-server.sh --upgrade --tls --domain tunnel.example.com`.
+Let's Encrypt rate-limits repeated failures, so test with `sudo certbot renew --dry-run` once a
+certificate exists.
+
+**Login fails or ends at once.**
+Wrong token → 401. Too many attempts → 429; wait a minute. Behind your own proxy without
+`TRUST_PROXY`, all users share the proxy's IP address for rate limiting and the cookie is not
+marked secure. With `TRUST_PROXY` pointing at a proxy that does not send `X-Forwarded-Proto`, the
+server assumes HTTP.
+
+**"Forbidden" (403) on dashboard actions.**
+The request's `Origin` does not match the dashboard host. Access the dashboard through one
+consistent URL (`PUBLIC_URL`). A proxy must pass the original `Host` (and `X-Forwarded-Host` with
+`TRUST_PROXY`).
+
+**A device does not connect.**
+On the device: `journalctl -u tunnelvault-client -f`.
+
+- *token revoked or invalid*: the token is deactivated, deleted or mistyped. Fix it with
+  `sudo bash install-client.sh --upgrade --token-file FILE`.
+- *superseded*: another client is running with the same token (limit
+  `MAX_CONNECTIONS_PER_TOKEN`). Give each device its own token.
+- *rate limiting*: too many connection attempts from that IP address (for example many devices
+  behind one NAT with wrong tokens).
+- TLS errors: the server certificate must be publicly trusted and match the host name in
+  `--server`.
+- `ECONNREFUSED` / timeouts: wrong URL or port (with TLS: `wss://DOMAIN`, no port), or outbound
+  traffic is blocked.
+
+**The tunnel is up but `ssh -p PORT` fails.**
+The TCP range must be open in ufw and in the cloud firewall. The local service must listen on the
+device (`ss -tln` on the device). Only configured ports are forwarded: add ports with
+`install-client.sh --upgrade --port … --extra-port …` (these options replace the whole list).
+
+**A device got a different public port.**
+Ports are kept per token, local port and protocol, even after a reinstall, as long as the port is
+free. They change when the device uses a new token, or when the tunnel was offline longer than
+`TUNNEL_IDLE_RETENTION_DAYS` and was removed.
+
+**Too many tunnels.**
+"Max tunnel limit (10) reached" in the device log: the token already has `MAX_TUNNELS_PER_TOKEN`
+tunnels (default 10) across all of its connections.
+
+**HTTP tunnel returns 404/502/504.**
+404: no tunnel matches the host name (it must be `<subdomain>.DOMAIN` as shown on the Tunnels page).
+502: the tunnel is offline or paused, or the local web server on the device refused or closed the
+connection. 504: no response within `HTTP_PROXY_IDLE_TIMEOUT_MS` (default 120 s).
+
+**Web terminal: "host key mismatch".**
+The device presents a different SSH host key than the pinned one. Find out why before you forget
+the pin on the Tunnels page.
+
+**Web terminal: stored key not available.**
+`DATA_ENCRYPTION_KEY` is not set (the Settings page shows stored keys as "disabled (no
+DATA_ENCRYPTION_KEY)"), or the key was stored under a different encryption key. See
+[Web terminal and stored SSH keys](#web-terminal-and-stored-ssh-keys).
+
+**The updater does nothing or fails.**
+`sudo /opt/tunnelvault/auto-update.sh --dry-run` shows the decision. Common causes: `ENABLED=0`;
+`PINNED_VERSION` is lower than the installed version (downgrades are refused); the signature does
+not verify (wrong or rotated `release-signing.pub`; do not "fix" this by replacing the key with one
+from the download); `update.conf` or `/etc/tunnelvault` is writable by others.
+
+**The dashboard shows the old UI after an update.**
+Hard-refresh the browser (Ctrl+Shift+R).

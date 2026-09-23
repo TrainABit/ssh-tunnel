@@ -7,7 +7,9 @@
 # (tunnelvault, tunnelvault-usermgr, tunnelvault-autoupdate, legacy
 # tunnelvault-api), /opt/tunnelvault, gateway users and group, the sshd
 # gateway block, sudoers/logrotate files, the nginx site, the certbot
-# deploy hook, updater configuration and the TunnelVault firewall rules.
+# deploy hook, the updater log and configuration (/etc/tunnelvault is kept
+# while the TunnelVault client is installed on this host) and the
+# TunnelVault firewall rules.
 #
 # By default the database and configuration (incl. AUTH_TOKEN and
 # DATA_ENCRYPTION_KEY) are first saved to /var/backups/tunnelvault/.
@@ -43,6 +45,9 @@ NGINX_DIR="/etc/nginx"
 ACME_WEBROOT="/var/www/tunnelvault-acme"
 DEPLOY_HOOK="/etc/letsencrypt/renewal-hooks/deploy/tunnelvault-reload-nginx.sh"
 BACKUP_DIR="/var/backups/tunnelvault"
+UPDATE_LOG="/var/log/tunnelvault-update.log"
+UPDATE_LOCK="/run/tunnelvault-update.lock"
+CLIENT_INSTALL_DIR="/opt/tunnelvault-client"
 UNITS=(tunnelvault.service tunnelvault-api.service tunnelvault-usermgr.path tunnelvault-usermgr.service
        tunnelvault-autoupdate.timer tunnelvault-autoupdate.service)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -56,7 +61,7 @@ while [[ $# -gt 0 ]]; do
         --no-backup)     BACKUP=false ;;
         --remove-source) REMOVE_SOURCE=true ;;
         -h|--help)
-            sed -n '3,16p' "$0" | sed 's/^# \{0,1\}//'
+            awk 'NR > 2 && /^#/ { sub(/^# ?/, ""); if ($0 !~ /^=+$/) print; next } NR > 2 { exit }' "$0"
             exit 0 ;;
         *) fail "Unknown option: $1 (see --help)" ;;
     esac
@@ -246,9 +251,15 @@ fi
 
 # ── 9. Updater configuration ─────────────────────────────────
 step "Removing updater configuration"
-if [[ -f "${CONF_DIR}/client.env" || -f "${CONF_DIR}/config.json" || -f "${SYSTEMD_DIR}/tunnelvault-client.service" ]]; then
+for f in "$UPDATE_LOG" "${UPDATE_LOG}.tmp" "$UPDATE_LOCK"; do
+    if [[ -e "$f" || -L "$f" ]]; then rm -f "$f"; info "Removed ${f}"; fi
+done
+# /etc/tunnelvault is shared with the TunnelVault client (client.env, config.json and the
+# same update.conf + release-signing.pub): never remove it while the client is installed.
+if [[ -f "${CONF_DIR}/client.env" || -f "${CONF_DIR}/config.json" || -d "$CLIENT_INSTALL_DIR" \
+      || -f "${SYSTEMD_DIR}/tunnelvault-client.service" || -f "${SYSTEMD_DIR}/tunnelvault-client-autoupdate.timer" ]]; then
     skipped "${CONF_DIR} is shared with the TunnelVault client on this host — kept"
-elif [[ -d "$CONF_DIR" ]]; then
+elif [[ -d "$CONF_DIR" && ! -L "$CONF_DIR" ]]; then
     rm -f "${CONF_DIR}/update.conf" "${CONF_DIR}/release-signing.pub"
     if rmdir "$CONF_DIR" 2>/dev/null; then info "Removed ${CONF_DIR}"; else warn "${CONF_DIR} is not empty — kept"; fi
 else

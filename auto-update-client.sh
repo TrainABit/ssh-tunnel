@@ -70,13 +70,13 @@ die() {
   exit 1
 }
 
-# shellcheck disable=SC2329  # invoked via trap
+# shellcheck disable=SC2317,SC2329  # invoked via trap (SC2317: shellcheck < 0.10)
 on_err() {
   (( BASH_SUBSHELL == 0 )) || return 0
   log "ERROR: unexpected failure (line $1, exit $2)"
 }
 
-# shellcheck disable=SC2329  # invoked via trap
+# shellcheck disable=SC2317,SC2329  # invoked via trap (SC2317: shellcheck < 0.10)
 cleanup() {
   if [[ -n $TV_WORK && -d $TV_WORK ]]; then
     rm -rf -- "$TV_WORK"

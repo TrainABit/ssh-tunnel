@@ -67,6 +67,8 @@ function makeRoot(t, { release = false } = {}) {
     hook: path.join(root, 'etc', 'letsencrypt', 'renewal-hooks', 'deploy', 'tunnelvault-reload-nginx.sh'),
     backups: path.join(root, 'var', 'backups', 'tunnelvault'),
     calls: path.join(state, 'calls.log'),
+    clientUpdater: path.join(root, 'opt', 'tunnelvault-client', 'auto-update-client.sh'),
+    updateLog: path.join(root, 'var', 'log', 'tunnelvault-update.log'),
   };
   fs.mkdirSync(P.systemd, { recursive: true });
   fs.mkdirSync(path.dirname(P.sshd), { recursive: true });
@@ -76,8 +78,9 @@ function makeRoot(t, { release = false } = {}) {
   fs.writeFileSync(path.join(state, 'ufw_status'), 'Status: inactive\n');
 
   const log = `echo "$(basename "$0") $*" >> "${P.calls}"`;
-  const simple = ['apt-get', 'useradd', 'groupadd', 'usermod', 'userdel', 'chown', 'journalctl', 'curl'];
+  const simple = ['apt-get', 'useradd', 'groupadd', 'usermod', 'userdel', 'chown', 'journalctl'];
   for (const name of simple) writeExec(path.join(stubs, name), `#!/bin/bash\n${log}\nexit 0\n`);
+  writeExec(path.join(stubs, 'curl'), `#!/bin/bash\n${log}\n[[ -f "${state}/health_fail" ]] && exit 7\nexit 0\n`);
   writeExec(path.join(stubs, 'dpkg'), '#!/bin/bash\nexit 0\n');
   writeExec(path.join(stubs, 'systemctl'), `#!/bin/bash
 ${log}
@@ -85,7 +88,7 @@ case "$1" in
   is-active) unit="\${@: -1}"; unit="\${unit%.service}"
              if [[ -f "${state}/active/$unit" ]]; then [[ "$2" == --quiet ]] || echo active; exit 0; fi
              [[ "$2" == --quiet ]] || echo inactive; exit 3 ;;
-  is-failed) exit 1 ;;
+  is-failed) [[ -f "${state}/health_fail" ]] && exit 0; exit 1 ;;
   stop) rm -f "${state}/active/\${2%.service}" ;;
 esac
 exit 0
@@ -138,17 +141,22 @@ exit 0
   return P;
 }
 
-function runInstaller(P, args) {
-  const overrides = `
+/** Shell lines that point every path constant of install-server.sh into the fake root. */
+function pathOverrides(P) {
+  return `
 INSTALL_DIR="${P.install}"; DATA_DIR="$INSTALL_DIR/data"; LOG_DIR="$INSTALL_DIR/logs"
 USERMGR_SPOOL_DIR="$DATA_DIR/usermgr"; DEFAULT_DB_PATH="$DATA_DIR/tunnelvault.db"; DB_PATH="$DEFAULT_DB_PATH"
 ENV_FILE="$INSTALL_DIR/backend/.env"; VERSION_FILE="$INSTALL_DIR/VERSION"; UPDATER_SCRIPT="$INSTALL_DIR/auto-update.sh"
 SYSTEMD_DIR="${P.systemd}"; SSHD_CONF="${P.sshd}"; SUDOERS_FILE="${P.sudoers}"; LOGROTATE_FILE="${P.logrotate}"
 CONF_DIR="${P.conf}"; UPDATE_CONF="$CONF_DIR/update.conf"; INSTALLED_PUBKEY="$CONF_DIR/release-signing.pub"
 NGINX_DIR="${P.nginx}"; ACME_WEBROOT="${P.acme}"; LE_LIVE_DIR="${P.le}"; DEPLOY_HOOK="${P.hook}"; BACKUP_DIR="${P.backups}"
-SCRIPT_DIR="${P.src}"
+CLIENT_UPDATER_SCRIPT="${P.clientUpdater}"; UPDATER_LOG="${P.updateLog}"
 ensure_node() { NODE_BIN="${process.execPath}"; info "node (test)"; }
 `;
+}
+
+function runInstaller(P, args) {
+  const overrides = `${pathOverrides(P)}\nSCRIPT_DIR="${P.src}"\n`;
   const r = spawnSync('bash', ['-c', `source "${P.installer}"\n${overrides}\nmain "$@"`, 'install-server.sh', ...args], {
     encoding: 'utf8',
     timeout: 120000,
@@ -419,21 +427,13 @@ test('safety: npm failure leaves the running install untouched; refusals', (t) =
   assert.match(r.out, /TLS needs a public domain/);
 });
 
-test('uninstall-server.sh removes what the installer created and keeps a backup', (t) => {
-  const P = makeRoot(t, { release: true });
-  let r = runInstaller(P, ['--domain', 'tunnel.example.com', '--tls']);
-  assert.equal(r.status, 0, r.out);
-  fs.writeFileSync(path.join(P.state, 'svc_user'), '');
-  fs.writeFileSync(path.join(P.state, 'gw_group'), '');
-  fs.writeFileSync(path.join(P.state, 'ufw_status'), 'Status: active\n');
-  const client = path.join(P.conf, 'client.env');
-  fs.mkdirSync(P.conf, { recursive: true });
-  fs.writeFileSync(path.join(P.conf, 'update.conf'), 'ENABLED=1\n');
-
+/** uninstall-server.sh with its paths pointed into the fake root (and stubs for userdel & co). */
+function makeUninstaller(P) {
   const replace = {
     INSTALL_DIR: P.install, SYSTEMD_DIR: P.systemd, SSHD_CONF: P.sshd, SUDOERS_FILE: P.sudoers,
     LOGROTATE_FILE: P.logrotate, CONF_DIR: P.conf, NGINX_DIR: P.nginx, ACME_WEBROOT: P.acme,
-    DEPLOY_HOOK: P.hook, BACKUP_DIR: P.backups,
+    DEPLOY_HOOK: P.hook, BACKUP_DIR: P.backups, UPDATE_LOG: P.updateLog,
+    UPDATE_LOCK: path.join(P.state, 'update.lock'), CLIENT_INSTALL_DIR: path.dirname(P.clientUpdater),
   };
   let text = fs.readFileSync(path.join(REPO, 'uninstall-server.sh'), 'utf8');
   for (const [k, v] of Object.entries(replace)) {
@@ -453,6 +453,21 @@ if [[ "$1" == passwd && $# -eq 1 ]]; then printf 'root:x:0:0::/root:/bin/bash\\n
 [[ "$1" == group ]] && exit 0
 exit 2
 `);
+  return uninstaller;
+}
+
+test('uninstall-server.sh removes what the installer created and keeps a backup', (t) => {
+  const P = makeRoot(t, { release: true });
+  let r = runInstaller(P, ['--domain', 'tunnel.example.com', '--tls']);
+  assert.equal(r.status, 0, r.out);
+  fs.writeFileSync(path.join(P.state, 'svc_user'), '');
+  fs.writeFileSync(path.join(P.state, 'gw_group'), '');
+  fs.writeFileSync(path.join(P.state, 'ufw_status'), 'Status: active\n');
+  const client = path.join(P.conf, 'client.env');
+  fs.mkdirSync(P.conf, { recursive: true });
+  fs.writeFileSync(path.join(P.conf, 'update.conf'), 'ENABLED=1\n');
+
+  const uninstaller = makeUninstaller(P);
 
   // shared /etc/tunnelvault (client installed on the same host) is kept
   fs.writeFileSync(client, 'TUNNELVAULT_SERVER=wss://x\n');
@@ -490,4 +505,317 @@ exit 2
   assert.match(list, /^data\/tunnelvault\.db$/m);
   assert.match(list, /^backend\/\.env$/m);
   assert.match(r.stdout, /Backup: +.*tunnelvault-backup-/);
+});
+
+// ── Contract: signed updater (auto-update.sh) -> install-server.sh --upgrade --yes ──────────
+
+/** Async spawn (keeps the event loop free for the in-process release server). */
+function spawnAsync(cmd, args, { env, timeoutMs = 120000 } = {}) {
+  const { spawn } = require('child_process');
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    child.stdout.on('data', (d) => { out += d; });
+    child.stderr.on('data', (d) => { out += d; });
+    const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
+    child.on('error', (err) => { clearTimeout(timer); reject(err); });
+    child.on('close', (status) => {
+      clearTimeout(timer);
+      if (process.env.TV_E2E_VERBOSE) process.stderr.write(`\n===== ${args.join(' ')}\n${out}`);
+      resolve({ status, out });
+    });
+  });
+}
+
+/** Loopback "GitHub": /download/<tag>/<asset> from dirs[tag]. */
+async function startReleaseServer(t, dirs) {
+  const http = require('http');
+  const server = http.createServer((req, res) => {
+    const m = /^\/download\/([^/]+)\/([A-Za-z0-9._-]+)$/.exec(req.url);
+    const file = m && dirs[m[1]] && path.join(dirs[m[1]], m[2]);
+    if (!file || !fs.existsSync(file)) { res.writeHead(404); res.end(); return; }
+    res.writeHead(200, { 'content-type': 'application/octet-stream' });
+    fs.createReadStream(file).pipe(res);
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => { server.closeAllConnections(); server.close(() => resolve()); }));
+  return `http://127.0.0.1:${server.address().port}`;
+}
+
+function makeReleaseKey(dir) {
+  const key = path.join(dir, 'release.key');
+  const pub = path.join(dir, 'release-signing.pub');
+  assert.equal(spawnSync('openssl', ['ecparam', '-name', 'prime256v1', '-genkey', '-noout', '-out', key]).status, 0);
+  assert.equal(spawnSync('openssl', ['ec', '-in', key, '-pubout', '-out', pub], { stdio: 'ignore' }).status, 0);
+  return { key, pub };
+}
+
+/**
+ * A signed release tunnelvault-vVERSION.tar.gz like build-release.sh makes it, except that its
+ * install-server.sh is a shim: it records how the updater called it, then sources the REAL
+ * installer of the package (install-server.real.sh — SCRIPT_DIR stays the extracted tree) and
+ * runs `main` with every path pointed into the fake root and the system commands stubbed.
+ * The updater runs with a fixed PATH, so the shim re-adds the stubs first.
+ */
+function buildSignedServerRelease(P, version, keyFile) {
+  const work = fs.mkdtempSync(path.join(P.root, 'release-build-'));
+  const name = `tunnelvault-v${version}`;
+  const tree = path.join(work, name);
+  fs.mkdirSync(path.join(tree, 'backend'), { recursive: true });
+  fs.cpSync(path.join(REPO, 'backend', 'src'), path.join(tree, 'backend', 'src'), { recursive: true });
+  for (const f of ['package.json', 'package-lock.json']) fs.copyFileSync(path.join(REPO, 'backend', f), path.join(tree, 'backend', f));
+  fs.mkdirSync(path.join(tree, 'gateway'));
+  for (const f of GATEWAY_FILES) fs.copyFileSync(path.join(REPO, 'gateway', f), path.join(tree, 'gateway', f));
+  fs.mkdirSync(path.join(tree, 'frontend', 'dist'), { recursive: true });
+  fs.writeFileSync(path.join(tree, 'frontend', 'package.json'), '{"name":"frontend","private":true}\n');
+  fs.writeFileSync(path.join(tree, 'frontend', 'dist', 'index.html'), `<!doctype html><title>prebuilt ${version}</title>\n`);
+  fs.writeFileSync(path.join(tree, 'VERSION'), `${version}\n`);
+  fs.writeFileSync(path.join(tree, 'auto-update.sh'), `${read(path.join(REPO, 'auto-update.sh'))}# release ${version}\n`, { mode: 0o755 });
+  fs.copyFileSync(P.installer, path.join(tree, 'install-server.real.sh'));
+  const shim = `#!/bin/bash
+export PATH="${P.stubs}:${path.dirname(process.execPath)}:${SYS_PATH}"
+printf 'args=%s\\nupdater=%s\\ncwd=%s\\nstdin=%s\\n' "$*" "\${TUNNELVAULT_UPDATER:-}" "$PWD" "$(readlink /proc/self/fd/0)" > "${P.state}/shim-called"
+source "$(dirname "\${BASH_SOURCE[0]}")/install-server.real.sh"
+${pathOverrides(P)}
+main "$@"
+`;
+  fs.writeFileSync(path.join(tree, 'install-server.sh'), shim, { mode: 0o755 });
+
+  const out = path.join(work, 'assets');
+  fs.mkdirSync(out);
+  const tarball = path.join(out, `${name}.tar.gz`);
+  const tar = spawnSync('tar', ['-C', work, '--owner=0', '--group=0', '--numeric-owner', '-czf', tarball, name], { encoding: 'utf8' });
+  assert.equal(tar.status, 0, tar.stderr);
+  const digest = require('crypto').createHash('sha256').update(fs.readFileSync(tarball)).digest('hex');
+  fs.writeFileSync(path.join(out, 'SHA256SUMS'), `${digest}  ${name}.tar.gz\n`);
+  const sign = spawnSync('openssl', ['dgst', '-sha256', '-sign', keyFile, '-out', path.join(out, 'SHA256SUMS.sig'), path.join(out, 'SHA256SUMS')], { encoding: 'utf8' });
+  assert.equal(sign.status, 0, sign.stderr);
+  fs.rmSync(tree, { recursive: true, force: true });
+  return { dir: out, autoUpdate: `${read(path.join(REPO, 'auto-update.sh'))}# release ${version}\n` };
+}
+
+function updaterEnv(P, baseUrl) {
+  const env = { ...process.env };
+  for (const k of Object.keys(env)) if (/_proxy$/i.test(k)) delete env[k];
+  return {
+    ...env,
+    NO_PROXY: '*',
+    no_proxy: '*',
+    TMPDIR: P.tmp,
+    TUNNELVAULT_UPDATE_CONF: path.join(P.conf, 'update.conf'),
+    TUNNELVAULT_INSTALL_DIR: P.install,
+    TUNNELVAULT_UPDATE_LOG: P.updateLog,
+    TUNNELVAULT_UPDATE_LOCK: path.join(P.state, 'update.lock'),
+    UPDATE_BASE_URL: `${baseUrl}/download`,
+    UPDATE_API_URL: `${baseUrl}/api/latest`,
+  };
+}
+
+/** Files of the installation that must never point into the (deleted) staging tree. */
+function filesMentioning(dirs, needle) {
+  const hits = [];
+  const walk = (d) => {
+    if (!fs.existsSync(d)) return;
+    const st = fs.lstatSync(d);
+    if (st.isFile()) { if (read(d).includes(needle)) hits.push(d); return; }
+    if (!st.isDirectory()) return;
+    for (const e of fs.readdirSync(d)) if (e !== 'node_modules') walk(path.join(d, e));
+  };
+  dirs.forEach(walk);
+  return hits;
+}
+
+test('contract: auto-update.sh runs install-server.sh --upgrade --yes from the verified release', async (t) => {
+  const P = makeRoot(t, { release: true });
+  P.tmp = path.join(P.root, 'tmp');
+  fs.mkdirSync(P.tmp);
+  fs.mkdirSync(path.dirname(P.updateLog), { recursive: true });
+  fs.copyFileSync(path.join(REPO, 'auto-update.sh'), path.join(P.src, 'auto-update.sh')); // the real updater
+  const keys = makeReleaseKey(P.root);
+
+  // 2.0.0 installed with the signed updater; the admin tuned update.conf afterwards
+  let r = runInstaller(P, ['--domain', 'tunnel.example.com', '--auto-update', '--release-pubkey', keys.pub]);
+  assert.equal(r.status, 0, r.out);
+  assert.equal(read(path.join(P.install, 'auto-update.sh')), read(path.join(REPO, 'auto-update.sh')));
+  assert.equal(mode(P.conf), 0o755, '/etc/tunnelvault readable by the backend, not writable');
+  assert.match(r.stdout, /run now: sudo .*\/auto-update\.sh \[--dry-run\]/);
+  assert.match(r.stdout, /logs: journalctl -u tunnelvault-autoupdate and .*tunnelvault-update\.log/);
+  const confFile = path.join(P.conf, 'update.conf');
+  fs.writeFileSync(confFile, read(confFile).replace(/^SCHEDULE=.*$/m, 'SCHEDULE=6h').replace(/^PINNED_VERSION=.*$/m, 'PINNED_VERSION=2.0.1')
+    .replace(/^UPDATE_REPO=.*$/m, 'UPDATE_REPO=example/tunnelvault-fork'));
+  const token = envOf(path.join(P.install, 'backend', '.env')).AUTH_TOKEN;
+  fs.writeFileSync(path.join(P.state, 'svc_user'), '');
+  fs.writeFileSync(path.join(P.state, 'gw_group'), '');
+  fs.writeFileSync(path.join(P.state, 'active', 'tunnelvault'), '');
+  const pubBefore = read(path.join(P.conf, 'release-signing.pub'));
+
+  const release = buildSignedServerRelease(P, '2.0.1', keys.key);
+  const baseUrl = await startReleaseServer(t, { 'v2.0.1': release.dir });
+  fs.writeFileSync(P.calls, '');
+  const u = await spawnAsync('bash', [path.join(P.install, 'auto-update.sh')], { env: updaterEnv(P, baseUrl) });
+  assert.equal(u.status, 0, u.out);
+  assert.match(u.out, /Signature and checksum verified for tunnelvault-v2\.0\.1\.tar\.gz/);
+  assert.match(u.out, /Update to v2\.0\.1 complete/);
+  assert.ok(!u.out.includes(token), 'admin token never logged');
+
+  // how the updater invoked the installer
+  const shim = Object.fromEntries(read(path.join(P.state, 'shim-called')).trim().split('\n').map((l) => l.split(/=(.*)/s).slice(0, 2)));
+  assert.equal(shim.args, '--upgrade --yes');
+  assert.equal(shim.updater, '1');
+  assert.equal(shim.stdin, '/dev/null');
+  assert.match(shim.cwd, new RegExp(`^${P.tmp}/tunnelvault-update\\.[^/]+/src/tunnelvault-v2\\.0\\.1$`));
+  assert.deepEqual(fs.readdirSync(P.tmp), [], 'staging tree deleted after the run');
+
+  // result: new version from the prebuilt dist, config + choices kept, updater replaced atomically
+  const I = P.install;
+  assert.equal(read(path.join(I, 'VERSION')), '2.0.1\n');
+  assert.match(read(path.join(I, 'frontend', 'dist', 'index.html')), /prebuilt 2\.0\.1/);
+  assert.doesNotMatch(r.calls + read(P.calls), /^npm run build/m);
+  assert.ok(read(P.calls).indexOf('systemctl stop tunnelvault.service') < read(P.calls).indexOf('systemctl restart tunnelvault.service'));
+  assert.equal(envOf(path.join(I, 'backend', '.env')).AUTH_TOKEN, token);
+  const conf = read(confFile).split('\n');
+  for (const line of ['ENABLED=1', 'SCHEDULE=6h', 'PINNED_VERSION=2.0.1', 'UPDATE_REPO=example/tunnelvault-fork']) assert.ok(conf.includes(line), line);
+  assert.equal(mode(confFile), 0o644);
+  assert.equal(fs.statSync(confFile).uid, process.getuid());
+  assert.match(read(path.join(P.systemd, 'tunnelvault-autoupdate.timer')), /^OnUnitActiveSec=6h$/m);
+  const unit = read(path.join(P.systemd, 'tunnelvault-autoupdate.service'));
+  assert.match(unit, new RegExp(`^ExecStart=${I}/auto-update\\.sh$`, 'm'));
+  assert.match(unit, /^Type=oneshot$/m);
+  assert.match(unit, /^User=root$/m);
+  assert.equal(mode(I), 0o755, '/opt/tunnelvault: root-owned code, not writable by the service user');
+  assert.equal(read(path.join(I, 'auto-update.sh')), release.autoUpdate, 'updater replaced by the verified release copy');
+  assert.equal(mode(path.join(I, 'auto-update.sh')), 0o755);
+  assert.equal(read(path.join(P.conf, 'release-signing.pub')), pubBefore, 'trust anchor never replaced implicitly');
+  assert.deepEqual(filesMentioning([I, P.systemd, P.conf, P.sudoers, P.logrotate, P.nginx], P.tmp), [],
+    'nothing persisted that points into the deleted release tree');
+
+  // second run: up to date, installer not run again
+  fs.rmSync(path.join(P.state, 'shim-called'));
+  const again = await spawnAsync('bash', [path.join(I, 'auto-update.sh')], { env: updaterEnv(P, baseUrl) });
+  assert.equal(again.status, 0, again.out);
+  assert.match(again.out, /Up to date \(v2\.0\.1\)/);
+  assert.ok(!fs.existsSync(path.join(P.state, 'shim-called')));
+});
+
+test('contract: an unhealthy service after the upgrade fails the updater run', async (t) => {
+  const P = makeRoot(t, { release: true });
+  P.tmp = path.join(P.root, 'tmp');
+  fs.mkdirSync(P.tmp);
+  fs.mkdirSync(path.dirname(P.updateLog), { recursive: true });
+  fs.copyFileSync(path.join(REPO, 'auto-update.sh'), path.join(P.src, 'auto-update.sh'));
+  const keys = makeReleaseKey(P.root);
+  const r = runInstaller(P, ['--domain', 'tunnel.example.com', '--auto-update', '--release-pubkey', keys.pub]);
+  assert.equal(r.status, 0, r.out);
+  fs.writeFileSync(path.join(P.state, 'svc_user'), '');
+  fs.writeFileSync(path.join(P.state, 'gw_group'), '');
+  fs.writeFileSync(path.join(P.state, 'health_fail'), '');
+  const confFile = path.join(P.conf, 'update.conf');
+  fs.writeFileSync(confFile, read(confFile).replace(/^PINNED_VERSION=.*$/m, 'PINNED_VERSION=2.0.1'));
+  const release = buildSignedServerRelease(P, '2.0.1', keys.key);
+  const baseUrl = await startReleaseServer(t, { 'v2.0.1': release.dir });
+  const u = await spawnAsync('bash', [path.join(P.install, 'auto-update.sh')], { env: updaterEnv(P, baseUrl) });
+  assert.equal(u.status, 1, u.out);
+  assert.match(u.out, /service did not become healthy/);
+  assert.match(u.out, /install-server\.sh failed while installing v2\.0\.1/);
+  assert.match(read(P.updateLog), /install-server\.sh failed/);
+  assert.deepEqual(fs.readdirSync(P.tmp), [], 'staging tree deleted after a failed run too');
+});
+
+test('updater choices: paused updater kept on --upgrade, shared update.conf, P-256 keys only', (t) => {
+  const P = makeRoot(t, { release: true });
+  const keys = makeReleaseKey(P.root);
+  const rsa = path.join(P.root, 'rsa.pub');
+  assert.equal(spawnSync('bash', ['-c', `openssl genrsa 2048 2>/dev/null | openssl rsa -pubout -out "${rsa}" 2>/dev/null`]).status, 0);
+
+  // an RSA key is refused before anything is installed (the updater only accepts P-256)
+  let r = runInstaller(P, ['--domain', 'tunnel.example.com', '--auto-update', '--release-pubkey', rsa]);
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /not an ECDSA P-256 public key/);
+  assert.ok(!fs.existsSync(P.install));
+
+  r = runInstaller(P, ['--domain', 'tunnel.example.com', '--auto-update', '--release-pubkey', keys.pub]);
+  assert.equal(r.status, 0, r.out);
+  fs.writeFileSync(path.join(P.state, 'svc_user'), '');
+  fs.writeFileSync(path.join(P.state, 'gw_group'), '');
+  const confFile = path.join(P.conf, 'update.conf');
+  const timer = path.join(P.systemd, 'tunnelvault-autoupdate.timer');
+
+  // paused by the admin (ENABLED=0): an upgrade keeps it installed and paused
+  fs.writeFileSync(confFile, read(confFile).replace(/^ENABLED=1$/m, 'ENABLED=0'));
+  fs.writeFileSync(path.join(P.install, 'auto-update.sh'), '#!/bin/bash\n# older signed updater\n', { mode: 0o755 });
+  fs.writeFileSync(P.calls, '');
+  r = runInstaller(P, ['--upgrade', '--yes']);
+  assert.equal(r.status, 0, r.out);
+  assert.match(read(confFile), /^ENABLED=0$/m, 'pause kept');
+  assert.ok(fs.existsSync(timer));
+  assert.equal(read(path.join(P.install, 'auto-update.sh')), read(path.join(P.src, 'auto-update.sh')), 'updater script refreshed');
+  assert.match(r.stdout, /Auto-update: +installed but paused/);
+
+  // --auto-update resumes it
+  r = runInstaller(P, ['--upgrade', '--yes', '--auto-update']);
+  assert.equal(r.status, 0, r.out);
+  assert.match(read(confFile), /^ENABLED=1$/m);
+  assert.match(r.stdout, /Auto-update: +enabled \(signed releases, every 12h\)/);
+
+  // client updater on the same host: --no-auto-update removes only the server's units and
+  // leaves ENABLED alone (it would pause the client updater too)
+  fs.mkdirSync(path.dirname(P.clientUpdater), { recursive: true });
+  fs.writeFileSync(P.clientUpdater, '#!/bin/bash\n# >>> tv-updater-common\n');
+  fs.writeFileSync(path.join(P.systemd, 'tunnelvault-client-autoupdate.timer'), '[Timer]\n');
+  r = runInstaller(P, ['--upgrade', '--yes', '--no-auto-update']);
+  assert.equal(r.status, 0, r.out);
+  assert.ok(!fs.existsSync(timer) && !fs.existsSync(path.join(P.install, 'auto-update.sh')));
+  assert.match(read(confFile), /^ENABLED=1$/m);
+  assert.match(r.out, /shared with the client auto-updater/);
+  assert.ok(fs.existsSync(path.join(P.conf, 'release-signing.pub')), 'trust anchor kept for the client');
+
+  // re-enable while the client shares the file: the installer says so
+  r = runInstaller(P, ['--upgrade', '--yes', '--auto-update']);
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /ENABLED=0 pauses both/);
+
+  // without a client updater, --no-auto-update also records ENABLED=0 (read by the dashboard)
+  fs.rmSync(path.join(P.systemd, 'tunnelvault-client-autoupdate.timer'));
+  r = runInstaller(P, ['--upgrade', '--yes', '--no-auto-update']);
+  assert.equal(r.status, 0, r.out);
+  assert.match(read(confFile), /^ENABLED=0$/m);
+  r = runInstaller(P, ['--upgrade', '--yes']);
+  assert.equal(r.status, 0, r.out);
+  assert.ok(!fs.existsSync(timer), 'a disabled updater stays off on upgrade');
+  assert.match(r.stdout, /Auto-update: +disabled/);
+});
+
+test('uninstall-server.sh: updater files removed, /etc/tunnelvault kept only while the client is installed', (t) => {
+  const P = makeRoot(t, { release: true });
+  const keys = makeReleaseKey(P.root);
+  let r = runInstaller(P, ['--domain', 'tunnel.example.com', '--auto-update', '--release-pubkey', keys.pub]);
+  assert.equal(r.status, 0, r.out);
+  fs.writeFileSync(path.join(P.state, 'svc_user'), '');
+  const uninstaller = makeUninstaller(P);
+  const uninstall = () => spawnSync('bash', [uninstaller, '--yes', '--no-backup'], {
+    encoding: 'utf8', timeout: 120000, env: { ...process.env, PATH: `${P.stubs}:${SYS_PATH}` },
+  });
+
+  // client code present (no client.env yet): shared update.conf + key stay
+  fs.mkdirSync(path.dirname(P.updateLog), { recursive: true });
+  fs.writeFileSync(P.updateLog, 'log\n');
+  fs.writeFileSync(path.join(P.state, 'update.lock'), '');
+  fs.mkdirSync(path.dirname(P.clientUpdater), { recursive: true });
+  r = uninstall();
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  for (const u of ['tunnelvault-autoupdate.timer', 'tunnelvault-autoupdate.service']) assert.ok(!fs.existsSync(path.join(P.systemd, u)), u);
+  assert.match(fs.readFileSync(P.calls, 'utf8'), /^systemctl disable --now tunnelvault-autoupdate\.timer$/m);
+  assert.ok(!fs.existsSync(P.updateLog), 'updater log removed');
+  assert.ok(!fs.existsSync(path.join(P.state, 'update.lock')));
+  assert.ok(!fs.existsSync(path.join(P.install, 'auto-update.sh')));
+  assert.ok(fs.existsSync(path.join(P.conf, 'update.conf')) && fs.existsSync(path.join(P.conf, 'release-signing.pub')));
+  assert.match(r.stdout, /shared with the TunnelVault client on this host — kept/);
+
+  // no client: the updater configuration goes too
+  fs.rmSync(path.dirname(P.clientUpdater), { recursive: true });
+  r = runInstaller(P, ['--domain', 'tunnel.example.com', '--auto-update', '--release-pubkey', keys.pub]);
+  assert.equal(r.status, 0, r.out);
+  r = uninstall();
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.ok(!fs.existsSync(P.conf), '/etc/tunnelvault removed');
 });

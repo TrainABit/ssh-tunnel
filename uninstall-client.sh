@@ -5,9 +5,9 @@
 # Usage: sudo bash uninstall-client.sh [--yes] [--keep-config] [--remove-source]
 #
 #   --yes            do not ask for confirmation
-#   --keep-config    keep /etc/tunnelvault/{client.env,config.json} and the service
-#                    user's ~/.tunnelvault (token, tunnels and reconnect state, so a
-#                    reinstall keeps the same public ports)
+#   --keep-config    keep /etc/tunnelvault/{client.env,config.json}, the reconnect
+#                    state in /var/lib/tunnelvault and the service user's ~/.tunnelvault
+#                    (token, tunnels and state, so a reinstall keeps the same public ports)
 #   --remove-source  also delete the directory this script is in (asked interactively
 #                    when --yes is not given)
 #
@@ -15,8 +15,9 @@
 # the auto-updater service/timer (signed and legacy git-based), the remote-reboot
 # sudoers rule, /opt/tunnelvault-client (+ .previous), /usr/local/bin/tunnelvault,
 # /etc/tunnelvault/{client.env,config.json}, update.conf and release-signing.pub
-# (unless the TunnelVault server is installed on this host too), ~/.tunnelvault
-# of the service user, and the updater log.
+# (unless the TunnelVault server is installed on this host too — /etc/tunnelvault
+# itself is only removed when empty), /var/lib/tunnelvault (reconnect state),
+# ~/.tunnelvault of the service user, and the updater log.
 # ================================================================
 set -Eeuo pipefail
 
@@ -41,6 +42,7 @@ SYSTEMD_DIR="/etc/systemd/system"
 SUDOERS_FILE="/etc/sudoers.d/tunnelvault-reboot"
 CLI_WRAPPER="/usr/local/bin/tunnelvault"
 SERVER_INSTALL_DIR="/opt/tunnelvault"
+STATE_DIR="/var/lib/tunnelvault"
 
 ASSUME_YES=false
 KEEP_CONFIG=false
@@ -149,11 +151,12 @@ if [[ -d $(fs "$CONFIG_DIR") && ! -L $(fs "$CONFIG_DIR") ]] && rmdir -- "$(fs "$
   info "Removed empty ${CONFIG_DIR}"
 fi
 
-# ── Step 4: per-user state ──────────────────────────────────────────
-step "Removing per-user config and state (~/.tunnelvault)"
+# ── Step 4: reconnect state ─────────────────────────────────────────
+step "Removing reconnect state (${STATE_DIR}, ~/.tunnelvault)"
 if $KEEP_CONFIG; then
-  skipped "Kept ~/.tunnelvault (--keep-config)"
+  skipped "Kept ${STATE_DIR} and ~/.tunnelvault (--keep-config)"
 else
+  remove_path "$STATE_DIR" "${STATE_DIR} (reconnect state)"
   declare -A seen_home=()
   for user in "$SERVICE_USER" "${SUDO_USER:-}"; do
     [[ -n $user ]] || continue

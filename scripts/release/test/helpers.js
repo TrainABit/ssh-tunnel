@@ -73,8 +73,32 @@ function makeKey(dir) {
 }
 
 /**
+ * Stub versions of every file build-release.sh requires in a release tree (see its
+ * REQUIRED_FILES). The updater stubs carry the signed-updater marker.
+ */
+const REQUIRED_RELEASE_STUBS = {
+  'install-server.sh': '#!/bin/bash\necho stub\n',
+  'install-client.sh': '#!/bin/bash\necho stub\n',
+  'auto-update.sh': '#!/bin/bash\n# >>> tv-updater-common\n# <<< tv-updater-common\n',
+  'auto-update-client.sh': '#!/bin/bash\n# >>> tv-updater-common\n# <<< tv-updater-common\n',
+  'backend/package.json': '{"name":"backend","private":true}\n',
+  'backend/package-lock.json': '{"lockfileVersion":3}\n',
+  'backend/src/server.js': '// stub\n',
+  'client/package.json': '{"name":"client","private":true}\n',
+  'client/package-lock.json': '{"lockfileVersion":3}\n',
+  'client/bin/tunnelvault.js': '// stub\n',
+  'gateway/ssh_router.sh': '#!/bin/bash\n',
+  'gateway/gateway-helper.sh': '#!/bin/bash\n',
+  'gateway/manage-user.sh': '#!/bin/bash\n',
+  'gateway/register_token.sh': '#!/bin/bash\n',
+  'gateway/usermgr-worker.sh': '#!/bin/bash\n',
+  'gateway/tunnelvault-sudoers': '# stub\n',
+};
+
+/**
  * Temp git repo that looks like a TunnelVault checkout: the real scripts/release
- * tooling, a VERSION file, stub installers and optional extra files.
+ * tooling, a VERSION file, stub installers/updaters/gateway scripts (everything
+ * build-release.sh requires; `files` overrides or adds, null leaves a file out).
  */
 function makeReleaseRepo(dir, { version, pubkey, files = {} } = {}) {
   fs.mkdirSync(path.join(dir, 'scripts', 'release'), { recursive: true });
@@ -87,7 +111,8 @@ function makeReleaseRepo(dir, { version, pubkey, files = {} } = {}) {
   }
   fs.writeFileSync(path.join(dir, 'VERSION'), `${version}\n`);
   if (pubkey) fs.copyFileSync(pubkey, path.join(dir, 'release-signing.pub'));
-  for (const [rel, content] of Object.entries(files)) {
+  for (const [rel, content] of Object.entries({ ...REQUIRED_RELEASE_STUBS, ...files })) {
+    if (content === null) continue;
     fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
     fs.writeFileSync(path.join(dir, rel), content, { mode: 0o755 });
   }
@@ -222,6 +247,7 @@ function shellcheckBin() {
 }
 
 module.exports = {
+  REQUIRED_RELEASE_STUBS,
   REPO_ROOT,
   RELEASE_DIR,
   mkTmp,

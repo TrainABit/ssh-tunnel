@@ -348,6 +348,11 @@ test('nginx configuration: websockets, /ws + /ws/ssh, wildcard block, ACME webro
   assert.match(https, /proxy_set_header Connection \$tunnelvault_connection_upgrade;/);
   assert.match(https, /proxy_set_header X-Forwarded-Proto \$scheme;/);
   assert.match(https, /proxy_set_header X-Forwarded-For \$remote_addr;/);
+  // the backend's same-origin (Origin vs Host / X-Forwarded-Host) and __Host- cookie checks
+  assert.match(https, /proxy_set_header Host \$host;/);
+  assert.match(https, /proxy_set_header X-Forwarded-Host \$host;/);
+  // HSTS comes from the backend (no includeSubDomains: *.DOMAIN tunnels may be plain HTTP)
+  assert.doesNotMatch(https, /Strict-Transport-Security|includeSubDomains/i);
   assert.match(https, /location \^~ \/\.well-known\/acme-challenge\/ \{\n {8}root \/var\/www\/tunnelvault-acme;/);
   assert.match(https, /ssl_certificate {5}\/etc\/letsencrypt\/live\/tunnel\.example\.com\/fullchain\.pem;/);
   assert.match(https, /listen 443 ssl http2;/);
@@ -368,6 +373,7 @@ test('nginx configuration: websockets, /ws + /ws/ssh, wildcard block, ACME webro
   assert.match(wild, /server_name \*\.tunnel\.example\.com;\n {4}server_tokens off;\n {4}location \/ \{\n {8}return 301 https/);
   assert.match(wild, /ssl_certificate {5}\/etc\/letsencrypt\/live\/wild\/fullchain\.pem;/);
   assert.match(wild, /http2 on;/);
+  assert.doesNotMatch(wild, /Strict-Transport-Security|includeSubDomains/i);
   assert.doesNotMatch(wild, /listen \[::\]/);
   assert.doesNotMatch(wild, /ssl http2/);
 
@@ -471,4 +477,19 @@ test('firewall rules: TLS mode never opens the API/proxy ports', () => {
   assert.doesNotMatch(src, /python3 -c|python3 - /, 'no python for JSON/config handling');
   assert.doesNotMatch(src, /^\s*TLS_(CERT|KEY)=\/etc\/letsencrypt/m, 'never points the service at /etc/letsencrypt');
   assert.match(src, /npm ci --omit=dev/);
+});
+
+test('update.conf written by install-server.sh has the same settings as install-client.sh writes', () => {
+  const server = ok('render_update_conf 1');
+  const client = spawnSync('bash', ['-c', 'source "$0"; UPDATE_ENABLED=1; render_update_conf', path.join(REPO, 'install-client.sh')], {
+    encoding: 'utf8', env: { ...process.env, TV_INSTALL_CLIENT_SOURCE_ONLY: '1' },
+  });
+  assert.equal(client.status, 0, client.stderr);
+  const settings = (text) => text.split('\n').filter((l) => /^[A-Z_]+=/.test(l)).sort();
+  assert.deepEqual(settings(server), settings(client.stdout));
+  assert.deepEqual(settings(server), ['ENABLED=1', 'PINNED_VERSION=', 'PUBKEY=/etc/tunnelvault/release-signing.pub',
+    'SCHEDULE=12h', 'UPDATE_REPO=TrainABit/ssh-tunnel']);
+  // same SCHEDULE rule for both timers
+  for (const v of ['12h', '30min', '1d', '99999min']) assert.equal(ok('is_valid_schedule "$V" && echo y', { V: v }).trim(), 'y', v);
+  for (const v of ['', '0h', '12', '100000min', '1h;x']) assert.equal(ok('is_valid_schedule "$V" || echo n', { V: v }).trim(), 'n', v);
 });

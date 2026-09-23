@@ -10,7 +10,7 @@ const crypto = require('crypto');
 const WebSocket = require('ws');
 const db = require('../src/database');
 const { createSecretBox } = require('../src/secretBox');
-const { readAutoUpdate, loadConfig, ConfigError } = require('../src/app');
+const { readAutoUpdate, readVersion, loadConfig, ConfigError } = require('../src/app');
 
 /** Device connection (protocol v2 header, Bearer auth). */
 function connectDevice(vault, token) {
@@ -114,6 +114,8 @@ describe('createTunnelVault()', () => {
       assert.equal(r.body.sessionRetentionDays, 90);
       assert.equal(r.body.tunnelIdleRetentionDays, 30);
       assert.match(r.body.version, /^\d+\.\d+\.\d+/);
+      // Repo-root VERSION (what release tarballs / installers ship), not package.json.
+      assert.equal(r.body.version, fs.readFileSync(path.join(__dirname, '..', '..', 'VERSION'), 'utf8').trim());
     } finally {
       await vault.stop();
     }
@@ -125,6 +127,22 @@ describe('createTunnelVault()', () => {
     assert.deepEqual(readAutoUpdate(f), { enabled: false, schedule: '24h' });
     fs.writeFileSync(f, 'ENABLED=true # yes\n');
     assert.deepEqual(readAutoUpdate(f), { enabled: true, schedule: null });
+    // Exactly what install-server.sh / install-client.sh render (unquoted values, empty PINNED_VERSION).
+    fs.writeFileSync(f, '# TunnelVault auto-update settings\nENABLED=1\nSCHEDULE=12h\nUPDATE_REPO=TrainABit/ssh-tunnel\n'
+      + 'PINNED_VERSION=\nPUBKEY=/etc/tunnelvault/release-signing.pub\n');
+    assert.deepEqual(readAutoUpdate(f), { enabled: true, schedule: '12h' });
+    for (const [value, enabled] of [['yes', true], ['on', true], ['"1"', true], ['TRUE', true], ['0', false],
+      ['no', false], ['off', false], ['', false], ['"0"', false]]) {
+      fs.writeFileSync(f, `ENABLED=${value}\r\nSCHEDULE="6h"\r\n`);
+      assert.deepEqual(readAutoUpdate(f), { enabled, schedule: '6h' }, `ENABLED=${value}`);
+    }
+    assert.deepEqual(readAutoUpdate(path.join(TMP_DIR, 'missing.conf')), { enabled: false, schedule: null });
+    // INSTALL_DIR/VERSION wins over the repo-root VERSION; junk is ignored.
+    const installDir = fs.mkdtempSync(path.join(TMP_DIR, 'install-'));
+    fs.writeFileSync(path.join(installDir, 'VERSION'), '2.3.4\n');
+    assert.equal(readVersion(installDir), '2.3.4');
+    fs.writeFileSync(path.join(installDir, 'VERSION'), '<script>\n');
+    assert.equal(readVersion(installDir), fs.readFileSync(path.join(__dirname, '..', '..', 'VERSION'), 'utf8').trim());
     const cfg = loadConfig({ PORT: '0', PROXY_PORT: '8081', BIND_HOST: '127.0.0.1', TRUST_PROXY: '10.0.0.0/8' });
     assert.equal(cfg.port, 0);
     assert.equal(cfg.proxyPort, 8081);
@@ -223,5 +241,52 @@ describe('token revocation through the API (live device connections)', () => {
     } finally {
       await vault.stop();
     }
+  });
+});
+
+describe('server.js entrypoint: configuration errors exit 78 (systemd RestartPreventExitStatus=78)', () => {
+  const { spawn } = require('child_process');
+  const SERVER_JS = path.join(__dirname, '..', 'src', 'server.js');
+
+  /** Run server.js in a clean cwd (no .env) with the given env; resolves { code, output }. */
+  function runServer(extraEnv) {
+    const cwd = fs.mkdtempSync(path.join(TMP_DIR, 'srv-'));
+    const env = {
+      PATH: process.env.PATH,
+      NODE_ENV: 'production',
+      LOG_LEVEL: 'info',
+      AUTH_TOKEN: ADMIN_TOKEN,
+      DB_PATH: path.join(cwd, 'tunnelvault.db'),
+      PORT: '0',
+      PROXY_PORT: '0',
+      BIND_HOST: '127.0.0.1',
+      TUNNELVAULT_UPDATE_CONF: path.join(cwd, 'update.conf'),
+      ...extraEnv,
+    };
+    return new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [SERVER_JS], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
+      let output = '';
+      child.stdout.on('data', (d) => { output += d; });
+      child.stderr.on('data', (d) => { output += d; });
+      const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error(`server.js did not exit: ${output}`)); }, 15000);
+      child.on('exit', (code) => { clearTimeout(timer); resolve({ code, output }); });
+    });
+  }
+
+  test('unreadable TLS_PROXY_CERT/TLS_PROXY_KEY (HTTP proxy) -> exit 78 with an actionable message', async () => {
+    const r = await runServer({ TLS_PROXY_CERT: '/nonexistent/proxy-cert.pem', TLS_PROXY_KEY: '/nonexistent/proxy-key.pem' });
+    assert.equal(r.code, 78, r.output);
+    assert.match(r.output, /proxy-cert\.pem|TLS/);
+    assert.doesNotMatch(r.output, /^\s+at /m, 'no stack trace');
+    assert.ok(!r.output.includes(ADMIN_TOKEN), 'no secrets in the log');
+  });
+
+  test('unreadable TLS_CERT/TLS_KEY and missing AUTH_TOKEN in production -> exit 78', async () => {
+    const tls = await runServer({ TLS_CERT: '/nonexistent/fullchain.pem', TLS_KEY: '/nonexistent/privkey.pem' });
+    assert.equal(tls.code, 78, tls.output);
+    assert.match(tls.output, /TLS_CERT/);
+    const noToken = await runServer({ AUTH_TOKEN: '' });
+    assert.equal(noToken.code, 78, noToken.output);
+    assert.match(noToken.output, /AUTH_TOKEN/);
   });
 });

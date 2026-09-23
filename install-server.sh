@@ -55,6 +55,10 @@ UPDATE_CONF="${CONF_DIR}/update.conf"
 INSTALLED_PUBKEY="${CONF_DIR}/release-signing.pub"
 UPDATER_SCRIPT="${INSTALL_DIR}/auto-update.sh"
 UPDATER_UNIT="tunnelvault-autoupdate"
+UPDATER_LOG="/var/log/tunnelvault-update.log"
+# The client's signed updater (install-client.sh) shares CONF_DIR/update.conf on hosts running both
+CLIENT_UPDATER_UNIT="tunnelvault-client-autoupdate"
+CLIENT_UPDATER_SCRIPT="/opt/tunnelvault-client/auto-update-client.sh"
 USERMGR_UNIT="tunnelvault-usermgr"
 DEFAULT_UPDATE_REPO="TrainABit/ssh-tunnel"
 DEFAULT_UPDATE_SCHEDULE="12h"
@@ -130,11 +134,13 @@ TLS (strongly recommended for anything reachable from the internet):
                           you obtained separately (DNS-01). Enables HTTPS for HTTP tunnels; without
                           it, HTTP tunnels (*.DOMAIN) are served over plain HTTP on port 80.
 
-Signed automatic updates:
-  --auto-update           Install the auto-updater (verifies signed GitHub releases; needs a public key)
-  --no-auto-update        Disable the auto-updater
-  --release-pubkey FILE   Release signing public key (PEM). Default: release-signing.pub next to this
-                          script, if present.
+Signed automatic updates (settings in /etc/tunnelvault/update.conf, shared with the client):
+  --auto-update           Install the auto-updater (verifies signed GitHub releases; needs a public key).
+                          Kept on --upgrade.
+  --no-auto-update        Remove the auto-updater
+  --release-pubkey FILE   Release signing public key (ECDSA P-256 PEM). Default: the installed
+                          /etc/tunnelvault/release-signing.pub, else release-signing.pub next to this
+                          script. An installed key is only replaced by an explicit --release-pubkey.
 
   -h, --help              Show this help
 EOF
@@ -166,6 +172,20 @@ is_valid_email() {
 }
 
 is_valid_auth_token() { [[ "${1:-}" =~ ^[A-Za-z0-9._~-]{16,256}$ ]]; }
+
+# update.conf SCHEDULE -> systemd OnUnitActiveSec (same rule as install-client.sh)
+is_valid_schedule() { [[ "${1:-}" =~ ^[1-9][0-9]{0,4}(min|h|d)$ ]]; }
+
+# ENABLED semantics of the updater (auto-update.sh read_conf): 1/true/yes/on
+is_enabled_value() { [[ "${1,,}" =~ ^(1|true|yes|on)$ ]]; }
+
+# PEM ECDSA P-256 public key — the only key type the updaters accept (tv_check_pubkey)
+is_p256_pubkey() {
+    local text
+    [[ -f "${1:-}" && -r "$1" ]] || return 1
+    text="$(openssl pkey -pubin -in "$1" -noout -text 2>/dev/null)" || return 1
+    [[ "$text" == *prime256v1* || "$text" == *P-256* ]]
+}
 
 # Absolute path without spaces or characters that are special in nginx/systemd files
 is_safe_path() { [[ "${1:-}" =~ ^/[A-Za-z0-9._@+/-]*$ && "$1" != *..* ]]; }
@@ -448,7 +468,7 @@ EOF
 # SCHEDULE from update.conf ("12h", "30min", "1d") -> OnUnitActiveSec
 render_updater_timer_unit() {
     local schedule="${1:-$DEFAULT_UPDATE_SCHEDULE}"
-    [[ "$schedule" =~ ^[1-9][0-9]{0,3}(min|h|d)$ ]] || schedule="$DEFAULT_UPDATE_SCHEDULE"
+    is_valid_schedule "$schedule" || schedule="$DEFAULT_UPDATE_SCHEDULE"
     cat <<EOF
 [Unit]
 Description=TunnelVault signed auto-update timer
@@ -467,9 +487,12 @@ EOF
 render_update_conf() {
     local enabled="$1"
     cat <<EOF
-# TunnelVault signed auto-update configuration (read by ${UPDATER_SCRIPT}).
-# ENABLED=1 installs verified releases; PINNED_VERSION (e.g. 2.0.1) pins a release,
-# empty = latest. SCHEDULE is applied to the systemd timer by install-server.sh.
+# TunnelVault auto-update settings (read by auto-update.sh / auto-update-client.sh;
+# shared by the server and client updaters when both are installed on this host).
+# Releases are installed only if SHA256SUMS.sig verifies with PUBKEY and the tarball
+# matches SHA256SUMS; downgrades are refused. ENABLED=0 pauses the updater(s);
+# PINNED_VERSION (e.g. 2.0.1) pins a release, empty = latest. SCHEDULE is applied
+# to the systemd timer(s) by the installers (re-run with --upgrade after editing).
 ENABLED=${enabled}
 SCHEDULE=${DEFAULT_UPDATE_SCHEDULE}
 UPDATE_REPO=${DEFAULT_UPDATE_REPO}
@@ -982,8 +1005,8 @@ preflight() {
         resolve_pubkey_source
     fi
     if [[ -n "$PUBKEY_SOURCE" ]]; then
-        openssl pkey -pubin -in "$PUBKEY_SOURCE" -noout >/dev/null 2>&1 \
-            || fail "${PUBKEY_SOURCE} is not a PEM public key"
+        is_p256_pubkey "$PUBKEY_SOURCE" \
+            || fail "${PUBKEY_SOURCE} is not an ECDSA P-256 public key (PEM) — the updater only accepts P-256 release keys"
     fi
 }
 
@@ -1088,6 +1111,10 @@ prepare_application() {
     if $IS_RELEASE; then
         FRONTEND_DIST_SRC="${SCRIPT_DIR}/frontend/dist"
         info "Using the prebuilt dashboard of the release"
+    elif [[ "${TUNNELVAULT_UPDATER:-}" == 1 ]]; then
+        # Unattended runs never execute the frontend toolchain's install scripts as root:
+        # signed releases ship frontend/dist.
+        warn "This package has no prebuilt dashboard (frontend/dist) — keeping the installed one"
     elif [[ -f "${SCRIPT_DIR}/frontend/package.json" ]]; then
         echo "  ${DIM}Building the dashboard (npm ci && npm run build)...${NC}"
         if (cd "${SCRIPT_DIR}/frontend" && npm ci --no-audit --no-fund --loglevel=error && npm run build --silent); then
@@ -1378,20 +1405,44 @@ remove_updater_units() {
     systemctl daemon-reload
 }
 
+# The client's signed updater (not its old git-pull one) reads the same update.conf
+client_updater_installed() {
+    [[ -f "${SYSTEMD_DIR}/${CLIENT_UPDATER_UNIT}.timer" && -f "$CLIENT_UPDATER_SCRIPT" ]] \
+        && grep -q 'tv-updater-common' "$CLIENT_UPDATER_SCRIPT" 2>/dev/null
+}
+
+# /etc/tunnelvault holds the updater's trust anchor: root-owned, not group/world-writable
+# (the updater refuses anything else). 0755 so the backend can read update.conf; the
+# client's secrets in there (client.env) are 0600 on their own.
+prepare_conf_dir() {
+    if [[ -L "$CONF_DIR" || ( -e "$CONF_DIR" && ! -d "$CONF_DIR" ) ]]; then
+        warn "${CONF_DIR} is a symlink or not a directory — refusing to write the updater configuration there"
+        return 1
+    fi
+    if [[ -L "$UPDATE_CONF" || -L "$INSTALLED_PUBKEY" ]]; then
+        warn "${UPDATE_CONF} or ${INSTALLED_PUBKEY} is a symlink — refusing to use it"
+        return 1
+    fi
+    mkdir -p "$CONF_DIR"
+    chown root:root "$CONF_DIR"
+    chmod 0755 "$CONF_DIR"
+}
+
 configure_updater() {
-    local legacy=false enabled_before=false action conf_enabled
+    local legacy=false installed_before=false shared=false action conf_enabled
     is_legacy_updater "$UPDATER_SCRIPT" && legacy=true
     conf_enabled="$(env_get "$UPDATE_CONF" ENABLED)"
-    if ! $legacy && [[ -f "${SYSTEMD_DIR}/${UPDATER_UNIT}.timer" && "$conf_enabled" == "1" ]]; then
-        enabled_before=true
+    if ! $legacy && [[ -f "${SYSTEMD_DIR}/${UPDATER_UNIT}.timer" && -f "$UPDATER_SCRIPT" ]]; then
+        installed_before=true
     fi
+    client_updater_installed && shared=true
 
     if [[ "$AUTO_UPDATE" == "yes" ]]; then
         action="install"
     elif [[ "$AUTO_UPDATE" == "no" ]]; then
         action="disable"
-    elif $UPGRADE && $enabled_before; then
-        action="install"          # keep the previous choice
+    elif $UPGRADE && $installed_before; then
+        action="install"          # keep the previous choice (also while paused with ENABLED=0)
     else
         action="none"
     fi
@@ -1405,12 +1456,15 @@ configure_updater() {
         if [[ -z "$PUBKEY_SOURCE" ]]; then
             warn "No release public key available — auto-update not installed"
             action="none"
+        elif ! is_p256_pubkey "$PUBKEY_SOURCE"; then
+            warn "${PUBKEY_SOURCE} is not an ECDSA P-256 public key — auto-update not installed"
+            action="none"
         fi
+        if [[ "$action" == "install" ]] && ! prepare_conf_dir; then action="none"; fi
     fi
 
     case "$action" in
         install)
-            mkdir -p "$CONF_DIR"; chmod 0755 "$CONF_DIR"
             if [[ "$PUBKEY_SOURCE" != "$INSTALLED_PUBKEY" ]]; then
                 if [[ -f "$INSTALLED_PUBKEY" && -z "$RELEASE_PUBKEY_ARG" ]]; then
                     : # never replace the trust anchor implicitly
@@ -1418,11 +1472,12 @@ configure_updater() {
                     write_file "$INSTALLED_PUBKEY" 0644 root:root < "$PUBKEY_SOURCE" && info "Release public key installed at ${INSTALLED_PUBKEY}"
                 fi
             fi
-            if [[ -f "${SCRIPT_DIR}/release-signing.pub" && -f "$INSTALLED_PUBKEY" ]] \
-                && ! cmp -s "${SCRIPT_DIR}/release-signing.pub" "$INSTALLED_PUBKEY"; then
+            chown root:root "$INSTALLED_PUBKEY"; chmod 0644 "$INSTALLED_PUBKEY"
+            if [[ -f "${SCRIPT_DIR}/release-signing.pub" ]] && ! cmp -s "${SCRIPT_DIR}/release-signing.pub" "$INSTALLED_PUBKEY"; then
                 notice "release-signing.pub of this package differs from ${INSTALLED_PUBKEY} (kept). Use --release-pubkey to replace it."
             fi
             if [[ -f "$UPDATE_CONF" ]]; then
+                # keep ENABLED (unless --auto-update), UPDATE_REPO, PINNED_VERSION and SCHEDULE
                 [[ "$AUTO_UPDATE" == "yes" ]] && env_set "$UPDATE_CONF" ENABLED 1
                 env_ensure "$UPDATE_CONF" SCHEDULE "$DEFAULT_UPDATE_SCHEDULE" || true
                 env_ensure "$UPDATE_CONF" UPDATE_REPO "$DEFAULT_UPDATE_REPO" || true
@@ -1441,12 +1496,26 @@ configure_updater() {
             if $legacy; then
                 notice "The old unsigned git-pull updater was replaced by the signed release updater"
             fi
-            UPDATER_STATE="enabled (signed releases, schedule $(env_get "$UPDATE_CONF" SCHEDULE))"
-            info "Signed auto-updater enabled"
+            local schedule
+            schedule="$(env_get "$UPDATE_CONF" SCHEDULE)"
+            is_valid_schedule "$schedule" || schedule="$DEFAULT_UPDATE_SCHEDULE"
+            if is_enabled_value "$(env_get "$UPDATE_CONF" ENABLED)"; then
+                UPDATER_STATE="enabled (signed releases, every ${schedule})"
+                info "Signed auto-updater enabled (every ${schedule}; key ${INSTALLED_PUBKEY}; settings ${UPDATE_CONF})"
+            else
+                UPDATER_STATE="installed but paused (ENABLED=0 in ${UPDATE_CONF})"
+                warn "Signed auto-updater installed but paused: ENABLED=0 in ${UPDATE_CONF} (kept). Resume with --upgrade --auto-update."
+            fi
             ;;
         disable)
-            if [[ -f "$UPDATE_CONF" ]]; then env_set "$UPDATE_CONF" ENABLED 0; fi
             remove_updater_units
+            if [[ -f "$UPDATE_CONF" && ! -L "$UPDATE_CONF" ]]; then
+                if $shared; then
+                    notice "${UPDATE_CONF} is shared with the client auto-updater on this host — ENABLED left unchanged there"
+                else
+                    env_set "$UPDATE_CONF" ENABLED 0
+                fi
+            fi
             $legacy && notice "The old unsigned git-pull updater was removed"
             UPDATER_STATE="disabled"
             info "Auto-updater disabled"
@@ -1455,17 +1524,26 @@ configure_updater() {
             if $legacy; then
                 remove_updater_units
                 warn "Removed the old auto-updater: it ran 'git pull' as root without any verification."
+            elif [[ -f "${SYSTEMD_DIR}/${UPDATER_UNIT}.timer" && ! -f "$UPDATER_SCRIPT" ]]; then
+                remove_updater_units
+                notice "Removed an orphaned ${UPDATER_UNIT}.timer (${UPDATER_SCRIPT} was missing)"
             fi
-            if [[ "$conf_enabled" == "0" ]]; then
-                UPDATER_STATE="disabled"
-                skipped "Auto-updater disabled (${UPDATE_CONF})"
-            else
+            if [[ -f "${SYSTEMD_DIR}/${UPDATER_UNIT}.timer" ]] && ! $legacy; then
+                UPDATER_STATE="installed (not changed by this run)"
+            elif [[ "$AUTO_UPDATE" == "yes" || "$conf_enabled" != "0" ]]; then
                 UPDATER_STATE="not installed"
                 notice "Signed auto-updates are off. Enable with:"
                 notice "  sudo bash install-server.sh --upgrade --auto-update --release-pubkey /path/to/release-signing.pub"
+            else
+                UPDATER_STATE="disabled"
+                skipped "Auto-updater disabled (${UPDATE_CONF})"
             fi
             ;;
     esac
+    if $shared && [[ "$action" == "install" ]]; then
+        notice "${UPDATE_CONF} is shared with the client auto-updater on this host: ENABLED=0 pauses both,"
+        notice "UPDATE_REPO, PINNED_VERSION and SCHEDULE apply to both (each keeps its own timer)."
+    fi
 }
 
 # ─── Step 12: firewall ───────────────────────────────────────────
@@ -1664,6 +1742,11 @@ print_summary() {
     echo "  TCP tunnels:     ports ${TCP_PORT_MIN}-${TCP_PORT_MAX}"
     echo "  Service:         ${status:-unknown}"
     echo "  Auto-update:     ${UPDATER_STATE}"
+    if [[ -f "${SYSTEMD_DIR}/${UPDATER_UNIT}.timer" && -f "$UPDATER_SCRIPT" ]] && ! is_legacy_updater "$UPDATER_SCRIPT"; then
+        echo "                   settings ${UPDATE_CONF}, key ${INSTALLED_PUBKEY}"
+        echo "                   logs: journalctl -u ${UPDATER_UNIT} and ${UPDATER_LOG}"
+        echo "                   run now: sudo ${UPDATER_SCRIPT} [--dry-run]"
+    fi
     echo "  Config:          ${ENV_FILE}"
     echo "  Database:        ${DB_PATH}"
     echo "  Logs:            journalctl -u ${SERVICE_NAME} -f   (${LOG_DIR}/)"

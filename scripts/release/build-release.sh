@@ -20,7 +20,10 @@
 # Output (in --out):
 #   tunnelvault-vX.Y.Z.tar.gz   git archive of HEAD + prebuilt frontend/dist + VERSION,
 #                               all under the prefix tunnelvault-vX.Y.Z/ (reproducible:
-#                               sorted, root-owned, mtime = HEAD commit time, gzip -n)
+#                               sorted, root-owned, mtime = HEAD commit time, gzip -n).
+#                               The build fails if a file the installers/updaters need
+#                               is missing (see REQUIRED_FILES) or an updater is not the
+#                               signed-release one.
 #   SHA256SUMS                  sha256sum of the tarball
 #   SHA256SUMS.sig              openssl dgst -sha256 -sign KEY SHA256SUMS (unless --unsigned)
 # ================================================================
@@ -121,6 +124,28 @@ if [[ $DIST_SRC != "${STAGE}/frontend/dist" ]]; then
   cp -R -- "$DIST_SRC" "${STAGE}/frontend/dist"
 fi
 printf '%s\n' "$VERSION" > "${STAGE}/VERSION"
+
+# ── Contract with the installers and updaters ────────────────────────
+# install-server.sh / install-client.sh (run by the updaters from the extracted tree)
+# need these files; the gateway scripts are copied to /opt/tunnelvault.
+REQUIRED_FILES=(
+  VERSION frontend/dist/index.html
+  install-server.sh install-client.sh auto-update.sh auto-update-client.sh
+  backend/package.json backend/package-lock.json backend/src/server.js
+  client/package.json client/package-lock.json client/bin/tunnelvault.js
+  gateway/ssh_router.sh gateway/gateway-helper.sh gateway/manage-user.sh gateway/register_token.sh
+  gateway/usermgr-worker.sh gateway/tunnelvault-sudoers
+)
+for f in "${REQUIRED_FILES[@]}"; do
+  [[ -f "${STAGE}/${f}" ]] || die "release tree lacks ${f} (is it committed at HEAD?)"
+done
+# The installers recognise the old unsigned git-pull updater by these markers.
+for f in auto-update.sh auto-update-client.sh; do
+  grep -q '^# >>> tv-updater-common' "${STAGE}/${f}" || die "${f} is not the signed-release updater"
+  if grep -Eq '^SOURCE_DIR=|git pull origin|__SOURCE_DIR__' "${STAGE}/${f}"; then
+    die "${f} contains markers of the legacy git-pull updater"
+  fi
+done
 
 # The updaters reject archives with links or special files — fail early here.
 if [[ -n $(find "$STAGE" \( -type l -o ! -type f ! -type d \) -print -quit) ]]; then

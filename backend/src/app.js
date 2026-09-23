@@ -399,6 +399,7 @@ function createTunnelVault(options = {}) {
   });
   const sshApi = initSshWebSocket(server, {
     tunnelManager,
+    connectionTracker,
     db,
     auth,
     getClientIp,
@@ -410,7 +411,9 @@ function createTunnelVault(options = {}) {
   // ─── Public HTTP tunnel proxy ──────────────────────────
   let proxyServer;
   try {
-    proxyServer = createProxyServer(tunnelManager, connectionTracker, { tcpProxy, getClientIp, trustProxy });
+    proxyServer = createProxyServer(tunnelManager, connectionTracker, {
+      tcpProxy, getClientIp, trustProxy, domain: config.domain,
+    });
   } catch (err) {
     // e.g. unreadable TLS_PROXY_CERT: release everything created so far
     wsApi.close();

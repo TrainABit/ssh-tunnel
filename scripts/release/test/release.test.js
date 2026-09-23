@@ -64,8 +64,39 @@ test('build-release.sh produces a signed release that verify-release.sh accepts'
   const names = mustRun('tar', ['-tzf', tarballOf(ctx)]).stdout;
   assert.match(names, /^tunnelvault-v2\.0\.1\/frontend\/dist\/index\.html$/m);
   assert.match(names, /^tunnelvault-v2\.0\.1\/install-client\.sh$/m);
+  // what install-server.sh / the dashboard's SetupGuide rely on (INTEGRATION B2)
+  for (const f of ['VERSION', 'frontend/dist/index.html', 'backend/package-lock.json', 'gateway/gateway-helper.sh',
+    'gateway/usermgr-worker.sh', 'gateway/tunnelvault-sudoers', 'install-server.sh', 'auto-update.sh']) {
+    assert.ok(names.split('\n').includes(`tunnelvault-v2.0.1/${f}`), f);
+  }
   const versionInArchive = mustRun('tar', ['-xzOf', tarballOf(ctx), 'tunnelvault-v2.0.1/VERSION']).stdout;
   assert.equal(versionInArchive, '2.0.1\n');
+});
+
+test('build-release.sh refuses trees the installers/updaters cannot use', (t) => {
+  for (const [files, re] of [
+    [{ 'gateway/usermgr-worker.sh': null }, /release tree lacks gateway\/usermgr-worker\.sh/],
+    [{ 'backend/package-lock.json': null }, /release tree lacks backend\/package-lock\.json/],
+    [{ 'auto-update.sh': '#!/bin/bash\nSOURCE_DIR="__SOURCE_DIR__"\ngit pull origin main\n' }, /auto-update\.sh is not the signed-release updater/],
+    [{ 'auto-update.sh': '#!/bin/bash\n# >>> tv-updater-common\ngit pull origin main\n' }, /auto-update\.sh contains markers of the legacy git-pull updater/],
+  ]) {
+    const tmp = mkTmp(t);
+    const keys = makeKey(path.join(tmp, 'key'));
+    const repo = makeReleaseRepo(path.join(tmp, 'repo'), { version: '2.0.1', pubkey: keys.pub, files });
+    const ctx = { repo, keys, version: '2.0.1', dist: makeFrontendDist(path.join(tmp, 'dist')), out: path.join(tmp, 'out') };
+    const res = build(ctx);
+    assert.notEqual(res.status, 0, JSON.stringify(files));
+    assert.match(res.stderr, re);
+    assert.ok(!fs.existsSync(tarballOf(ctx)), 'no tarball written');
+  }
+});
+
+test('the real updaters carry no legacy git-updater markers', () => {
+  for (const f of ['auto-update.sh', 'auto-update-client.sh']) {
+    const text = fs.readFileSync(path.join(REPO_ROOT, f), 'utf8');
+    assert.doesNotMatch(text, /^SOURCE_DIR=|git pull origin|__SOURCE_DIR__/m, f);
+    assert.match(text, /^# >>> tv-updater-common\b/m, f);
+  }
 });
 
 test('builds are reproducible (same commit -> identical tarball)', (t) => {
@@ -241,6 +272,14 @@ test('generate-signing-key.sh: P-256 pair, private key 0600, refuses overwrite a
   assert.notEqual(inRepo.status, 0);
   assert.match(inRepo.stderr, /inside a git work tree/);
   fs.rmSync(path.join(REPO_ROOT, 'scripts', 'release', 'test', 'tmp-key-must-not-exist'), { recursive: true, force: true });
+
+  // a work tree git itself would ignore (e.g. owned by another user under sudo) is still refused
+  fs.mkdirSync(path.join(tmp, 'checkout', '.git'), { recursive: true });
+  fs.mkdirSync(path.join(tmp, 'checkout', 'sub'));
+  const inCheckout = run('bash', [path.join(RELEASE_DIR, 'generate-signing-key.sh'), '--out', path.join(tmp, 'checkout', 'sub', 'keys')]);
+  assert.notEqual(inCheckout.status, 0);
+  assert.match(inCheckout.stderr, /inside a git work tree/);
+  assert.ok(!fs.existsSync(path.join(tmp, 'checkout', 'sub', 'keys')));
 });
 
 test('updaters inline an identical copy of the verification code', () => {
@@ -260,11 +299,16 @@ test('VERSION file is a plain X.Y.Z', () => {
 });
 
 test('shell scripts pass bash -n and shellcheck', (t) => {
+  // every shell script of the project: installers, updaters, gateway helpers, release tooling
   const files = [
-    'install-client.sh', 'uninstall-client.sh', 'auto-update.sh', 'auto-update-client.sh',
-    'scripts/release/release-lib.sh', 'scripts/release/build-release.sh', 'scripts/release/sign-release.sh',
-    'scripts/release/verify-release.sh', 'scripts/release/generate-signing-key.sh',
+    ...fs.readdirSync(REPO_ROOT).filter((f) => f.endsWith('.sh')),
+    ...fs.readdirSync(path.join(REPO_ROOT, 'gateway')).filter((f) => f.endsWith('.sh')).map((f) => `gateway/${f}`),
+    ...fs.readdirSync(RELEASE_DIR).filter((f) => f.endsWith('.sh')).map((f) => `scripts/release/${f}`),
   ].map((f) => path.join(REPO_ROOT, f));
+  for (const f of ['install-server.sh', 'install-client.sh', 'uninstall-server.sh', 'uninstall-client.sh',
+    'auto-update.sh', 'auto-update-client.sh', 'gateway/usermgr-worker.sh', 'scripts/release/build-release.sh']) {
+    assert.ok(files.includes(path.join(REPO_ROOT, f)), f);
+  }
   for (const f of files) {
     const r = run('bash', ['-n', f]);
     assert.equal(r.status, 0, `${f}: ${r.stderr}`);

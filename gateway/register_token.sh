@@ -118,7 +118,7 @@ check_existing_token() {
 terminate_gateway_sessions() {
     local user="$1"
     if [[ "$user" =~ ^gw-[A-Za-z0-9]{1,29}$ ]] && getent passwd "$user" >/dev/null 2>&1; then
-        pkill -TERM -u "$user" >/dev/null 2>&1 && echo "Live gateway sessions terminated." || true
+        if pkill -TERM -u "$user" >/dev/null 2>&1; then echo "Live gateway sessions terminated."; fi
     fi
 }
 

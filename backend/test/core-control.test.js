@@ -148,6 +148,36 @@ describe('revocation, limits and connection cap', () => {
     d.ws._socket.resume();
   });
 
+  test('device pings count as liveness even when server pings go unanswered', async () => {
+    // A server ping can sit behind megabytes of queued data on a slow link, so the
+    // device's own 15 s pings must keep it alive. autoPong:false = never answer ours.
+    const WebSocket = require('ws');
+    const token = h.createToken('pinger');
+    const ws = new WebSocket(h.wsUrl, {
+      headers: { Authorization: `Bearer ${token}`, 'X-TunnelVault-Protocol': '2' },
+      autoPong: false,
+      perMessageDeflate: false,
+    });
+    ws.on('error', () => {});
+    await once(ws, 'open');
+    let serverPings = 0;
+    ws.on('ping', () => { serverPings++; });
+    const closed = once(ws, 'close');
+    const pinger = setInterval(() => { try { ws.ping(); } catch {} }, 50);
+    try {
+      await new Promise(r => setTimeout(r, 1000)); // ~5 heartbeat rounds of 200 ms
+      assert.ok(serverPings >= 3, `server pinged ${serverPings} times`);
+      assert.equal(ws.readyState, WebSocket.OPEN, 'device that pings stays connected');
+      assert.equal(h.registry.connectionsForToken(token).length, 1);
+    } finally {
+      clearInterval(pinger);
+    }
+    // Negative control: without its own pings (and still ignoring ours) it is dropped.
+    await waitUntil(() => ws.readyState === WebSocket.CLOSED, 3000, 'silent peer terminated');
+    await closed;
+    await waitUntil(() => h.registry.connectionsForToken(token).length === 0, 3000, 'registry cleanup');
+  });
+
   test('per-token tunnel limit is counted across all connections of the token', async () => {
     const token = h.createToken('limited');
     const d1 = await device({ token });

@@ -1,0 +1,61 @@
+# TunnelVault server — example Docker Compose setup.
+#
+#   1. Create tunnelvault.env next to this file (chmod 600) with at least:
+#        AUTH_TOKEN=<openssl rand -hex 32>            dashboard login + API Bearer token
+#        DATA_ENCRYPTION_KEY=<openssl rand -hex 32>   encrypts stored SSH keys; keep a backup
+#        DOMAIN=tunnel.example.com
+#      All other options: backend/.env.example.
+#   2. docker compose up -d --build
+#   3. Open http://SERVER:4000 and log in with AUTH_TOKEN.
+#
+# The container speaks plain HTTP. On the internet, put a TLS reverse proxy in
+# front of it (DEPLOYMENT.md, "Docker"): publish 4000/4001 on 127.0.0.1 only and
+# set TRUST_PROXY, PUBLIC_URL and HTTP_TUNNEL_URL_TEMPLATE in tunnelvault.env.
+# The legacy SSH gateway (gw-* users) is not available in the container.
+
+services:
+  tunnelvault:
+    build: .
+    image: tunnelvault:local
+    restart: unless-stopped
+    init: true
+    env_file:
+      - ./tunnelvault.env
+    environment:
+      # Container layout. Set here (this block wins over env_file) so that the
+      # env file cannot move the database off the volume or the ports off the
+      # published mappings.
+      NODE_ENV: production
+      BIND_HOST: 0.0.0.0
+      PORT: "4000"
+      PROXY_PORT: "4001"
+      DB_PATH: /data/tunnelvault.db
+      # The TCP tunnel range must match the published ports below. Docker starts
+      # one proxy process per published port, so this example publishes 100 ports
+      # instead of the default 1000 (10000-10999); widen both together.
+      TCP_PORT_MIN: "10000"
+      TCP_PORT_MAX: "10099"
+    ports:
+      - "4000:4000"                 # dashboard, API, device WebSocket (/ws), web terminal (/ws/ssh)
+      - "4001:4001"                 # HTTP tunnel proxy (<subdomain>.DOMAIN)
+      - "10000-10099:10000-10099"   # TCP tunnels
+      # Behind a reverse proxy on this host, publish the API and proxy on loopback only:
+      # - "127.0.0.1:4000:4000"
+      # - "127.0.0.1:4001:4001"
+    volumes:
+      - tunnelvault-data:/data
+      # Optional GeoIP (GEOIP_PROVIDER=maxmind, GEOIP_DB=/geoip/GeoLite2-City.mmdb):
+      # - ./GeoLite2-City.mmdb:/geoip/GeoLite2-City.mmdb:ro
+    # Hardening: the server writes only to /data; everything else is read-only.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # server.js flushes tunnel statistics and closes the database on SIGTERM.
+    stop_grace_period: 20s
+
+volumes:
+  tunnelvault-data:

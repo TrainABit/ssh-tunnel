@@ -3,6 +3,7 @@ import {
   X, Terminal, Loader, AlertCircle, KeyRound, Eye, EyeOff, ShieldAlert, ShieldQuestion, RotateCcw, Check,
 } from 'lucide-react';
 import { getSshWsUrl, forgetHostKey, getSession, UNAUTHORIZED_EVENT } from '../services/api';
+import { chunkBytes } from '../utils/terminalFrames';
 
 // xterm.js is loaded lazily so the bundle stays small on pages that don't need it.
 let xtermModulesPromise = null;
@@ -119,6 +120,7 @@ export default function SshTerminalModal({ tunnel, onClose, onHostKeyChange }) {
   const wsRef = useRef(null);        // current WebSocket
   const phaseRef = useRef('creds');
   const pendingRef = useRef({ chunks: [], bytes: 0, dropped: false });
+  const sizeRef = useRef(null);      // last terminal size { cols, rows } (sent with credentials on reconnect)
 
   const hasStoredKey = tunnel?.has_private_key === true || tunnel?.has_private_key === 1;
   const pinnedFingerprint = typeof tunnel?.host_key_fingerprint === 'string' ? tunnel.host_key_fingerprint : '';
@@ -156,9 +158,11 @@ export default function SshTerminalModal({ tunnel, onClose, onHostKeyChange }) {
     disposeTerminal();
   }, [closeSocket, disposeTerminal]);
 
+  // Keystrokes/pastes: binary frames of <= 64 KiB (the server closes the socket on frames > 1 MiB).
   const sendBinary = useCallback((bytes) => {
     const ws = wsRef.current;
-    if (ws && ws.readyState === WebSocket.OPEN && phaseRef.current === 'connected') ws.send(bytes);
+    if (!ws || ws.readyState !== WebSocket.OPEN || phaseRef.current !== 'connected') return;
+    for (const chunk of chunkBytes(bytes)) ws.send(chunk);
   }, []);
 
   const sendResize = useCallback((cols, rows) => {
@@ -166,6 +170,7 @@ export default function SshTerminalModal({ tunnel, onClose, onHostKeyChange }) {
     if (!ws || ws.readyState !== WebSocket.OPEN || phaseRef.current !== 'connected') return;
     const c = Math.min(1000, Math.max(1, Math.floor(cols) || 1));
     const r = Math.min(1000, Math.max(1, Math.floor(rows) || 1));
+    sizeRef.current = { cols: c, rows: r };
     ws.send(JSON.stringify({ type: 'resize', cols: c, rows: r }));
   }, []);
 
@@ -285,6 +290,11 @@ export default function SshTerminalModal({ tunnel, onClose, onHostKeyChange }) {
       if (passphrase) credentials.passphrase = passphrase;
     } else {
       credentials.password = password;
+    }
+    // Start the PTY at the size of the previous terminal (the grid is measured again once connected).
+    if (sizeRef.current) {
+      credentials.cols = sizeRef.current.cols;
+      credentials.rows = sizeRef.current.rows;
     }
 
     closeSocket();

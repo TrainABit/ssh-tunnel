@@ -34,18 +34,31 @@ done
 command -v openssl >/dev/null 2>&1 || die "openssl is required"
 umask 077
 
+# DIR or one of its parents is a git work tree? Also found by walking up to a .git entry,
+# because git itself ignores repositories owned by another user (e.g. under sudo).
+inside_git_tree() {
+  local d
+  git -C "$1" rev-parse --is-inside-work-tree >/dev/null 2>&1 && return 0
+  d=$(cd -- "$1" && pwd -P) || return 1
+  while :; do
+    [[ -e "$d/.git" ]] && return 0
+    [[ $d == / ]] && return 1
+    d=$(dirname -- "$d")
+  done
+}
+
 if [[ -z $OUT ]]; then
   OUT=$(mktemp -d "${TMPDIR:-/tmp}/tunnelvault-signing.XXXXXXXX")
 else
   parent=$(dirname -- "$OUT")
   [[ -d $parent ]] || die "parent directory of $OUT does not exist"
-  if git -C "$parent" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  if inside_git_tree "$parent"; then
     die "$OUT is inside a git work tree — choose a directory outside any repository for the private key"
   fi
   mkdir -p -- "$OUT"
 fi
 OUT=$(cd -- "$OUT" && pwd)
-if git -C "$OUT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+if inside_git_tree "$OUT"; then
   die "$OUT is inside a git work tree — choose a directory outside any repository for the private key"
 fi
 
