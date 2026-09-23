@@ -3,7 +3,7 @@
  * Returns '' if code is invalid.
  */
 export function countryFlag(code) {
-  if (!code || code.length !== 2) return '';
+  if (typeof code !== 'string' || code.length !== 2) return '';
   const upper = code.toUpperCase();
   // Regional indicator letters start at U+1F1E6 (= 0x1F1E6), offset from 'A' = 0x41
   const a = upper.charCodeAt(0) - 0x41 + 0x1F1E6;

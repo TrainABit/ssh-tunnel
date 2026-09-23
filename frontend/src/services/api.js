@@ -44,11 +44,16 @@ function describeStatus(status) {
   return `Request failed (HTTP ${status}).`;
 }
 
+/**
+ * Human readable message from an error body. Most routes answer {error: '<message>'};
+ * auth/rate-limit responses answer {error: '<short label>', message: '<explanation>'},
+ * in which case the explanation is the more useful text.
+ */
 function serverErrorMessage(data) {
   if (!data || typeof data !== 'object') return null;
-  const msg = typeof data.error === 'string' ? data.error
-    : typeof data.message === 'string' ? data.message
-    : null;
+  const error = typeof data.error === 'string' ? data.error.trim() : '';
+  const message = typeof data.message === 'string' ? data.message.trim() : '';
+  const msg = message || error;
   if (!msg) return null;
   return msg.length > MAX_ERROR_MESSAGE_LENGTH ? msg.slice(0, MAX_ERROR_MESSAGE_LENGTH) + '…' : msg;
 }
@@ -87,7 +92,9 @@ export async function apiFetch(path, { method = 'GET', body, signal, notifyUnaut
     if (res.status === 401 && notifyUnauthorized) {
       window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT));
     }
-    throw new ApiError(serverErrorMessage(data) || describeStatus(res.status), { status: res.status, data });
+    // 401: always the generic "session expired" text (the UI returns to the login screen).
+    const message = res.status === 401 ? describeStatus(401) : serverErrorMessage(data) || describeStatus(res.status);
+    throw new ApiError(message, { status: res.status, data });
   }
   if (text && !parsed) {
     throw new ApiError('Unexpected response from the server.', { status: res.status });

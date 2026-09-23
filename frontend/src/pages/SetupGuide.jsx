@@ -189,8 +189,11 @@ const mono = (text) => ({ text, mono: true });
 const plain = (text) => ({ text });
 const method = (m) => ({ text: m, mono: true, color: m === 'GET' ? 'var(--accent)' : m === 'DELETE' ? 'var(--amber)' : 'var(--blue)' });
 
-const RELEASE_VERIFY = [
-  'V=2.0.0',
+const DEFAULT_RELEASE = '2.0.0';
+
+/** Download + verify commands for a release (the server's own version when it is a plain X.Y.Z). */
+const releaseVerify = (version) => [
+  `V=${/^\d+\.\d+\.\d+$/.test(String(version || '')) ? version : DEFAULT_RELEASE}`,
   'BASE=https://github.com/TrainABit/ssh-tunnel/releases/download/v$V',
   'curl -fLO "$BASE/tunnelvault-v$V.tar.gz" -O "$BASE/SHA256SUMS" -O "$BASE/SHA256SUMS.sig"',
   'openssl dgst -sha256 -verify release-signing.pub -signature SHA256SUMS.sig SHA256SUMS',
@@ -218,6 +221,7 @@ export default function SetupGuide() {
   const { config } = useServerConfig();
   const thisServer = deviceServerUrl(config);
   const thisServerInsecure = isInsecurePublicUrl(thisServer);
+  const releaseCommands = releaseVerify(config?.version);
 
   return (
     <div className="space-y-5">
@@ -417,8 +421,8 @@ export default function SetupGuide() {
           </p>
 
           <Label>Download and verify a release</Label>
-          <CodeBlock copyText={RELEASE_VERIFY}>
-            {RELEASE_VERIFY.split('\n').map((line) => <div key={line}>{line}</div>)}
+          <CodeBlock copyText={releaseCommands}>
+            {releaseCommands.split('\n').map((line) => <div key={line}>{line}</div>)}
           </CodeBlock>
           <p className="text-sm" style={{ color: 'var(--text-dim)' }}>
             <InlineCode>release-signing.pub</InlineCode> is published in the repository; confirm its fingerprint through a second channel

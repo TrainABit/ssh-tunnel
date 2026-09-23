@@ -47,7 +47,7 @@ function exportCsv(sessions) {
     cols.map(k => {
       const v = s[k] ?? '';
       const safe = String(v).replace(/^[=+\-@\t\r]/, "'$&");
-      return /[",\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
+      return /[",\r\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
     }).join(',')
   );
   const csv = [cols.join(','), ...rows].join('\n');

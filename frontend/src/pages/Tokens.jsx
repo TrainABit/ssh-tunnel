@@ -487,11 +487,15 @@ export default function Tokens() {
   // Used by the detail modal (errors are shown there).
   const handleToggle = async (token, currentlyActive) => {
     try {
-      await updateToken(token, { active: currentlyActive ? 0 : 1 });
+      const res = await updateToken(token, { active: currentlyActive ? 0 : 1 });
+      const closed = Number(res?.disconnected);
+      const closedText = Number.isFinite(closed) && closed > 0
+        ? ` ${closed} live device connection${closed === 1 ? ' was' : 's were'} closed.`
+        : '';
       setNotice({
         tone: 'info',
         text: currentlyActive
-          ? 'Token deactivated. Devices using it were disconnected and cannot reconnect until it is activated again.'
+          ? `Token deactivated.${closedText} Devices using it cannot reconnect until it is activated again.`
           : 'Token activated.',
       });
     } finally {
