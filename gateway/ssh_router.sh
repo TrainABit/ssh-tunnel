@@ -75,7 +75,7 @@ fi
 TARGET="${TARGET_IP}:${TARGET_PORT}"
 
 # ── Session record + cleanup ───────────────────────────────────
-# shellcheck disable=SC2329 # invoked through the EXIT trap
+# shellcheck disable=SC2317,SC2329 # invoked through the EXIT trap (SC2317: shellcheck < 0.10)
 cleanup() {
     trap - EXIT HUP INT TERM
     if [[ -n "$NC_PID" ]]; then

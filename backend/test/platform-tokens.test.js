@@ -8,15 +8,16 @@ const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
 const express = require('express');
-const { utils: sshUtils } = require('ssh2');
 const db = require('../src/database');
 const tokensRouter = require('../src/routes/tokens');
 const userManager = require('../src/userManager');
 const { createSecretBox } = require('../src/secretBox');
+const { generateKeyPair } = require('./helpers/ssh-keys');
 
-const PUBKEY = sshUtils.generateKeyPairSync('ed25519').public;
-const PRIVATE_KEY = sshUtils.generateKeyPairSync('ed25519').private;
-const ENCRYPTED_KEY = sshUtils.generateKeyPairSync('ed25519', { passphrase: 'pw', cipher: 'aes256-cbc', rounds: 4 }).private;
+// generateKeyPair: ssh2 keygen retried until the key parses (ssh2 occasionally emits malformed keys).
+const PUBKEY = generateKeyPair('ed25519').public;
+const PRIVATE_KEY = generateKeyPair('ed25519').private;
+const ENCRYPTED_KEY = generateKeyPair('ed25519', { passphrase: 'pw', cipher: 'aes256-cbc', rounds: 4 }).private;
 
 function makeFakes() {
   const calls = { disconnect: [], removeTunnels: [], createUser: [], deleteUser: [] };
@@ -183,7 +184,7 @@ describe('tokens API', () => {
     assert.deepEqual(fakes.calls.createUser, [[`gw-${t29}`, PUBKEY.trim()]]);
 
     // PATCH public_key re-syncs the gateway user's key
-    const other = sshUtils.generateKeyPairSync('ed25519').public;
+    const other = generateKeyPair('ed25519').public;
     const sync = await request(srv.base, 'PATCH', `/api/tokens/${t29}`, { body: { public_key: other } });
     assert.equal(sync.status, 200);
     assert.equal(sync.body.linux_user_queued, true);

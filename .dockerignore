@@ -1,0 +1,43 @@
+# Keep the build context small and free of secrets: the Dockerfile copies only
+# frontend/, backend/package*.json, backend/src and VERSION.
+
+# VCS, CI, editors
+.git
+.github
+.gitattributes
+**/.vscode
+**/.idea
+**/.DS_Store
+
+# Dependencies and build output (rebuilt inside the image)
+**/node_modules
+**/dist
+**/dist-ssr
+
+# Secrets and local data — never bake them into an image
+**/.env
+**/.env.*
+**/*.key
+**/*.pem
+**/*.db
+**/*.db-shm
+**/*.db-wal
+**/*.db-journal
+**/*.mmdb
+backend/data
+**/logs
+**/*.log
+
+# Not needed in the server image
+backend/test
+client
+client_example
+docs
+gateway
+scripts
+*.sh
+*.md
+**/coverage
+Dockerfile
+docker-compose.yml
+.dockerignore

@@ -9,7 +9,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { REPO_ROOT, mkTmp, run, makeKey } = require('./helpers');
+const {
+  REPO_ROOT, mkTmp, run, runAsync, makeKey, startReleaseServer, writeSignedRelease,
+} = require('./helpers');
 
 const INSTALLER = path.join(REPO_ROOT, 'install-client.sh');
 const IS_ROOT = typeof process.getuid === 'function' && process.getuid() === 0;
@@ -167,6 +169,15 @@ test('legacy config parsing (python3-free upgrade path)', (t) => {
   assert.equal(r.ALLOW_REBOOT, 'true');
   assert.deepEqual(JSON.parse(r.TUNNELS_JSON), [{ port: 22, protocol: 'tcp', name: 'tunnel-22' }]);
 
+  // 2b. TUNNELVAULT_ALLOW_REBOOT in the root-owned client.env overrides config.json (as in the client).
+  fs.writeFileSync(envf, 'TUNNELVAULT_SERVER=wss://t.example.com\nTUNNELVAULT_AUTH_TOKEN=envTok9\nTUNNELVAULT_ALLOW_REBOOT=0\n');
+  r = readExisting({ TV_SYS_CONFIG: sys, TV_USER_CONFIG: usr, TV_CLIENT_ENV: envf, TV_UNIT_FILE: none });
+  assert.equal(r.ALLOW_REBOOT, 'false');
+  fs.writeFileSync(sys, JSON.stringify({ server: 'wss://old.example.com', tunnels: [{ port: 22 }], allow_reboot: false }));
+  fs.writeFileSync(envf, 'TUNNELVAULT_SERVER=wss://t.example.com\nTUNNELVAULT_AUTH_TOKEN=envTok9\nTUNNELVAULT_ALLOW_REBOOT=yes\n');
+  r = readExisting({ TV_SYS_CONFIG: sys, TV_USER_CONFIG: usr, TV_CLIENT_ENV: envf, TV_UNIT_FILE: none });
+  assert.equal(r.ALLOW_REBOOT, 'true');
+
   // 3. Only the service user's legacy copy: token/server/tunnels usable, allow_reboot NOT trusted.
   r = readExisting({ TV_SYS_CONFIG: none, TV_USER_CONFIG: usr, TV_CLIENT_ENV: none, TV_UNIT_FILE: none });
   assert.equal(r.TOKEN, 'userTok');
@@ -245,17 +256,34 @@ test('generated systemd unit, env file and sudoers rule', (t) => {
   assert.doesNotMatch(unit, /tok123|--auth-token|--server/);
   assert.match(unit, /^NoNewPrivileges=yes$/m);
   assert.match(unit, /^ProtectSystem=strict$/m);
-  assert.match(unit, /^ReadWritePaths=-\/home\/pi\/\.tunnelvault$/m);
   assert.doesNotMatch(unit, /MemoryDenyWriteExecute/); // would break V8's JIT
+  // State outside the home directory (a service user without a home keeps its ports) and a
+  // root-owned config the service can read; both profiles.
+  const common = (u) => {
+    assert.match(u, /^Environment=TUNNELVAULT_STATE_DIR=\/var\/lib\/tunnelvault$/m);
+    assert.match(u, /^StateDirectory=tunnelvault$/m);
+    assert.match(u, /^StateDirectoryMode=0700$/m);
+    assert.match(u, /^Environment=TUNNELVAULT_CONFIG=\/etc\/tunnelvault\/config\.json$/m);
+    assert.match(u, /^ProtectHome=read-only$/m);
+    assert.doesNotMatch(u, /^ReadWritePaths=/m);
+  };
+  common(unit);
+  const seccompish = /^(NoNewPrivileges|CapabilityBoundingSet|AmbientCapabilities|RestrictSUIDSGID|PrivateDevices|SystemCallFilter|SystemCallArchitectures|RestrictAddressFamilies|RestrictNamespaces|RestrictRealtime|ProtectKernelTunables|ProtectKernelModules|ProtectKernelLogs|ProtectClock|ProtectHostname|LockPersonality|MemoryDenyWriteExecute)=/m;
+  assert.match(unit, seccompish, 'no-reboot profile is fully hardened');
 
   r = sh(`${vars.replace(/ /g, '; ')}; ALLOW_REBOOT=true; render_service_unit`);
   unit = r.stdout;
-  assert.doesNotMatch(unit, /^(NoNewPrivileges|CapabilityBoundingSet|RestrictSUIDSGID|PrivateDevices)=/m); // sudo must work
+  // sudo must work: for a non-root User= every seccomp-based option implies NoNewPrivileges=yes
+  assert.doesNotMatch(unit, seccompish);
   assert.match(unit, /^ProtectSystem=full$/m);
+  common(unit);
 
   r = sh(`${vars.replace(/ /g, '; ')}; render_client_env`);
   assert.match(r.stdout, /^TUNNELVAULT_SERVER=wss:\/\/t\.example\.com$/m);
   assert.match(r.stdout, /^TUNNELVAULT_AUTH_TOKEN=tok123$/m);
+  assert.match(r.stdout, /^TUNNELVAULT_ALLOW_REBOOT=0$/m);
+  r = sh(`${vars.replace(/ /g, '; ')}; ALLOW_REBOOT=true; render_client_env`);
+  assert.match(r.stdout, /^TUNNELVAULT_ALLOW_REBOOT=1$/m);
 
   r = sh('SERVICE_USER=pi; render_sudoers');
   assert.match(r.stdout, /^pi ALL=\(root\) NOPASSWD: \/usr\/bin\/systemctl reboot, \/bin\/systemctl reboot, \/usr\/sbin\/reboot "", \/sbin\/reboot ""$/m);
@@ -351,14 +379,26 @@ test('e2e: fresh install for an unprivileged user with reboot + auto-update', { 
   assert.deepEqual(withToken, [e.p('etc/tunnelvault/client.env')]);
   assert.doesNotMatch(e.stubLog(), /SecretTok123/);
 
-  // config.json copies: no token, 0600; user copy owned by the service user in a 0700 dir.
+  assert.match(env, /^TUNNELVAULT_ALLOW_REBOOT=1$/m);
+
+  // config.json: no token; the /etc copy (read by the service) is root:<service group> 0640 in a
+  // 0755 root dir; the user copy (CLI) is owned by the service user in a 0700 dir.
   const sys = JSON.parse(fs.readFileSync(e.p('etc/tunnelvault/config.json'), 'utf8'));
   assert.deepEqual(sys, {
     server: 'wss://tunnel.example.com',
     tunnels: [{ port: 22, protocol: 'tcp', name: 'ssh' }, { port: 8080, protocol: 'http', name: 'web' }],
     allow_reboot: true,
   });
-  assert.equal(e.mode('etc/tunnelvault/config.json'), 0o600);
+  assert.equal(e.mode('etc/tunnelvault/config.json'), 0o640);
+  assert.equal(fs.statSync(e.p('etc/tunnelvault/config.json')).uid, 0);
+  assert.equal(fs.statSync(e.p('etc/tunnelvault/config.json')).gid, 65534);
+  assert.equal(e.mode('etc/tunnelvault'), 0o755);
+  const asNobody = run('runuser', ['-u', 'nobody', '--', 'cat', e.p('etc/tunnelvault/config.json')]);
+  assert.equal(asNobody.status, 0, 'the service user can read its config');
+  assert.notEqual(run('runuser', ['-u', 'nobody', '--', 'cat', e.p('etc/tunnelvault/client.env')]).status, 0, 'but not the token');
+  // reconnect state directory (systemd StateDirectory=) pre-created for the service user
+  assert.equal(e.mode('var/lib/tunnelvault'), 0o700);
+  assert.equal(fs.statSync(e.p('var/lib/tunnelvault')).uid, 65534);
   const userCfg = e.p('nonexistent/.tunnelvault/config.json');
   assert.deepEqual(JSON.parse(fs.readFileSync(userCfg, 'utf8')), sys);
   assert.equal(e.mode('nonexistent/.tunnelvault/config.json'), 0o600);
@@ -371,7 +411,8 @@ test('e2e: fresh install for an unprivileged user with reboot + auto-update', { 
   assert.match(unit, /^User=nobody$/m);
   assert.match(unit, /^Group=nogroup$/m);
   assert.match(unit, /^ExecStart=\/usr\/local\/bin\/tunnelvault connect$/m);
-  assert.doesNotMatch(unit, /^NoNewPrivileges=/m);
+  assert.match(unit, /^StateDirectory=tunnelvault$/m);
+  assert.doesNotMatch(unit, /^(NoNewPrivileges|RestrictAddressFamilies|SystemCallArchitectures|ProtectKernelModules)=/m);
 
   // Sudoers rule (validated) for the service user.
   const sudoers = fs.readFileSync(e.p('etc/sudoers.d/tunnelvault-reboot'), 'utf8');
@@ -411,7 +452,8 @@ test('e2e: upgrade from a legacy (git-updater, token-in-argv) install', { skip: 
   }, null, 2));
   fs.mkdirSync(e.p('nonexistent/.tunnelvault'), { recursive: true });
   fs.writeFileSync(e.p('nonexistent/.tunnelvault/config.json'), '{"auth_token":"LegacyTok99"}');
-  fs.writeFileSync(e.p('nonexistent/.tunnelvault/state.json'), '{"tunnels":{}}', { mode: 0o644 });
+  const legacyState = '{"byPort":{"22":{"tunnelId":"t-22","ownerSecret":"secret-22","allocatedPort":10022}}}';
+  fs.writeFileSync(e.p('nonexistent/.tunnelvault/state.json'), legacyState, { mode: 0o644 });
   fs.chownSync(e.p('nonexistent/.tunnelvault'), 65534, 65534);
   fs.chownSync(e.p('nonexistent/.tunnelvault/config.json'), 65534, 65534);
   fs.chownSync(e.p('nonexistent/.tunnelvault/state.json'), 65534, 65534);
@@ -437,6 +479,13 @@ test('e2e: upgrade from a legacy (git-updater, token-in-argv) install', { skip: 
     assert.deepEqual(cfg.tunnels.map((x) => x.port), [22, 3000]);
   }
   assert.equal(e.mode('nonexistent/.tunnelvault/state.json'), 0o600, 'legacy 0644 state.json tightened');
+  // Owner secrets migrated into the service's state directory -> the device keeps its public ports.
+  assert.equal(fs.readFileSync(e.p('var/lib/tunnelvault/state.json'), 'utf8'), legacyState);
+  assert.equal(e.mode('var/lib/tunnelvault/state.json'), 0o600);
+  assert.equal(fs.statSync(e.p('var/lib/tunnelvault/state.json')).uid, 65534);
+  assert.equal(e.mode('var/lib/tunnelvault'), 0o700);
+  assert.match(r.stdout, /Reconnect state migrated/);
+  assert.match(fs.readFileSync(e.p('etc/tunnelvault/client.env'), 'utf8'), /^TUNNELVAULT_ALLOW_REBOOT=0$/m);
   const unit = fs.readFileSync(e.p('etc/systemd/system/tunnelvault-client.service'), 'utf8');
   assert.match(unit, /^User=nobody$/m, 'service user preserved');
   assert.doesNotMatch(unit, /LegacyTok99/);
@@ -558,11 +607,14 @@ test('e2e: uninstall-client.sh removes everything the installer created', { skip
     env: { TUNNELVAULT_INSTALL_ROOT: e.root, PATH: `${path.join(e.root, '.stubs')}:${process.env.PATH}`, STUB_LOG: e.log, SUDO_USER: '' },
   });
 
+  assert.ok(fs.existsSync(e.p('var/lib/tunnelvault/state.json')), 'state migrated');
+
   // --keep-config keeps token/config/state for a reinstall.
   r = uninstall(['--yes', '--keep-config']);
   assert.equal(r.status, 0, r.out);
   assert.ok(fs.existsSync(e.p('etc/tunnelvault/client.env')));
   assert.ok(fs.existsSync(e.p('nonexistent/.tunnelvault/state.json')));
+  assert.ok(fs.existsSync(e.p('var/lib/tunnelvault/state.json')));
   assert.ok(!fs.existsSync(e.p('opt/tunnelvault-client')));
 
   // Unattended (updater) upgrade cannot guess the service user once the unit is gone.
@@ -579,6 +631,7 @@ test('e2e: uninstall-client.sh removes everything the installer created', { skip
     'etc/systemd/system/tunnelvault-client-autoupdate.timer', 'etc/sudoers.d/tunnelvault-reboot',
     'etc/tunnelvault', 'opt/tunnelvault-client', 'opt/tunnelvault-client.previous', 'usr/local/bin/tunnelvault',
     'nonexistent/.tunnelvault', 'var/log/tunnelvault-client-update.log', 'run/tunnelvault-client-install.lock',
+    'var/lib/tunnelvault',
   ]) assert.ok(!fs.existsSync(e.p(rel)), `${rel} still exists`);
   assert.match(e.stubLog(), /^systemctl disable --now tunnelvault-client-autoupdate\.timer$/m);
   assert.match(e.stubLog(), /^systemctl disable tunnelvault-client$/m);
@@ -593,4 +646,192 @@ test('e2e: uninstall-client.sh removes everything the installer created', { skip
   assert.ok(fs.existsSync(e.p('etc/tunnelvault/update.conf')));
   assert.ok(fs.existsSync(e.p('etc/tunnelvault/release-signing.pub')));
   assert.ok(!fs.existsSync(e.p('etc/tunnelvault/client.env')));
+});
+
+test('e2e: state migration runs once, service user without a home, shared update.conf', { skip: !IS_ROOT && 'needs root' }, (t) => {
+  const e = e2eRoot(t);
+  const keys = makeKey(path.join(mkTmp(t), 'k'));
+  const other = makeKey(path.join(mkTmp(t), 'other'));
+
+  // A service user without a home directory (nobody -> /nonexistent) works: no user copy,
+  // config from /etc, state in /var/lib/tunnelvault.
+  fs.rmSync(e.p('nonexistent'), { recursive: true });
+  let r = e.install(['--server', 'wss://t.example.com', '--token', 'Tok1', '--user', 'nobody',
+    '--auto-update', '--release-pubkey', keys.pub]);
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /no usable home directory/);
+  assert.ok(!fs.existsSync(e.p('nonexistent')));
+  assert.equal(fs.statSync(e.p('var/lib/tunnelvault')).uid, 65534);
+  assert.match(fs.readFileSync(e.p('etc/systemd/system/tunnelvault-client.service'), 'utf8'), /^Environment=TUNNELVAULT_CONFIG=\/etc\/tunnelvault\/config\.json$/m);
+
+  // Migration copies a legacy state.json only while the new one does not exist.
+  fs.mkdirSync(e.p('nonexistent/.tunnelvault'), { recursive: true });
+  fs.writeFileSync(e.p('nonexistent/.tunnelvault/state.json'), '{"byPort":{"22":{"tunnelId":"old"}}}', { mode: 0o600 });
+  fs.chownSync(e.p('nonexistent/.tunnelvault'), 65534, 65534);
+  fs.chownSync(e.p('nonexistent/.tunnelvault/state.json'), 65534, 65534);
+  r = e.install(['--upgrade']);
+  assert.equal(r.status, 0, r.out);
+  assert.equal(fs.readFileSync(e.p('var/lib/tunnelvault/state.json'), 'utf8'), '{"byPort":{"22":{"tunnelId":"old"}}}');
+  fs.writeFileSync(e.p('var/lib/tunnelvault/state.json'), '{"byPort":{"22":{"tunnelId":"current"}}}');
+  r = e.install(['--upgrade']);
+  assert.equal(r.status, 0, r.out);
+  assert.equal(fs.readFileSync(e.p('var/lib/tunnelvault/state.json'), 'utf8'), '{"byPort":{"22":{"tunnelId":"current"}}}',
+    'state written by the new client is never overwritten');
+  assert.doesNotMatch(r.stdout, /Reconnect state migrated/);
+
+  // A legacy state.json that is a symlink planted by the user is not followed.
+  fs.rmSync(e.p('var/lib/tunnelvault/state.json'));
+  fs.rmSync(e.p('nonexistent/.tunnelvault/state.json'));
+  fs.symlinkSync('/etc/shadow', e.p('nonexistent/.tunnelvault/state.json'));
+  r = e.install(['--upgrade']);
+  assert.equal(r.status, 0, r.out);
+  assert.ok(!fs.existsSync(e.p('var/lib/tunnelvault/state.json')));
+
+  // The installed trust anchor is only replaced by an explicit --release-pubkey, never by the
+  // release-signing.pub shipped next to the installer (package copy with a different key).
+  const pkg = mkTmp(t, 'tv-client-pkg-');
+  for (const f of ['install-client.sh', 'auto-update-client.sh', 'VERSION']) fs.copyFileSync(path.join(REPO_ROOT, f), path.join(pkg, f));
+  fs.mkdirSync(path.join(pkg, 'client'));
+  for (const f of ['bin', 'src', 'package.json', 'package-lock.json']) {
+    fs.cpSync(path.join(REPO_ROOT, 'client', f), path.join(pkg, 'client', f), { recursive: true });
+  }
+  fs.copyFileSync(other.pub, path.join(pkg, 'release-signing.pub'));
+  r = run('bash', [path.join(pkg, 'install-client.sh'), '--upgrade', '--auto-update'], {
+    env: { TUNNELVAULT_INSTALL_ROOT: e.root, PATH: `${path.join(e.root, '.stubs')}:${process.env.PATH}`, STUB_LOG: e.log, SUDO_USER: '', USER: 'root' },
+  });
+  assert.equal(r.status, 0, r.out);
+  assert.equal(fs.readFileSync(e.p('etc/tunnelvault/release-signing.pub'), 'utf8'), fs.readFileSync(keys.pub, 'utf8'));
+  assert.match(r.out, /release-signing\.pub of this package differs .* \(kept; replace it with --release-pubkey FILE\)/);
+  r = e.install(['--upgrade', '--auto-update', '--release-pubkey', other.pub]);
+  assert.equal(r.status, 0, r.out);
+  assert.equal(fs.readFileSync(e.p('etc/tunnelvault/release-signing.pub'), 'utf8'), fs.readFileSync(other.pub, 'utf8'));
+
+  // Shared update.conf: with the server's signed updater installed, --no-auto-update only removes
+  // the client's units; without it, ENABLED=0 is recorded.
+  const confFile = e.p('etc/tunnelvault/update.conf');
+  fs.mkdirSync(e.p('opt/tunnelvault'), { recursive: true });
+  fs.writeFileSync(e.p('opt/tunnelvault/auto-update.sh'), '#!/bin/bash\n# >>> tv-updater-common\n');
+  fs.writeFileSync(e.p('etc/systemd/system/tunnelvault-autoupdate.timer'), '[Timer]\n');
+  r = e.install(['--upgrade', '--auto-update']);
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.stdout, /ENABLED=0 pauses both/);
+  r = e.install(['--upgrade', '--no-auto-update']);
+  assert.equal(r.status, 0, r.out);
+  assert.ok(!fs.existsSync(e.p('etc/systemd/system/tunnelvault-client-autoupdate.timer')));
+  assert.match(fs.readFileSync(confFile, 'utf8'), /^ENABLED=1$/m);
+  assert.match(r.stdout, /shared with the server auto-updater/);
+  fs.rmSync(e.p('etc/systemd/system/tunnelvault-autoupdate.timer'));
+  r = e.install(['--upgrade', '--auto-update']);
+  assert.equal(r.status, 0, r.out);
+  r = e.install(['--upgrade', '--no-auto-update']);
+  assert.equal(r.status, 0, r.out);
+  assert.match(fs.readFileSync(confFile, 'utf8'), /^ENABLED=0$/m);
+  assert.equal(e.mode('etc/tunnelvault/update.conf'), 0o644);
+  // --auto-update resumes it
+  r = e.install(['--upgrade', '--auto-update']);
+  assert.equal(r.status, 0, r.out);
+  assert.match(fs.readFileSync(confFile, 'utf8'), /^ENABLED=1$/m);
+});
+
+// ── Contract: auto-update-client.sh -> install-client.sh --upgrade (root only) ──────────────
+
+test('e2e contract: the signed updater upgrades the client in place and keeps its state', { skip: !IS_ROOT && 'needs root' }, async (t) => {
+  const e = e2eRoot(t);
+  const keys = makeKey(path.join(mkTmp(t), 'k'));
+  let r = e.install(['--server', 'wss://t.example.com', '--token', 'Tok1', '--user', 'nobody', '--allow-reboot',
+    '--extra-port', '8080:http:web', '--auto-update', '--release-pubkey', keys.pub]);
+  assert.equal(r.status, 0, r.out);
+  const installedUpdater = e.p('opt/tunnelvault-client/auto-update-client.sh');
+  assert.equal(fs.readFileSync(installedUpdater, 'utf8'), fs.readFileSync(path.join(REPO_ROOT, 'auto-update-client.sh'), 'utf8'));
+  // A device installed before the state directory existed: state only in ~/.tunnelvault
+  fs.rmSync(e.p('var/lib/tunnelvault'), { recursive: true });
+  const legacyState = '{"byPort":{"22":{"tunnelId":"t-22","ownerSecret":"s-22","allocatedPort":10022}}}';
+  fs.writeFileSync(e.p('nonexistent/.tunnelvault/state.json'), legacyState, { mode: 0o600 });
+  fs.chownSync(e.p('nonexistent/.tunnelvault/state.json'), 65534, 65534);
+  const confFile = e.p('etc/tunnelvault/update.conf');
+  fs.writeFileSync(confFile, fs.readFileSync(confFile, 'utf8').replace(/^SCHEDULE=.*$/m, 'SCHEDULE=6h')
+    .replace(/^PINNED_VERSION=.*$/m, 'PINNED_VERSION=2.0.1'));
+
+  // Signed release v2.0.1 whose install-client.sh is a shim: the updater runs with a fixed PATH,
+  // so the shim puts the stubs (systemctl, systemd-run, npm) back in front before running the
+  // package's REAL installer (next to client/, so SCRIPT_DIR is the extracted tree).
+  const work = mkTmp(t, 'tv-client-release-');
+  const tree = path.join(work, 'tunnelvault-v2.0.1');
+  fs.mkdirSync(path.join(tree, 'client'), { recursive: true });
+  for (const f of ['bin', 'src', 'package.json', 'package-lock.json']) {
+    fs.cpSync(path.join(REPO_ROOT, 'client', f), path.join(tree, 'client', f), { recursive: true });
+  }
+  fs.writeFileSync(path.join(tree, 'VERSION'), '2.0.1\n');
+  const newUpdater = `${fs.readFileSync(path.join(REPO_ROOT, 'auto-update-client.sh'), 'utf8')}# release 2.0.1\n`;
+  fs.writeFileSync(path.join(tree, 'auto-update-client.sh'), newUpdater, { mode: 0o755 });
+  fs.copyFileSync(INSTALLER, path.join(tree, 'install-client.real.sh'));
+  const shimMarker = path.join(e.root, '.shim-called');
+  fs.writeFileSync(path.join(tree, 'install-client.sh'), `#!/bin/bash
+export PATH="${path.join(e.root, '.stubs')}:${path.dirname(process.execPath)}:$PATH"
+printf 'args=%s\\nupdater=%s\\nstdin=%s\\n' "$*" "\${TUNNELVAULT_UPDATER:-}" "$(readlink /proc/self/fd/0)" > "${shimMarker}"
+exec bash "$(dirname "\${BASH_SOURCE[0]}")/install-client.real.sh" "$@"
+`, { mode: 0o755 });
+  const tar = run('tar', ['-C', work, '--owner=0', '--group=0', '--numeric-owner', '-czf', path.join(work, 'r.tgz'), 'tunnelvault-v2.0.1']);
+  assert.equal(tar.status, 0, tar.out);
+  const relDir = writeSignedRelease(path.join(work, 'assets'), 'v2.0.1', fs.readFileSync(path.join(work, 'r.tgz')), keys.key);
+  const server = await startReleaseServer({ latest: 'v2.0.1', releases: { 'v2.0.1': relDir } });
+  t.after(() => server.close());
+
+  const tmp = path.join(e.root, 'var', 'tmp');
+  fs.mkdirSync(tmp, { recursive: true });
+  const env = { ...process.env };
+  for (const k of Object.keys(env)) if (/_proxy$/i.test(k)) delete env[k];
+  Object.assign(env, {
+    NO_PROXY: '*', no_proxy: '*', TMPDIR: tmp,
+    TUNNELVAULT_INSTALL_ROOT: e.root, STUB_LOG: e.log, STUB_ACTIVE: '1', SUDO_USER: '',
+    TUNNELVAULT_UPDATE_CONF: confFile,
+    TUNNELVAULT_INSTALL_DIR: e.p('opt/tunnelvault-client'),
+    TUNNELVAULT_UPDATE_LOG: e.p('update.log'),
+    TUNNELVAULT_UPDATE_LOCK: e.p('update.lock'),
+    UPDATE_BASE_URL: `${server.url}/download`,
+    UPDATE_API_URL: `${server.url}/api/latest`,
+  });
+  // the generated file names the real key path; point this run at the test root's copy
+  const pointKey = () => fs.writeFileSync(confFile, fs.readFileSync(confFile, 'utf8')
+    .replace(/^PUBKEY=.*$/m, `PUBKEY=${e.p('etc/tunnelvault/release-signing.pub')}`));
+  pointKey();
+  fs.writeFileSync(e.log, '');
+  const u = await runAsync('bash', [installedUpdater], { cleanEnv: true, env, timeoutMs: 120000 });
+  assert.equal(u.status, 0, u.out);
+  assert.match(u.out, /Update to v2\.0\.1 complete/);
+  assert.doesNotMatch(u.out, /Tok1/, 'the token is never logged');
+
+  const shim = Object.fromEntries(fs.readFileSync(shimMarker, 'utf8').trim().split('\n').map((l) => l.split(/=(.*)/s).slice(0, 2)));
+  assert.deepEqual(shim, { args: '--upgrade', updater: '1', stdin: '/dev/null' });
+  assert.deepEqual(fs.readdirSync(tmp), [], 'staging tree deleted');
+
+  // upgraded in place: version, updater, settings and choices kept, state migrated, restart delayed
+  assert.equal(fs.readFileSync(e.p('opt/tunnelvault-client/VERSION'), 'utf8'), '2.0.1\n');
+  assert.equal(fs.readFileSync(installedUpdater, 'utf8'), newUpdater);
+  const unit = fs.readFileSync(e.p('etc/systemd/system/tunnelvault-client.service'), 'utf8');
+  assert.match(unit, /^User=nobody$/m);
+  assert.match(unit, /^Environment=TUNNELVAULT_STATE_DIR=\/var\/lib\/tunnelvault$/m);
+  assert.match(fs.readFileSync(e.p('etc/tunnelvault/client.env'), 'utf8'), /^TUNNELVAULT_AUTH_TOKEN=Tok1$/m);
+  assert.match(fs.readFileSync(e.p('etc/tunnelvault/client.env'), 'utf8'), /^TUNNELVAULT_ALLOW_REBOOT=1$/m);
+  assert.ok(fs.existsSync(e.p('etc/sudoers.d/tunnelvault-reboot')), 'remote reboot kept');
+  const cfg = JSON.parse(fs.readFileSync(e.p('etc/tunnelvault/config.json'), 'utf8'));
+  assert.deepEqual(cfg.tunnels.map((x) => x.port), [22, 8080]);
+  const conf = fs.readFileSync(confFile, 'utf8');
+  assert.match(conf, /^SCHEDULE=6h$/m);
+  assert.match(conf, /^PINNED_VERSION=2\.0\.1$/m);
+  assert.match(fs.readFileSync(e.p('etc/systemd/system/tunnelvault-client-autoupdate.timer'), 'utf8'), /^OnUnitActiveSec=6h$/m);
+  assert.equal(fs.readFileSync(e.p('var/lib/tunnelvault/state.json'), 'utf8'), legacyState, 'public ports kept');
+  assert.equal(fs.statSync(e.p('var/lib/tunnelvault/state.json')).uid, 65534);
+  assert.match(e.stubLog(), /^systemd-run .*--on-active=30s .*restart tunnelvault-client\.service$/m);
+  const pointingIntoStaging = allFiles(e.root).filter((f) => !f.includes('/.stub') && !f.includes('/node_modules/')
+    && !f.endsWith('update.log') && fs.readFileSync(f, 'utf8').includes(tmp));
+  assert.deepEqual(pointingIntoStaging, [], 'nothing persisted that points into the deleted release tree');
+
+  // second run: up to date, installer not run again
+  fs.rmSync(shimMarker);
+  pointKey();
+  const again = await runAsync('bash', [installedUpdater], { cleanEnv: true, env, timeoutMs: 60000 });
+  assert.equal(again.status, 0, again.out);
+  assert.match(again.out, /Up to date \(v2\.0\.1\)/);
+  assert.ok(!fs.existsSync(shimMarker));
 });

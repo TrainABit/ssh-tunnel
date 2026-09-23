@@ -25,7 +25,9 @@ function statsRouter(tunnelManager, connectionTracker, startTime, db) {
       activeTunnels: tunnelStats.activeTunnels,
       activeConnections: connStats.activeConnections,
       totalConnections: connStats.totalConnections,
-      bytesTransferred: connStats.bytesTransferred + tunnelStats.bytesTransferred,
+      // Every tunnelled byte is counted by the tunnel (persisted, survives restarts). The
+      // connection tracker sees the same bytes again, so adding both would double count.
+      bytesTransferred: tunnelStats.bytesTransferred,
       uptime: `${hours}h ${minutes}m ${seconds}s`,
       uptimeMs,
       connectionHistory: history,
@@ -57,9 +59,11 @@ function statsRouter(tunnelManager, connectionTracker, startTime, db) {
           s.id, s.token, s.client_ip,
           s.target_ip, s.target_port,
           s.connected_at, s.disconnected_at,
+          s.tunnel_id, tn.name AS tunnel_name,
           t.label AS token_label
         FROM sessions s
         LEFT JOIN tokens t ON t.token = s.token
+        LEFT JOIN tunnels tn ON tn.id = s.tunnel_id
         ORDER BY s.connected_at DESC
         LIMIT 8
       `);

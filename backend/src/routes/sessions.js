@@ -34,9 +34,11 @@ function sessionsRouter(db) {
         s.country, s.country_code, s.city,
         s.target_ip, s.target_port,
         s.connected_at, s.disconnected_at,
+        s.tunnel_id, tn.name AS tunnel_name,
         t.label AS token_label
       FROM sessions s
       LEFT JOIN tokens t ON t.token = s.token
+      LEFT JOIN tunnels tn ON tn.id = s.tunnel_id
       ${where}
       ORDER BY s.connected_at DESC LIMIT ?
     `;

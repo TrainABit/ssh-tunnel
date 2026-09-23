@@ -1,9 +1,19 @@
 {
   "name": "tunnelvault",
-  "version": "1.0.0",
+  "version": "2.0.0",
+  "private": true,
   "description": "Self-hosted SSH tunneling service — like ngrok, but private",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
-    "install:all": "cd frontend && npm install && cd ../backend && npm install && cd ../client && npm install",
+    "install:all": "npm ci --prefix backend && npm ci --prefix client && npm ci --prefix frontend",
+    "test": "npm run test:backend && npm run test:client && npm run test:frontend && npm run test:release",
+    "test:backend": "npm test --prefix backend",
+    "test:client": "npm test --prefix client",
+    "test:frontend": "npm test --prefix frontend",
+    "test:release": "node --test scripts/release/test/*.test.js",
+    "lint": "npm run lint --prefix frontend",
     "dev:frontend": "cd frontend && npm run dev",
     "dev:backend": "cd backend && npm run dev",
     "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",

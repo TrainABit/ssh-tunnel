@@ -129,7 +129,8 @@ test('connect: "allow_reboot": true in config.json enables remote reboot; TUNNEL
 
   const allowed = await runCli({ server, config: { tunnels: [{ port: 2222, protocol: 'tcp' }], allow_reboot: true } });
   t.after(() => allowed.child.kill('SIGKILL'));
-  await waitFor(() => existsSync(marker), 'fake reboot command');
+  // `echo ... >> marker` creates the file before it writes the line: wait for the complete line.
+  await waitFor(() => existsSync(marker) && readFileSync(marker, 'utf8').endsWith('\n'), 'fake reboot command');
   const calls = readFileSync(marker, 'utf8').trim().split('\n');
   const expected = process.getuid && process.getuid() === 0 ? 'systemctl reboot' : 'sudo -n systemctl reboot';
   assert.deepEqual(calls, [expected]);

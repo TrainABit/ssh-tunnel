@@ -20,12 +20,18 @@
  * Host key pins live in ssh_host_keys: pin_key = `token:<clientToken>:<localPort>`
  * for token-owned tunnels (survives tunnel re-creation), else `tunnel:<tunnelId>`.
  * Fingerprint format = OpenSSH 'SHA256:<base64 without padding>'.
+ *
+ * Transport: the SSH connection runs over a tunnel stream opened directly on the
+ * device's WebSocket (tcpProxy.openStream -> tcp-open to the device), NOT through
+ * the tunnel's public TCP listener. It therefore works with any TCP_BIND_HOST, does
+ * not need the public port, and does not create 127.0.0.1 rows in the sessions log.
  */
 const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
 const { Client } = require('ssh2');
 const { createRateLimiter } = require('./rateLimiter');
 const { isEncrypted } = require('./secretBox');
+const { openTunnelStream } = require('./protocol');
 const { createLogger } = require('./logger');
 const log = createLogger('ssh-ws');
 
@@ -43,6 +49,7 @@ const MAX_PASSWORD = 1024;
 const MAX_PRIVATE_KEY = 16 * 1024;
 const SEND_HIGH_WATER = 1024 * 1024;  // pause the SSH stream above this ws.bufferedAmount
 const SEND_LOW_WATER = 256 * 1024;
+const SOCK_CLOSE_GRACE_MS = 5_000;    // destroy the tunnel stream if the SSH peer does not close it
 
 function envInt(name, fallback) {
   const n = parseInt(process.env[name], 10);
@@ -89,23 +96,18 @@ function validDimension(n) {
   return Number.isInteger(n) && n >= 1 && n <= 1000;
 }
 
-/** Loopback address to reach the public TCP listeners from inside the server. */
-function resolveSshHost(explicit, tcpProxy) {
-  const h = String(explicit || (tcpProxy && tcpProxy.bindHost) || process.env.TCP_BIND_HOST || '').trim();
-  if (!h || h === '0.0.0.0') return '127.0.0.1';
-  if (h === '::' || h === '[::]') return '::1';
-  return h;
-}
-
 /**
  * Attach the SSH terminal WebSocket endpoint to an HTTP(S) server.
  *
  *   initSshWebSocket(server, { tunnelManager, db, auth, getClientIp, secretBox, tcpProxy,
- *                              maxSessions?, rateLimitPerMin?, pingIntervalMs?, hostKeyTimeoutMs?,
- *                              credentialsTimeoutMs?, sshTimeoutMs?, sshHost? })
+ *                              connectionTracker?, maxSessions?, rateLimitPerMin?, pingIntervalMs?,
+ *                              hostKeyTimeoutMs?, credentialsTimeoutMs?, sshTimeoutMs? })
  *     -> { wss, close(), activeSessions }
  *
  * `auth` is the object from auth.createAuth() (authenticateUpgrade(req)).
+ * `tcpProxy.openStream(tunnelId, { onTraffic })` provides the SSH transport (falls back to
+ * protocol.openTunnelStream when no tcpProxy is given). `connectionTracker` (optional) lists
+ * the web terminal session as a live connection of the tunnel with the browser's IP.
  * Legacy positional form (server, tunnelManager, db, authToken) is still accepted.
  */
 function initSshWebSocket(server, deps = {}, ...legacyArgs) {
@@ -113,7 +115,7 @@ function initSshWebSocket(server, deps = {}, ...legacyArgs) {
     const [db, authToken] = legacyArgs;
     deps = { tunnelManager: deps, db, authToken };
   }
-  const { tunnelManager, db = null, tcpProxy = null } = deps;
+  const { tunnelManager, db = null, tcpProxy = null, connectionTracker = null } = deps;
   if (!tunnelManager) throw new TypeError('initSshWebSocket requires deps.tunnelManager');
   let auth = deps.auth;
   if (!auth) {
@@ -130,7 +132,6 @@ function initSshWebSocket(server, deps = {}, ...legacyArgs) {
   const hostKeyTimeoutMs = deps.hostKeyTimeoutMs > 0 ? deps.hostKeyTimeoutMs : HOSTKEY_TIMEOUT_MS;
   const credentialsTimeoutMs = deps.credentialsTimeoutMs > 0 ? deps.credentialsTimeoutMs : CRED_TIMEOUT_MS;
   const sshTimeoutMs = deps.sshTimeoutMs > 0 ? deps.sshTimeoutMs : SSH_TIMEOUT_MS;
-  const sshHost = resolveSshHost(deps.sshHost, tcpProxy);
   const limiter = createRateLimiter({
     windowMs: 60_000,
     max: deps.rateLimitPerMin > 0 ? deps.rateLimitPerMin : envInt('WEB_SSH_RATE_LIMIT_PER_MIN', DEFAULT_RATE_PER_MIN),
@@ -190,8 +191,8 @@ function initSshWebSocket(server, deps = {}, ...legacyArgs) {
       ws.close(1008, 'Tunnel not found');
       return;
     }
-    if (tunnel.protocol !== 'tcp' || !tunnel.allocatedPort) {
-      sendJson(ws, { type: 'error', message: 'Tunnel is not a TCP tunnel or has no allocated port' });
+    if (tunnel.protocol !== 'tcp') {
+      sendJson(ws, { type: 'error', message: 'Tunnel is not a TCP tunnel' });
       ws.close(1008, 'Not a TCP tunnel');
       return;
     }
@@ -222,11 +223,14 @@ function initSshWebSocket(server, deps = {}, ...legacyArgs) {
     const pinKey = pinKeyFor(tunnel);
     let state = 'await-credentials'; // -> connecting -> (await-hostkey -> connecting) -> connected -> closed
     let client = null;
+    let sock = null;   // tunnel stream to the device (SSH transport)
+    let trackId = null;
     let stream = null;
     let connectTimer = null;
     let pendingHostKey = null; // { fingerprint, keyType, verify, timer }
     let size = { cols: 80, rows: 24 };
-    let paused = false;
+    let paused = false;       // SSH output paused (browser socket congested)
+    let inputPaused = false;  // browser socket paused (SSH channel congested by a big paste)
 
     const credTimer = setTimeout(() => fail('Credentials timeout', 1008), credentialsTimeoutMs);
 
@@ -246,6 +250,22 @@ function initSshWebSocket(server, deps = {}, ...legacyArgs) {
       }
       if (client) {
         try { client.end(); } catch {}
+      }
+      if (sock && !sock.destroyed) {
+        // client.end() half-closes the tunnel stream; make sure it goes away even if
+        // the SSH server or the device never answers.
+        const s = sock;
+        const t = setTimeout(() => s.destroy(), SOCK_CLOSE_GRACE_MS);
+        t.unref();
+        s.once('close', () => clearTimeout(t));
+      }
+      if (trackId && connectionTracker) {
+        try { connectionTracker.completeConnection(trackId); } catch {}
+        trackId = null;
+      }
+      if (inputPaused) {
+        inputPaused = false;
+        try { ws.resume(); } catch {} // so the closing handshake can complete
       }
     }
 
@@ -271,7 +291,18 @@ function initSshWebSocket(server, deps = {}, ...legacyArgs) {
       if (state === 'closed') return;
       if (isBinary) {
         if (state === 'connected' && stream) {
-          try { stream.write(data); } catch {}
+          try {
+            // Backpressure for large pastes: stop reading the browser socket until SSH drains.
+            if (!stream.write(data) && !inputPaused) {
+              inputPaused = true;
+              ws.pause();
+              stream.once('drain', () => {
+                if (!inputPaused) return;
+                inputPaused = false;
+                if (state !== 'closed') ws.resume();
+              });
+            }
+          } catch {}
         }
         return;
       }
@@ -329,7 +360,7 @@ function initSshWebSocket(server, deps = {}, ...legacyArgs) {
 
       // Re-check: the device may have gone away while the user typed.
       const current = tunnelManager.getTunnel(tunnelId);
-      if (!current || current.protocol !== 'tcp' || current.status !== 'active' || !current.allocatedPort
+      if (!current || current.protocol !== 'tcp' || current.status !== 'active'
           || pinKeyFor(current) !== pinKey) {
         fail('Tunnel is not active', 1008);
         return;
@@ -337,8 +368,6 @@ function initSshWebSocket(server, deps = {}, ...legacyArgs) {
 
       // Never log passwords or keys.
       const config = {
-        host: sshHost,
-        port: current.allocatedPort,
         username,
         readyTimeout: sshTimeoutMs + hostKeyTimeoutMs + 5000, // backstop; our own timers are tighter
         keepaliveInterval: 15_000,
@@ -389,6 +418,29 @@ function initSshWebSocket(server, deps = {}, ...legacyArgs) {
         fail('No authentication method provided', 1008);
         return;
       }
+
+      // SSH transport: a stream straight to the device (tcp-open to its local port).
+      const onTraffic = (bytesIn, bytesOut) => {
+        tunnelManager.addBytes(tunnelId, bytesIn + bytesOut);
+        if (trackId && connectionTracker) connectionTracker.updateBytes(trackId, bytesIn, bytesOut);
+      };
+      try {
+        sock = tcpProxy && typeof tcpProxy.openStream === 'function'
+          ? tcpProxy.openStream(tunnelId, { onTraffic })
+          : openTunnelStream(current, { onTraffic });
+      } catch (err) {
+        log.warn('Could not open a tunnel stream for the web terminal', { tunnelId, error: err.message });
+        sock = null;
+      }
+      if (!sock) {
+        fail('Device is not connected', 1011);
+        return;
+      }
+      sock.on('error', (err) => log.debug('Web terminal tunnel stream error', { tunnelId, error: err.message }));
+      if (connectionTracker) {
+        try { trackId = connectionTracker.startConnection(tunnelId, ip); } catch {}
+      }
+      config.sock = sock;
 
       state = 'connecting';
       connect(config);

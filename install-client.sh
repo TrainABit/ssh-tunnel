@@ -30,9 +30,13 @@
 #   --yes                    Non-interactive (accepted for symmetry; never prompts).
 #   -h, --help               Show this help.
 #
-# Files: token in /etc/tunnelvault/client.env (0600 root, systemd EnvironmentFile),
-# settings without the token in /etc/tunnelvault/config.json and
-# ~SERVICE_USER/.tunnelvault/config.json (0600), code in /opt/tunnelvault-client.
+# Files: server URL, token and the remote-reboot switch in /etc/tunnelvault/client.env
+# (0600 root, systemd EnvironmentFile=); settings without the token in
+# /etc/tunnelvault/config.json (root:<service group> 0640, read by the service) and a copy
+# in ~SERVICE_USER/.tunnelvault/config.json (0600, for the CLI); reconnect state (keeps the
+# public ports) in /var/lib/tunnelvault (StateDirectory=); code in /opt/tunnelvault-client.
+# /etc/tunnelvault/update.conf + release-signing.pub are shared with the server's updater
+# when both are installed on one host (ENABLED=0 there pauses both updaters).
 # ================================================================
 set -Eeuo pipefail
 
@@ -63,6 +67,13 @@ SYSTEMD_DIR="/etc/systemd/system"
 SUDOERS_FILE="/etc/sudoers.d/tunnelvault-reboot"
 CLI_WRAPPER="/usr/local/bin/tunnelvault"
 UPDATER_SCRIPT="${INSTALL_DIR}/auto-update-client.sh"
+UPDATER_LOG="/var/log/tunnelvault-client-update.log"
+# systemd StateDirectory= of the service (TUNNELVAULT_STATE_DIR): reconnect state.json
+STATE_DIR_NAME="tunnelvault"
+STATE_DIR="/var/lib/${STATE_DIR_NAME}"
+# The server's signed updater (install-server.sh) shares update.conf on hosts running both
+SERVER_UPDATER_UNIT="tunnelvault-autoupdate"
+SERVER_UPDATER_SCRIPT="/opt/tunnelvault/auto-update.sh"
 LOCK_FILE="/run/tunnelvault-client-install.lock"
 DEFAULT_UPDATE_REPO="TrainABit/ssh-tunnel"
 DEFAULT_SCHEDULE="12h"
@@ -307,7 +318,13 @@ out.push("SERVER=" + server);
 out.push("TOKEN=" + token);
 out.push("TUNNELS_JSON=" + tunnelsJson);
 out.push("TUNNELS_INVALID=" + (tunnelsInvalid ? "1" : "0"));
-out.push("ALLOW_REBOOT=" + (sys && sys.allow_reboot === true ? "true" : "false"));
+// Remote reboot: TUNNELVAULT_ALLOW_REBOOT in client.env wins (as in the client), else the
+// root-owned /etc config.json. The user-writable copy is never trusted for it.
+let allowReboot = Boolean(sys && sys.allow_reboot === true);
+const envReboot = typeof env.TUNNELVAULT_ALLOW_REBOOT === "string" ? env.TUNNELVAULT_ALLOW_REBOOT.trim() : "";
+if (/^(1|true|yes|on)$/i.test(envReboot)) allowReboot = true;
+else if (/^(0|false|no|off)$/i.test(envReboot)) allowReboot = false;
+out.push("ALLOW_REBOOT=" + (allowReboot ? "true" : "false"));
 out.push("BASE_JSON=" + JSON.stringify(base));
 out.push("UNIT_USER=" + (unit.user && USER_RE.test(unit.user) ? unit.user : ""));
 process.stdout.write(out.join("\n") + "\n");
@@ -378,6 +395,9 @@ render_client_env() {
   printf '# Read by systemd (EnvironmentFile=) so the token never appears in process arguments.\n'
   printf 'TUNNELVAULT_SERVER=%s\n' "$SERVER_URL"
   printf 'TUNNELVAULT_AUTH_TOKEN=%s\n' "$AUTH_TOKEN"
+  printf '# Remote reboot from the dashboard (1/0). Change it with install-client.sh --allow-reboot /\n'
+  printf '# --no-reboot, which also manages the sudoers rule and the service hardening.\n'
+  printf 'TUNNELVAULT_ALLOW_REBOOT=%s\n' "$([[ $ALLOW_REBOOT == true ]] && echo 1 || echo 0)"
 }
 
 render_sudoers() {
@@ -399,9 +419,15 @@ StartLimitIntervalSec=0
 Type=simple
 User=${SERVICE_USER}
 Group=${SERVICE_GROUP}
-# Server URL and device token (0600 root) — never on the command line.
+# Server URL, device token and the remote-reboot switch (0600 root) — never on the command line.
 EnvironmentFile=${CLIENT_ENV}
 Environment=NODE_ENV=production
+# Settings written by install-client.sh (no token; root-owned, readable by the service group).
+Environment=TUNNELVAULT_CONFIG=${SYS_CONFIG}
+# Reconnect state (tunnel ids + owner secrets that keep this device's public ports stable).
+Environment=TUNNELVAULT_STATE_DIR=${STATE_DIR}
+StateDirectory=${STATE_DIR_NAME}
+StateDirectoryMode=0700
 ExecStart=${CLI_WRAPPER} connect
 Restart=always
 RestartSec=10
@@ -409,9 +435,28 @@ SyslogIdentifier=tunnelvault-client
 UMask=0077
 
 # Hardening. The client only needs outbound network access, its config and
-# ${USER_HOME}/.tunnelvault (state.json with the reconnect secrets).
+# ${STATE_DIR} (always writable: StateDirectory=).
 PrivateTmp=yes
+ProtectHome=read-only
 ProtectControlGroups=yes
+EOF
+  if [[ $ALLOW_REBOOT == true ]]; then
+    cat <<EOF
+# Remote reboot is enabled (--allow-reboot): the service runs 'sudo -n systemctl reboot'.
+# For a non-root service every seccomp-based option (SystemCallFilter/-Architectures,
+# RestrictAddressFamilies/Namespaces/Realtime/SUIDSGID, ProtectKernel*, ProtectClock,
+# ProtectHostname, PrivateDevices, LockPersonality, ...) implies NoNewPrivileges=yes,
+# which makes sudo fail — so only mount-namespace protections are used here.
+ProtectSystem=full
+EOF
+  else
+    cat <<EOF
+ProtectSystem=strict
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+PrivateDevices=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
 ProtectKernelModules=yes
 ProtectKernelTunables=yes
 ProtectKernelLogs=yes
@@ -422,23 +467,6 @@ RestrictNamespaces=yes
 LockPersonality=yes
 SystemCallArchitectures=native
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
-EOF
-  if [[ $ALLOW_REBOOT == true ]]; then
-    cat <<EOF
-# Remote reboot is enabled (--allow-reboot): the service runs 'sudo -n systemctl reboot',
-# so NoNewPrivileges, capability limits and a read-only /run (sudo state) would break it.
-ProtectSystem=full
-EOF
-  else
-    cat <<EOF
-ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=-${USER_HOME}/.tunnelvault
-NoNewPrivileges=yes
-RestrictSUIDSGID=yes
-PrivateDevices=yes
-CapabilityBoundingSet=
-AmbientCapabilities=
 EOF
   fi
   cat <<EOF
@@ -545,6 +573,8 @@ parse_args() {
     esac
   done
 }
+
+ALLOW_REBOOT=false   # resolved by resolve_settings
 
 # Validates everything that can be checked before touching the system.
 # Builds TUNNEL_SPECS (lines "port proto name") when tunnels are given on the command line.
@@ -663,12 +693,12 @@ ensure_dir() {
   [[ -d $1 ]] || install -d -m 0755 -o root -g root "$1"
 }
 
-# Writes CONTENT (stdin) to FILE atomically with MODE, owned by root.
+# Writes CONTENT (stdin) to FILE atomically with MODE, owned by root (group GROUP, default root).
 write_root_file() {
-  local file=$1 mode=$2 tmp
+  local file=$1 mode=$2 group=${3:-root} tmp
   tmp=$(mktemp "$(dirname -- "$file")/.$(basename -- "$file").XXXXXX")
   cat > "$tmp"
-  chown root:root -- "$tmp"
+  chown "root:${group}" -- "$tmp"
   chmod "$mode" -- "$tmp"
   mv -f -- "$tmp" "$file"
 }
@@ -719,16 +749,22 @@ resolve_settings() {
   id -u "$SERVICE_USER" >/dev/null 2>&1 || die "user '$SERVICE_USER' does not exist (use --user)"
   SERVICE_GROUP=$(id -gn "$SERVICE_USER") || die "cannot determine the group of $SERVICE_USER"
   valid_username "$SERVICE_GROUP" || die "unsupported group name for $SERVICE_USER"
-  home=$(getent passwd "$SERVICE_USER" | cut -d: -f6)
-  [[ $home =~ ^/[A-Za-z0-9._/-]*$ && $home != *..* ]] || die "unsupported home directory for $SERVICE_USER: $(printf '%q' "$home")"
-  USER_HOME=${home%/}
-  [[ -n $USER_HOME ]] || die "the service user's home directory must not be /"
-  [[ -d $(fs "$USER_HOME") ]] || die "home directory $USER_HOME of $SERVICE_USER does not exist (use --user with a regular user)"
+  # The service itself needs no home directory (config in /etc, state in STATE_DIR); an
+  # existing one gets a copy of config.json for the CLI and is checked for legacy files.
+  home=$(getent passwd "$SERVICE_USER" | cut -d: -f6 || true)
+  USER_HOME=""
+  if [[ $home =~ ^/[A-Za-z0-9._/-]*$ && $home != *..* && -n ${home%/} && -d $(fs "${home%/}") ]]; then
+    USER_HOME=${home%/}
+  else
+    warn "${SERVICE_USER} has no usable home directory ($(printf '%q' "$home")) — skipping ~/.tunnelvault (the service does not need it)"
+  fi
   [[ $SERVICE_USER != root ]] || warn "The client service will run as root — consider --user <unprivileged user>"
 
   # Legacy installs may only have the user's copy of config.json.
-  legacy_user_config="$(fs "$USER_HOME")/.tunnelvault/config.json"
-  if [[ -L $(dirname -- "$legacy_user_config") || -L $legacy_user_config ]]; then legacy_user_config=""; fi
+  if [[ -n $USER_HOME ]]; then
+    legacy_user_config="$(fs "$USER_HOME")/.tunnelvault/config.json"
+    if [[ -L $(dirname -- "$legacy_user_config") || -L $legacy_user_config ]]; then legacy_user_config=""; fi
+  fi
   load_existing_settings "$legacy_user_config"
 
   if $UPGRADE; then
@@ -764,7 +800,7 @@ resolve_settings() {
   [[ $ALLOW_REBOOT == true ]] || ALLOW_REBOOT=false
   BASE_JSON=$EX_BASE_JSON
 
-  info "Service user: ${SERVICE_USER} (home ${USER_HOME})"
+  info "Service user: ${SERVICE_USER} (home ${USER_HOME:-none})"
   info "Server: ${SERVER_URL}"
   if $TUNNELS_FROM_ARGS; then info "Tunnels: from the command line"; else info "Tunnels: kept from the existing configuration"; fi
   info "Remote reboot: $([[ $ALLOW_REBOOT == true ]] && echo enabled || echo disabled)"
@@ -849,15 +885,19 @@ install_client_files() {
   info "CLI wrapper: ${CLI_WRAPPER}"
 }
 
+# /etc/tunnelvault: root-owned and never group/world-writable (the updaters refuse anything
+# else); 0755 so the service user can read config.json and the server's backend update.conf.
+# Secrets in there carry their own mode (client.env 0600).
 prepare_config_dir() {
   local dir
   dir=$(fs "$CONFIG_DIR")
   [[ ! -L $dir ]] || die "${CONFIG_DIR} is a symlink — refusing to write secrets through it"
+  [[ ! -e $dir || -d $dir ]] || die "${CONFIG_DIR} exists and is not a directory"
   if [[ ! -d $dir ]]; then
-    install -d -m 0700 -o root -g root "$dir"
+    install -d -m 0755 -o root -g root "$dir"
   else
     chown root:root -- "$dir"
-    chmod go-w -- "$dir"
+    chmod 0755 -- "$dir"
   fi
 }
 
@@ -895,7 +935,7 @@ write_user_config() {
 }
 
 CLEANUP_DIRS=()
-# shellcheck disable=SC2329  # invoked via trap
+# shellcheck disable=SC2317,SC2329  # invoked via trap (SC2317: shellcheck < 0.10)
 cleanup() {
   local d
   for d in ${CLEANUP_DIRS[@]+"${CLEANUP_DIRS[@]}"}; do rm -rf -- "$d"; done
@@ -910,10 +950,56 @@ write_configs() {
 
   render_client_env | write_root_file "$(fs "$CLIENT_ENV")" 0600
   info "Credentials: ${CLIENT_ENV} (0600, root only)"
-  write_root_file "$(fs "$SYS_CONFIG")" 0600 < "${work}/config.json"
-  info "Config: ${SYS_CONFIG} (0600, no token)"
-  write_user_config "${work}/config.json"
-  info "Config: ${USER_HOME}/.tunnelvault/config.json (0600, owned by ${SERVICE_USER})"
+  write_root_file "$(fs "$SYS_CONFIG")" 0640 "$SERVICE_GROUP" < "${work}/config.json"
+  info "Config: ${SYS_CONFIG} (root:${SERVICE_GROUP} 0640, no token — read by the service)"
+  if [[ -n $USER_HOME ]]; then
+    write_user_config "${work}/config.json"
+    info "Config: ${USER_HOME}/.tunnelvault/config.json (0600, owned by ${SERVICE_USER}; copy for the CLI)"
+  fi
+  prepare_state_dir
+}
+
+# Reconnect state (tunnel ids + owner secrets that keep the device's public ports) lives in
+# STATE_DIR (systemd StateDirectory=, owned by the service user). Older installs kept it in
+# ~SERVICE_USER/.tunnelvault/state.json: it is copied once so the device keeps its ports.
+prepare_state_dir() {
+  local dir legacy
+  dir=$(fs "$STATE_DIR")
+  if [[ -L $dir || ( -e $dir && ! -d $dir ) ]]; then
+    die "${STATE_DIR} is a symlink or not a directory — refusing"
+  fi
+  if [[ ! -d $dir ]]; then
+    ensure_dir "$(dirname -- "$dir")"
+    install -d -m 0700 -o "$SERVICE_USER" -g "$SERVICE_GROUP" "$dir"
+  elif [[ $(stat -c '%U' -- "$dir") != "$SERVICE_USER" ]]; then
+    # Left to systemd: StateDirectory= re-owns the whole tree (safely) at the next start.
+    info "State: ${STATE_DIR} (handed over to ${SERVICE_USER} by systemd at the next start)"
+    return 0
+  fi
+  if [[ -e "${dir}/state.json" || -L "${dir}/state.json" || -z $USER_HOME ]]; then
+    info "State: ${STATE_DIR} (0700, owned by ${SERVICE_USER})"
+    return 0
+  fi
+  legacy="$(fs "$USER_HOME")/.tunnelvault/state.json"
+  if [[ ! -f $legacy || -L $legacy || -L $(dirname -- "$legacy") ]]; then
+    info "State: ${STATE_DIR} (0700, owned by ${SERVICE_USER})"
+    return 0
+  fi
+  # Copied with the service user's own privileges: root never reads a file the user controls.
+  # shellcheck disable=SC2016  # $1/$2 are expanded by the inner sh
+  if as_service_user /bin/sh -c '
+      umask 077
+      tmp=$(mktemp "$2/.state.json.XXXXXX") || exit 1
+      if head -c 1048576 -- "$1" > "$tmp" && [ ! -e "$2/state.json" ] && mv -f -- "$tmp" "$2/state.json"; then
+        exit 0
+      fi
+      rm -f -- "$tmp"
+      exit 1
+    ' sh "$legacy" "$dir"; then
+    info "Reconnect state migrated: ${USER_HOME}/.tunnelvault/state.json -> ${STATE_DIR}/state.json (public ports stay the same)"
+  else
+    warn "Could not copy ${USER_HOME}/.tunnelvault/state.json to ${STATE_DIR} — the device may get new public ports"
+  fi
 }
 
 configure_reboot() {
@@ -960,6 +1046,10 @@ write_service_unit() {
 AUTO_UPDATE=false
 AUTO_UPDATE_LEGACY=false
 PUBKEY_SRC=""
+UPDATE_ENABLED=1
+UPDATE_SCHEDULE=$DEFAULT_SCHEDULE
+UPDATE_REPO=$DEFAULT_UPDATE_REPO
+PINNED_VERSION=""
 decide_auto_update() {
   local unit_file script existing_new=false key_text
   unit_file=$(fs "${SYSTEMD_DIR}/${UPDATER_UNIT}.timer")
@@ -976,11 +1066,16 @@ decide_auto_update() {
     disable) AUTO_UPDATE=false ;;
     *) if $UPGRADE && $existing_new; then AUTO_UPDATE=true; fi ;;
   esac
+  # Checked before anything is changed: these files are (re)written below.
+  if [[ $AUTO_UPDATE == true || $OPT_AUTO_UPDATE == disable ]]; then
+    [[ ! -L $(fs "$UPDATE_CONF") && ! -L $(fs "$PUBKEY_DEST") ]] \
+      || die "${UPDATE_CONF} or ${PUBKEY_DEST} is a symlink — refusing"
+  fi
   if [[ $AUTO_UPDATE == true ]]; then
+    # The installed trust anchor (shared with the server updater) is only ever replaced by
+    # an explicit --release-pubkey, never by a key shipped inside a package.
     if [[ -n $OPT_PUBKEY ]]; then
       PUBKEY_SRC=$OPT_PUBKEY
-    elif [[ $OPT_AUTO_UPDATE == enable && -f "${SCRIPT_DIR}/release-signing.pub" ]]; then
-      PUBKEY_SRC="${SCRIPT_DIR}/release-signing.pub"
     elif [[ -f $(fs "$PUBKEY_DEST") ]]; then
       PUBKEY_SRC=$(fs "$PUBKEY_DEST")
     elif [[ -f "${SCRIPT_DIR}/release-signing.pub" ]]; then
@@ -1012,8 +1107,32 @@ remove_updater_units() {
   $removed
 }
 
+# The server's signed updater (not its old git-pull one) reads the same update.conf.
+server_updater_installed() {
+  local script
+  script=$(fs "$SERVER_UPDATER_SCRIPT")
+  [[ -f $(fs "${SYSTEMD_DIR}/${SERVER_UPDATER_UNIT}.timer") && -f $script ]] && grep -q 'tv-updater-common' -- "$script"
+}
+
+# Existing update.conf values (validated, defaults otherwise) -> UPDATE_* variables.
+read_update_conf() {
+  local conf=$1 enabled
+  enabled=$(conf_value "$conf" ENABLED)
+  UPDATE_ENABLED=1
+  case "${enabled,,}" in
+    0|false|no|off) UPDATE_ENABLED=0 ;;
+  esac
+  UPDATE_REPO=$(conf_value "$conf" UPDATE_REPO)
+  PINNED_VERSION=$(conf_value "$conf" PINNED_VERSION)
+  UPDATE_SCHEDULE=$(conf_value "$conf" SCHEDULE)
+  [[ $UPDATE_REPO =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$ && $UPDATE_REPO != *..* ]] || UPDATE_REPO=$DEFAULT_UPDATE_REPO
+  [[ -z $PINNED_VERSION || $PINNED_VERSION =~ ^v?[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}$ ]] || PINNED_VERSION=""
+  valid_schedule "$UPDATE_SCHEDULE" || UPDATE_SCHEDULE=$DEFAULT_SCHEDULE
+}
+
 configure_auto_update() {
   local conf
+  conf=$(fs "$UPDATE_CONF")
   if [[ $AUTO_UPDATE != true ]]; then
     if remove_updater_units; then
       if $AUTO_UPDATE_LEGACY; then
@@ -1022,26 +1141,29 @@ configure_auto_update() {
         info "Auto-updater removed"
       fi
     fi
+    # update.conf is shared: ENABLED=0 would also pause the server's updater on this host.
+    if [[ $OPT_AUTO_UPDATE == disable && -f $conf ]]; then
+      if server_updater_installed; then
+        info "${UPDATE_CONF} is shared with the server auto-updater on this host — ENABLED left unchanged there"
+      else
+        read_update_conf "$conf"
+        UPDATE_ENABLED=0
+        render_update_conf | write_root_file "$conf" 0644
+      fi
+    fi
     skipped "Signed auto-updates are off — enable with: sudo bash install-client.sh --upgrade --auto-update --release-pubkey release-signing.pub"
     return 0
   fi
 
-  conf=$(fs "$UPDATE_CONF")
-  UPDATE_ENABLED=1
-  if [[ $OPT_AUTO_UPDATE != enable ]]; then
-    case "$(conf_value "$conf" ENABLED)" in
-      0|false|no|off) UPDATE_ENABLED=0 ;;
-    esac
-  fi
-  UPDATE_REPO=$(conf_value "$conf" UPDATE_REPO)
-  PINNED_VERSION=$(conf_value "$conf" PINNED_VERSION)
-  UPDATE_SCHEDULE=$(conf_value "$conf" SCHEDULE)
-  [[ $UPDATE_REPO =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$ && $UPDATE_REPO != *..* ]] || UPDATE_REPO=$DEFAULT_UPDATE_REPO
-  [[ -z $PINNED_VERSION || $PINNED_VERSION =~ ^v?[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}$ ]] || PINNED_VERSION=""
-  valid_schedule "$UPDATE_SCHEDULE" || UPDATE_SCHEDULE=$DEFAULT_SCHEDULE
+  read_update_conf "$conf"
+  # --auto-update (re-)enables; a plain --upgrade keeps a pause (ENABLED=0)
+  [[ $OPT_AUTO_UPDATE != enable ]] || UPDATE_ENABLED=1
 
   if [[ $PUBKEY_SRC != "$(fs "$PUBKEY_DEST")" ]]; then
     write_root_file "$(fs "$PUBKEY_DEST")" 0644 < "$PUBKEY_SRC"
+  fi
+  if [[ -f "${SCRIPT_DIR}/release-signing.pub" ]] && ! cmp -s "${SCRIPT_DIR}/release-signing.pub" "$(fs "$PUBKEY_DEST")"; then
+    warn "release-signing.pub of this package differs from ${PUBKEY_DEST} (kept; replace it with --release-pubkey FILE)"
   fi
   render_update_conf | write_root_file "$conf" 0644
   if $AUTO_UPDATE_LEGACY; then
@@ -1056,7 +1178,11 @@ configure_auto_update() {
   else
     warn "Auto-updater installed but ENABLED=0 in ${UPDATE_CONF} (kept) — updates are paused"
   fi
-  info "Logs: journalctl -u ${UPDATER_UNIT}"
+  info "Logs: journalctl -u ${UPDATER_UNIT} and ${UPDATER_LOG}"
+  if server_updater_installed; then
+    info "${UPDATE_CONF} is shared with the server auto-updater on this host: ENABLED=0 pauses both,"
+    info "UPDATE_REPO, PINNED_VERSION and SCHEDULE apply to both (each keeps its own timer)."
+  fi
 }
 
 # systemd-run survives the end of the calling unit/session (a background `sleep`
@@ -1121,8 +1247,12 @@ print_summary() {
   else
     echo -e "  ${DIM}Remote reboot:${NC}  disabled (enable: sudo bash install-client.sh --upgrade --allow-reboot)"
   fi
-  if [[ $AUTO_UPDATE == true ]]; then
+  echo -e "  ${DIM}Config:${NC}         ${SYS_CONFIG} (token and reboot switch: ${CLIENT_ENV})"
+  echo -e "  ${DIM}State:${NC}          ${STATE_DIR} (keeps the public ports across restarts and upgrades)"
+  if [[ $AUTO_UPDATE == true && $UPDATE_ENABLED == 1 ]]; then
     echo -e "  ${DIM}Auto-update:${NC}    signed releases, every ${UPDATE_SCHEDULE} (${UPDATE_CONF})"
+  elif [[ $AUTO_UPDATE == true ]]; then
+    echo -e "  ${DIM}Auto-update:${NC}    installed but paused (ENABLED=0 in ${UPDATE_CONF})"
   else
     echo -e "  ${DIM}Auto-update:${NC}    off"
   fi
@@ -1139,7 +1269,8 @@ print_summary() {
   echo -e "                    sha256sum -c --ignore-missing SHA256SUMS"
   echo -e "                  then run from the extracted directory: sudo bash install-client.sh --upgrade"
   if [[ $AUTO_UPDATE == true ]]; then
-    echo -e "  ${DIM}Update logs:${NC}    journalctl -u ${UPDATER_UNIT}"
+    echo -e "  ${DIM}Update logs:${NC}    journalctl -u ${UPDATER_UNIT} and ${UPDATER_LOG}"
+    echo -e "  ${DIM}Update now:${NC}     sudo ${UPDATER_SCRIPT} [--dry-run]"
   fi
   echo ""
   if is_insecure_remote_url "$SERVER_URL"; then

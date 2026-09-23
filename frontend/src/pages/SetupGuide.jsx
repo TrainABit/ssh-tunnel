@@ -196,6 +196,8 @@ const releaseVerify = (version) => [
   `V=${/^\d+\.\d+\.\d+$/.test(String(version || '')) ? version : DEFAULT_RELEASE}`,
   'BASE=https://github.com/TrainABit/ssh-tunnel/releases/download/v$V',
   'curl -fLO "$BASE/tunnelvault-v$V.tar.gz" -O "$BASE/SHA256SUMS" -O "$BASE/SHA256SUMS.sig"',
+  '# release key: use /etc/tunnelvault/release-signing.pub if this host has one; else fetch it once and check its fingerprint',
+  'curl -fL -o release-signing.pub https://raw.githubusercontent.com/TrainABit/ssh-tunnel/main/release-signing.pub',
   'openssl dgst -sha256 -verify release-signing.pub -signature SHA256SUMS.sig SHA256SUMS',
   'sha256sum -c --ignore-missing SHA256SUMS',
   'tar xzf "tunnelvault-v$V.tar.gz" && cd "tunnelvault-v$V"',
@@ -311,18 +313,19 @@ export default function SetupGuide() {
           <DataTable
             headers={['Flag', 'Default', 'Description']}
             rows={[
-              [flag('--domain NAME'), mono('—'), plain('Public domain name (required with --tls)')],
-              [flag('--tls'), mono('off'), plain('nginx + Let\'s Encrypt certificate for the apex domain; API bound to 127.0.0.1')],
-              [flag('--email ADDR'), mono('—'), plain('Optional Let\'s Encrypt account e-mail')],
-              [flag('--wildcard-cert DIR'), mono('—'), plain('Wildcard certificate for *.DOMAIN obtained separately (DNS-01); enables HTTPS for HTTP tunnels')],
-              [flag('--auth-token TOKEN'), mono('generated'), plain('Admin token for the dashboard and the API')],
+              [flag('--domain NAME'), mono('tunnel.local'), plain('Server domain; a public name pointing at the server is required with --tls')],
+              [flag('--tls'), mono('off'), plain('nginx + Let\'s Encrypt certificate for the apex domain (HTTP-01); API bound to 127.0.0.1')],
+              [flag('--email ADDR'), mono('—'), plain('Let\'s Encrypt account e-mail (only with --tls)')],
+              [flag('--wildcard-cert DIR'), mono('—'), plain('Directory with fullchain.pem + privkey.pem of a *.DOMAIN certificate obtained separately (DNS-01); enables HTTPS for HTTP tunnels (only with --tls)')],
+              [flag('--auth-token TOKEN'), mono('generated'), plain('Admin token for the dashboard and the API: 16–256 characters of A–Z a–z 0–9 . _ ~ -')],
               [flag('--port PORT'), mono('4000'), plain('API / dashboard / WebSocket port')],
               [flag('--proxy-port PORT'), mono('4001'), plain('HTTP tunnel proxy port')],
-              [flag('--no-firewall'), mono('—'), plain('Do not touch ufw')],
-              [flag('--auto-update'), mono('off'), plain('Install the signed-release auto-updater (needs a release public key)')],
-              [flag('--release-pubkey FILE'), mono('release-signing.pub'), plain('Public key used to verify releases')],
-              [flag('--upgrade'), mono('—'), plain('Upgrade an existing install; keeps the database, .env and previous choices')],
-              [flag('--yes'), mono('—'), plain('Non-interactive mode (used by the updater)')],
+              [flag('--no-firewall'), mono('—'), plain('Do not touch ufw (the ports to open are printed instead)')],
+              [flag('--auto-update'), mono('off'), plain('Install the signed-release auto-updater (needs a release public key); kept on --upgrade')],
+              [flag('--no-auto-update'), mono('—'), plain('Remove the auto-updater')],
+              [flag('--release-pubkey FILE'), mono('see text'), plain('ECDSA P-256 public key that verifies releases. Default: the installed /etc/tunnelvault/release-signing.pub, else release-signing.pub next to the installer; an installed key is only replaced by this flag')],
+              [flag('--upgrade'), mono('—'), plain('Upgrade an existing install; keeps the database, .env and previous choices (flags given override them)')],
+              [flag('--yes, -y'), mono('—'), plain('Non-interactive: never prompt (the updater runs --upgrade --yes)')],
             ]}
           />
         </SectionCard>
@@ -351,9 +354,10 @@ export default function SetupGuide() {
             ]}
           />
           <p className="text-sm" style={{ color: 'var(--text-dim)' }}>
-            The installer manages <InlineCode>ufw</InlineCode> without ever resetting it: if ufw is inactive it sets default-deny for incoming
-            traffic, allows 22 and the ports above, and enables it; if ufw is already active it only adds TunnelVault&apos;s rules.
-            {' '}<InlineCode>--no-firewall</InlineCode> skips this. Cloud security groups must allow the same ports.
+            The installer manages <InlineCode>ufw</InlineCode> without ever resetting it: on a fresh install with ufw inactive it sets
+            default-deny for incoming traffic, allows 22 (and any other port sshd listens on) and the ports above, and enables it; if ufw
+            is already active it only adds TunnelVault&apos;s rules. <InlineCode>--upgrade</InlineCode> never enables an inactive ufw, and
+            {' '}<InlineCode>--no-firewall</InlineCode> (or an active firewalld) leaves the firewall alone. Cloud security groups must allow the same ports.
           </p>
         </SectionCard>
 
@@ -382,32 +386,40 @@ export default function SetupGuide() {
           <DataTable
             headers={['Flag', 'Default', 'Description']}
             rows={[
-              [flag('--server URL'), plain('required'), plain('wss://DOMAIN (TLS) or ws://IP:4000 (no TLS, insecure)')],
-              [flag('--token TOKEN'), plain('required'), plain('Device token from the dashboard (letters and digits)')],
-              [flag('--port PORT'), mono('22'), plain('Local port to expose')],
+              [flag('--server URL'), plain('required'), plain('wss://HOST[:PORT][/PATH] (TLS) or ws://HOST[:PORT] (no TLS, insecure); no credentials or query string')],
+              [flag('--token TOKEN'), plain('required'), plain('Device token from the dashboard (1–64 letters and digits)')],
+              [flag('--token-file FILE'), mono('—'), plain('Read the token from a file instead (keeps it out of the process list)')],
+              [flag('--port PORT'), mono('22'), plain('Local port of the main tunnel')],
               [flag('--protocol tcp|http'), mono('tcp'), plain('Protocol of that tunnel')],
-              [flag('--extra-port PORT:PROTO:NAME'), mono('—'), plain('Additional tunnel, repeatable (e.g. 8080:http:web)')],
-              [flag('--allow-reboot'), mono('off'), plain('Allow the dashboard\'s Reboot button for this device')],
-              [flag('--no-reboot'), mono('—'), plain('Disable remote reboot again (with --upgrade)')],
-              [flag('--auto-update'), mono('off'), plain('Install the signed-release auto-updater')],
-              [flag('--release-pubkey FILE'), mono('release-signing.pub'), plain('Public key used to verify releases')],
-              [flag('--upgrade'), mono('—'), plain('Upgrade in place; keeps server, token, tunnels and reboot setting unless overridden')],
+              [flag('--extra-port PORT[:PROTO[:NAME]]'), mono('—'), plain('Additional tunnel, repeatable (e.g. 8080:http:web); NAME: letters, digits . _ - (max 64)')],
+              [flag('--user USER'), mono('sudo user'), plain('Linux user the service runs as (kept on --upgrade)')],
+              [flag('--allow-reboot'), mono('off'), plain('Allow the dashboard\'s Reboot button for this device (sudoers rule for systemctl reboot / reboot only)')],
+              [flag('--no-reboot'), mono('—'), plain('Disable remote reboot again')],
+              [flag('--auto-update'), mono('off'), plain('Install the signed-release auto-updater (needs a release public key); kept on --upgrade')],
+              [flag('--no-auto-update'), mono('—'), plain('Remove the auto-updater')],
+              [flag('--release-pubkey FILE'), mono('see text'), plain('ECDSA P-256 public key that verifies releases. Default: the installed /etc/tunnelvault/release-signing.pub, else release-signing.pub next to the installer')],
+              [flag('--upgrade'), mono('—'), plain('Upgrade in place; keeps server, token, tunnels, service user, reboot and auto-update settings unless overridden')],
+              [flag('--yes, -y'), mono('—'), plain('Accepted for symmetry; the client installer never prompts')],
             ]}
           />
 
           <Label>Where the client keeps its secrets</Label>
           <Bullets items={[
-            <>The token is stored only in <InlineCode>/etc/tunnelvault/client.env</InlineCode> (root, mode 0600) and passed to the service through
-              systemd <InlineCode>EnvironmentFile=</InlineCode>. The service runs <InlineCode>/usr/local/bin/tunnelvault connect</InlineCode> — no
-              token on the command line, so it never shows up in <InlineCode>ps</InlineCode>.</>,
-            <>The tunnel list (<InlineCode>config.json</InlineCode>) holds server URL, tunnels and the reboot setting — no token.</>,
+            <>The token is stored only in <InlineCode>/etc/tunnelvault/client.env</InlineCode> (root, mode 0600, together with the server URL and
+              the remote-reboot switch) and passed to the service through systemd <InlineCode>EnvironmentFile=</InlineCode>. The service runs
+              {' '}<InlineCode>/usr/local/bin/tunnelvault connect</InlineCode> — no token on the command line, so it never shows up in <InlineCode>ps</InlineCode>.</>,
+            <>The tunnel list <InlineCode>/etc/tunnelvault/config.json</InlineCode> (root-owned, readable by the service) holds server URL, tunnels and
+              the reboot setting — no token. A copy for the CLI is kept in the service user&apos;s <InlineCode>~/.tunnelvault/config.json</InlineCode>.</>,
+            <>The reconnect state (<InlineCode>/var/lib/tunnelvault/state.json</InlineCode>, mode 0600) keeps the device&apos;s public ports stable across
+              restarts and upgrades; an older <InlineCode>~/.tunnelvault/state.json</InlineCode> is migrated automatically.</>,
             <>The device only forwards to the ports in its own tunnel list; the server cannot make it open other local ports.</>,
           ]} />
 
           <Label>Manual use</Label>
           <p className="text-sm" style={{ color: 'var(--text-dim)' }}>
             Settings are taken from CLI flags, then the environment (<InlineCode>TUNNELVAULT_SERVER</InlineCode>,
-            {' '}<InlineCode>TUNNELVAULT_AUTH_TOKEN</InlineCode>), then <InlineCode>~/.tunnelvault/config.json</InlineCode>. Prefer the environment
+            {' '}<InlineCode>TUNNELVAULT_AUTH_TOKEN</InlineCode>), then the config file (<InlineCode>$TUNNELVAULT_CONFIG</InlineCode>, else
+            {' '}<InlineCode>~/.tunnelvault/config.json</InlineCode>, else <InlineCode>/etc/tunnelvault/config.json</InlineCode>). Prefer the environment
             variable over <InlineCode>--auth-token</InlineCode>, which other local users can see in the process list.
           </p>
         </SectionCard>
@@ -432,11 +444,22 @@ export default function SetupGuide() {
 
           <Label>Automatic updates</Label>
           <p className="text-sm" style={{ color: 'var(--text-dim)' }}>
-            Installing with <InlineCode>--auto-update</InlineCode> (and a release public key) adds a systemd timer. Each run resolves the
-            latest release (or the pinned version), refuses downgrades, downloads over HTTPS, verifies the signature and then the
-            checksum, checks the <InlineCode>VERSION</InlineCode> file and runs the installer with <InlineCode>--upgrade</InlineCode>.
-            Any failure aborts without changing the installation.
+            Installing with <InlineCode>--auto-update</InlineCode> (and a release public key) adds a systemd timer
+            (<InlineCode>tunnelvault-autoupdate</InlineCode> on the server, <InlineCode>tunnelvault-client-autoupdate</InlineCode> on devices). Each run
+            resolves the latest release (or the pinned version), refuses downgrades, downloads over HTTPS, verifies the signature and then
+            the checksum, checks the <InlineCode>VERSION</InlineCode> file and runs <InlineCode>install-server.sh --upgrade --yes</InlineCode> or
+            {' '}<InlineCode>install-client.sh --upgrade</InlineCode> from the verified release. Any failure aborts without changing the installation.
+            To turn it on later: <InlineCode>sudo bash install-server.sh --upgrade --auto-update --release-pubkey release-signing.pub</InlineCode>
+            {' '}(or <InlineCode>install-client.sh</InlineCode> on a device); <InlineCode>--no-auto-update</InlineCode> removes it.
           </p>
+          <Bullets items={[
+            <>Run it now: <InlineCode>sudo /opt/tunnelvault/auto-update.sh --dry-run</InlineCode> (download + verify only) or without
+              {' '}<InlineCode>--dry-run</InlineCode>; on devices <InlineCode>sudo /opt/tunnelvault-client/auto-update-client.sh</InlineCode>.</>,
+            <>Logs: <InlineCode>journalctl -u tunnelvault-autoupdate</InlineCode> and <InlineCode>/var/log/tunnelvault-update.log</InlineCode>
+              {' '}(devices: <InlineCode>tunnelvault-client-autoupdate</InlineCode>, <InlineCode>/var/log/tunnelvault-client-update.log</InlineCode>).</>,
+            <><InlineCode>ENABLED=0</InlineCode> pauses updates; on a host running both server and client the file is shared, so it pauses both.
+              The timer interval follows <InlineCode>SCHEDULE</InlineCode> after the next installer run.</>,
+          ]} />
           <CodeBlock copyText={'ENABLED=1\nSCHEDULE=12h\nUPDATE_REPO=TrainABit/ssh-tunnel\nPINNED_VERSION=\nPUBKEY=/etc/tunnelvault/release-signing.pub'}>
             <div><Cmt># /etc/tunnelvault/update.conf</Cmt></div>
             <div><Kw>ENABLED</Kw>=<Val>1</Val></div>

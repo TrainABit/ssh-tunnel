@@ -1,9 +1,46 @@
+# Dependencies
 node_modules/
+
+# Build output: frontend/dist, release archives (scripts/release/build-release.sh -> dist/release)
 dist/
+/tunnelvault-v*.tar.gz
+/SHA256SUMS
+/SHA256SUMS.sig
+
+# Secrets — never commit them. release-signing.pub (public key) IS meant to be committed.
 .env
+.env.*
+!.env.example
+release-signing.key
+*.key
+
+# Local data: SQLite databases, the default backend data directory, GeoIP databases
 *.db
 *.db-shm
 *.db-wal
+*.db-journal
+backend/data/
+*.mmdb
+
+# Logs
 logs/
 *.log
+
+# Test and tooling output
+coverage/
+.nyc_output/
+test-results/
+playwright-report/
+
+# Editor, OS and scratch artefacts
 .DS_Store
+Thumbs.db
+/.vscode/
+/.idea/
+*.swp
+*.swo
+*~
+*.orig
+*.rej
+*.bak
+*.tmp

@@ -437,6 +437,9 @@ function initWebSocket(server, deps = {}, ...legacyArgs) {
     });
 
     ws.on('pong', () => { ws.isAlive = true; });
+    // v2 devices ping every 15 s. On a slow link our own ping can sit behind up to
+    // WS_HIGH_WATER of queued data, so a device ping also proves the peer is alive.
+    ws.on('ping', () => { ws.isAlive = true; });
     ws.on('message', (data, isBinary) => {
       try {
         onMessage(ws, data, isBinary);
