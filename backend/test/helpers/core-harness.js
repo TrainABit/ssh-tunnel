@@ -19,6 +19,8 @@ if (!process.env.LOG_LEVEL) process.env.LOG_LEVEL = 'fatal';
 delete process.env.WEBHOOK_URL;
 delete process.env.HTTP_TUNNEL_URL_TEMPLATE;
 delete process.env.TCP_BIND_HOST;
+delete process.env.PROXY_PORT;
+process.env.DOMAIN = 'test.local';
 
 const db = require('../../src/database');
 const TunnelManager = require('../../src/tunnelManager');
@@ -27,6 +29,7 @@ const TcpProxy = require('../../src/tcpProxy');
 const ClientRegistry = require('../../src/clientRegistry');
 const { initWebSocket } = require('../../src/wsHandler');
 const { createProxyServer } = require('../../src/proxyServer');
+const { createIpResolver } = require('../../src/requestIp');
 
 let tokenCounter = 0;
 
@@ -60,14 +63,15 @@ function closeServer(server) {
 /**
  * Boot the core stack on ephemeral ports.
  * @param {object} [opts] - authToken, heartbeatMs, maxConnectionsPerToken, maxTunnelsPerToken,
- *   upgradeAttemptsPerMin, authFailuresPerMin, proxy (bool), domain, idleTimeoutMs, statsFlushMs
+ *   upgradeAttemptsPerMin, authFailuresPerMin, getClientIp, portMin, proxy (bool), domain,
+ *   trustProxy, idleTimeoutMs, statsFlushMs
  */
 async function startHarness(opts = {}) {
   const authToken = opts.authToken === undefined ? 'admin-secret-token' : opts.authToken;
   const tunnelManager = new TunnelManager(db, { statsFlushMs: opts.statsFlushMs });
   const connectionTracker = new ConnectionTracker();
   // Random 200-port window per harness so parallel test files rarely collide.
-  const portMin = 20000 + Math.floor(Math.random() * 150) * 200;
+  const portMin = opts.portMin || 20000 + Math.floor(Math.random() * 150) * 200;
   const tcpProxy = new TcpProxy(connectionTracker, db, tunnelManager, {
     portMin, portMax: portMin + 199, bindHost: '127.0.0.1',
   });
@@ -80,7 +84,7 @@ async function startHarness(opts = {}) {
     tcpProxy,
     registry,
     authToken,
-    getClientIp: (req) => req.socket.remoteAddress,
+    getClientIp: opts.getClientIp || ((req) => req.socket.remoteAddress),
     heartbeatMs: opts.heartbeatMs,
     maxConnectionsPerToken: opts.maxConnectionsPerToken,
     maxTunnelsPerToken: opts.maxTunnelsPerToken,
@@ -92,10 +96,12 @@ async function startHarness(opts = {}) {
   let proxyServer = null;
   let proxyPort = null;
   if (opts.proxy) {
+    const trustProxy = opts.trustProxy === undefined ? false : opts.trustProxy;
     proxyServer = createProxyServer(tunnelManager, connectionTracker, {
       tcpProxy,
       domain: opts.domain || 'test.local',
-      trustProxy: opts.trustProxy === undefined ? false : opts.trustProxy,
+      trustProxy,
+      getClientIp: createIpResolver(trustProxy),
       idleTimeoutMs: opts.idleTimeoutMs,
     });
     proxyPort = await listen(proxyServer);

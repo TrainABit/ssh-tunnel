@@ -3,6 +3,7 @@ const log = createLogger('notifier');
 
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
 const WEBHOOK_TYPE = (process.env.WEBHOOK_TYPE || 'json').toLowerCase();
+const WEBHOOK_TIMEOUT_MS = 5000;
 
 /**
  * Build a human-readable message for a tunnel event.
@@ -63,7 +64,8 @@ async function notify(event, data) {
   }
 
   try {
-    const res = await fetch(WEBHOOK_URL, { method: 'POST', headers, body });
+    // Bounded: a hanging webhook endpoint must not pile up pending requests.
+    const res = await fetch(WEBHOOK_URL, { method: 'POST', headers, body, signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS) });
     if (!res.ok) {
       log.warn('Webhook returned non-2xx', { status: res.status, event });
     }

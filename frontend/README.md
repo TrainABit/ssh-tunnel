@@ -1,16 +1,26 @@
-# React + Vite
+# TunnelVault dashboard
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React (Vite) admin dashboard for the TunnelVault server. The production build in `dist/` is served by the
+backend on the API port (behind nginx when the server is installed with `--tls`).
 
-Currently, two official plugins are available:
+## Development
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+```bash
+npm install            # once
+npm run dev            # http://localhost:3000, proxies /api and /ws to http://localhost:4000
+npm run lint           # ESLint (must report zero problems)
+npm test               # unit tests (node:test) for the API client and URL helpers
+npm run build          # production build into dist/
+```
 
-## React Compiler
+## Security model
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+- Sign-in: `POST /api/auth/login` with the server's `AUTH_TOKEN`; the server answers with an HttpOnly,
+  SameSite=Strict session cookie. The token is never stored in the browser (a legacy
+  `localStorage` copy from older versions is deleted on startup). All requests use
+  `credentials: 'same-origin'`; a 401 sends the user back to the login screen.
+- The web SSH terminal (`/ws/ssh`) authenticates with the same cookie, carries terminal data as binary
+  WebSocket frames (UTF-8 decoded by xterm.js) and asks the admin to verify SSH host keys (pinning,
+  mismatch warning).
+- Fonts (IBM Plex Mono) are self-hosted via `@fontsource`; the build never inlines fonts as `data:` URIs so
+  the server's CSP (`font-src 'self'`) applies. No third-party requests are made.

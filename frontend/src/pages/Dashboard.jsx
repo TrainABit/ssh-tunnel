@@ -1,4 +1,3 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { RefreshCw } from 'lucide-react';
 import {
@@ -11,6 +10,13 @@ import {
   ResponsiveContainer,
 } from 'recharts';
 import { getStats, getSessions } from '../services/api';
+import usePolling from '../hooks/usePolling';
+import Banner from '../components/Banner';
+
+async function loadDashboard() {
+  const [stats, sessions] = await Promise.all([getStats(), getSessions()]);
+  return { stats, sessions: sessions.slice(0, 8) };
+}
 
 function StatCard({ label, value, sub, live }) {
   return (
@@ -64,16 +70,22 @@ function CustomTooltip({ active, payload, label }) {
   );
 }
 
-function formatTimestamp(ts) {
-  if (!ts || typeof ts !== 'string') return '–';
+function parseTs(ts) {
+  if (!ts || typeof ts !== 'string') return null;
   const d = new Date(ts.endsWith('Z') ? ts : ts + 'Z');
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function formatTimestamp(ts) {
+  const d = parseTs(ts);
+  if (!d) return '–';
   return d.toLocaleString('en-US', { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
 function formatDuration(start) {
-  if (!start || typeof start !== 'string') return '–';
-  const s = new Date(start.endsWith('Z') ? start : start + 'Z');
-  const sec = Math.floor((new Date() - s) / 1000);
+  const s = parseTs(start);
+  if (!s) return '–';
+  const sec = Math.max(0, Math.floor((new Date() - s) / 1000));
   if (sec < 60) return `${sec}s`;
   if (sec < 3600) return `${Math.floor(sec / 60)}m`;
   return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`;
@@ -87,27 +99,27 @@ const btnBase = {
 };
 
 export default function Dashboard() {
-  const [stats, setStats] = useState(null);
-  const [sessions, setSessions] = useState([]);
-  const [refreshing, setRefreshing] = useState(false);
-  const [lastUpdated, setLastUpdated] = useState(null);
+  const { data, error, refreshing, refresh, updatedAt } = usePolling(loadDashboard, 10000);
+  const stats = data?.stats;
+  const sessions = data?.sessions || [];
+  const lastUpdated = updatedAt ? new Date(updatedAt) : null;
   const navigate = useNavigate();
-  const intervalRef = useRef(null);
 
-  const load = useCallback(async (showSpinner) => {
-    if (showSpinner) setRefreshing(true);
-    const [statsData, sessionsData] = await Promise.all([getStats(), getSessions()]);
-    setStats(statsData);
-    setSessions(sessionsData.slice(0, 8));
-    setLastUpdated(new Date());
-    if (showSpinner) setTimeout(() => setRefreshing(false), 300);
-  }, []);
-
-  useEffect(() => {
-    load(false);
-    intervalRef.current = setInterval(() => load(false), 10000);
-    return () => clearInterval(intervalRef.current);
-  }, [load]);
+  if (!stats && error) {
+    return (
+      <div className="space-y-4">
+        <h1 className="text-xl font-semibold" style={{ color: 'var(--text)' }}>Dashboard</h1>
+        <Banner tone="error">Could not load statistics: {error.message}</Banner>
+        <button
+          type="button"
+          onClick={refresh}
+          style={{ ...btnBase, borderColor: 'var(--border)', color: 'var(--text-mid)', background: 'transparent' }}
+        >
+          <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} /> Retry
+        </button>
+      </div>
+    );
+  }
 
   if (!stats) {
     return (
@@ -131,7 +143,7 @@ export default function Dashboard() {
           </p>
         </div>
         <button
-          onClick={() => load(true)}
+          onClick={refresh}
           style={{ ...btnBase, borderColor: 'var(--border)', color: 'var(--text-mid)', background: 'transparent' }}
           onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent-dim)'; e.currentTarget.style.color = 'var(--text)'; }}
           onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-mid)'; }}
@@ -140,6 +152,8 @@ export default function Dashboard() {
           Refresh
         </button>
       </div>
+
+      {error && <Banner tone="error">Could not refresh: {error.message}</Banner>}
 
       {/* Stats grid */}
       <div className="grid grid-cols-2 gap-4 xl:grid-cols-3">
@@ -247,7 +261,7 @@ export default function Dashboard() {
               </thead>
               <tbody>
                 {sessions.map((s) => {
-                  const isLive = s.disconnected_at === null;
+                  const isLive = !s.disconnected_at;
                   return (
                     <tr
                       key={s.id}
@@ -256,9 +270,9 @@ export default function Dashboard() {
                       onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
                     >
                       <td className="px-5 py-3 text-sm" style={{ color: 'var(--text)' }}>
-                        {s.token_label || (
+                        {s.token_label || s.tunnel_name || (
                           <span style={{ color: 'var(--blue)', fontFamily: 'var(--font-mono)', fontSize: '12px' }}>
-                            {(s.token || '').length > 12 ? s.token.slice(0, 12) + '…' : s.token || '–'}
+                            {(s.token || s.tunnel_id || '').length > 12 ? (s.token || s.tunnel_id).slice(0, 12) + '…' : (s.token || s.tunnel_id || '–')}
                           </span>
                         )}
                       </td>

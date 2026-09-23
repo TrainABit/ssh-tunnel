@@ -1,8 +1,15 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
-import { Copy, Trash2, Power, Check, RefreshCw, ArrowRight, RotateCcw, Terminal, Globe } from 'lucide-react';
-import { getTunnels, deleteTunnel, toggleTunnel, rebootTunnel } from '../services/api';
+import { useState, useRef } from 'react';
+import { Copy, Trash2, Power, Check, RefreshCw, ArrowRight, RotateCcw, Terminal, Globe, Fingerprint } from 'lucide-react';
+import { getTunnels, deleteTunnel, toggleTunnel, rebootTunnel, forgetHostKey } from '../services/api';
 import { copyToClipboard } from '../utils/clipboard';
+import { publicHostname, isHttpUrl } from '../utils/serverUrl';
+import usePolling from '../hooks/usePolling';
+import useServerConfig from '../hooks/useServerConfig';
 import SshTerminalModal from '../components/SshTerminalModal';
+import Banner from '../components/Banner';
+
+const REBOOT_HINT = 'Reboot the device. Only works if remote reboot is enabled on the device '
+  + '(install-client.sh --allow-reboot); otherwise the device ignores the command.';
 
 const btnBase = {
   display: 'inline-flex', alignItems: 'center', gap: '5px',
@@ -25,8 +32,79 @@ function portLabel(port) {
   return `Port ${port}`;
 }
 
+// ── Pinned SSH host key of a tunnel (web terminal) ───────────
+function HostKeyRow({ tunnel, onForget }) {
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const fp = tunnel.host_key_fingerprint;
+  if (typeof fp !== 'string' || !fp) return null;
+
+  const handleForget = async () => {
+    setBusy(true);
+    const ok = await onForget(tunnel.id);
+    setBusy(false);
+    if (ok) setConfirming(false);
+  };
+
+  return (
+    <div className="flex items-center gap-1.5 mt-2 min-w-0" style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+      <Fingerprint size={11} style={{ flexShrink: 0 }} aria-label="Pinned SSH host key" />
+      <span className="truncate" title={`Pinned SSH host key: ${fp}`} style={{ fontFamily: 'var(--font-mono)', minWidth: 0 }}>{fp}</span>
+      {confirming ? (
+        <>
+          <button
+            type="button"
+            onClick={handleForget}
+            disabled={busy}
+            title="Remove the pinned key. The next web-terminal connection asks you to verify and trust the key again."
+            style={{ ...btnBase, padding: '1px 6px', fontSize: '10px', ...btn.danger, flexShrink: 0, opacity: busy ? 0.5 : 1 }}
+          >
+            {busy ? 'Forgetting…' : 'Confirm forget'}
+          </button>
+          <button
+            type="button"
+            onClick={() => setConfirming(false)}
+            disabled={busy}
+            style={{ ...btnBase, padding: '1px 6px', fontSize: '10px', ...btn.ghost, flexShrink: 0 }}
+          >
+            Cancel
+          </button>
+        </>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setConfirming(true)}
+          title="Forget the pinned SSH host key (only after verifying a legitimate key change on the device)"
+          style={{ ...btnBase, padding: '1px 6px', fontSize: '10px', ...btn.ghost, flexShrink: 0 }}
+        >
+          Forget
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ── Two-step reboot button state ──────────────────────────────
+function useRebootStep(onReboot) {
+  const [rebootStep, setRebootStep] = useState(0);
+  const rebootTimerRef = useRef(null);
+  const handleRebootClick = (id) => {
+    if (rebootStep === 0) {
+      setRebootStep(1);
+      rebootTimerRef.current = setTimeout(() => setRebootStep(0), 4000);
+    } else if (rebootStep === 1) {
+      clearTimeout(rebootTimerRef.current);
+      setRebootStep(2);
+      Promise.resolve(onReboot(id)).finally(() => {
+        rebootTimerRef.current = setTimeout(() => setRebootStep(0), 3000);
+      });
+    }
+  };
+  return [rebootStep, handleRebootClick];
+}
+
 // ── Grouped card: multiple tunnels from one client token ─────
-function ClientCard({ tunnels, onDelete, onToggle, onCopy, onReboot, onSsh }) {
+function ClientCard({ tunnels, host, onDelete, onToggle, onCopy, onReboot, onSsh, onForgetHostKey }) {
   const anyActive = tunnels.some(t => t.status === 'active');
   const allInactive = tunnels.every(t => t.status === 'inactive');
   const clientName = tunnels[0].name;
@@ -34,22 +112,11 @@ function ClientCard({ tunnels, onDelete, onToggle, onCopy, onReboot, onSsh }) {
   const overallStatus = anyActive ? 'active' : allInactive ? 'inactive' : tunnels[0].status;
   const statusColor = anyActive ? 'var(--accent)' : overallStatus === 'paused' ? 'var(--amber)' : 'var(--border2)';
 
-  const [rebootStep, setRebootStep] = useState(0);
-  const rebootTimerRef = useRef(null);
+  const [rebootStep, clickReboot] = useRebootStep(onReboot);
 
   // Use any tunnel's id for reboot — they're all on the same device
   const rebootId = tunnels.find(t => t.status === 'active')?.id ?? tunnels[0].id;
-
-  const handleRebootClick = () => {
-    if (rebootStep === 0) {
-      setRebootStep(1);
-      rebootTimerRef.current = setTimeout(() => setRebootStep(0), 4000);
-    } else if (rebootStep === 1) {
-      clearTimeout(rebootTimerRef.current);
-      setRebootStep(2);
-      onReboot(rebootId).finally(() => setTimeout(() => setRebootStep(0), 3000));
-    }
-  };
+  const handleRebootClick = () => clickReboot(rebootId);
 
   return (
     <div style={{
@@ -91,7 +158,7 @@ function ClientCard({ tunnels, onDelete, onToggle, onCopy, onReboot, onSsh }) {
             const isWeb = tunnel.protocol === 'http';
             const isWebPort = !isSsh && tunnel.protocol === 'tcp' && tunnel.allocatedPort;
             const webUrl = isWebPort
-              ? `http://${window.location.hostname}:${tunnel.allocatedPort}`
+              ? `http://${host}:${tunnel.allocatedPort}`
               : tunnel.publicUrl;
 
             return (
@@ -135,7 +202,7 @@ function ClientCard({ tunnels, onDelete, onToggle, onCopy, onReboot, onSsh }) {
                       <Terminal size={10} /> SSH
                     </button>
                   )}
-                  {isActive && (isWeb || isWebPort) && webUrl && (
+                  {isActive && (isWeb || isWebPort) && isHttpUrl(webUrl) && (
                     <a
                       href={webUrl}
                       target="_blank"
@@ -149,7 +216,7 @@ function ClientCard({ tunnels, onDelete, onToggle, onCopy, onReboot, onSsh }) {
                     <button
                       onClick={() => onCopy(
                         tunnel.protocol === 'tcp' && tunnel.allocatedPort
-                          ? `ssh user@${window.location.hostname} -p ${tunnel.allocatedPort}`
+                          ? `ssh user@${host} -p ${tunnel.allocatedPort}`
                           : tunnel.publicUrl
                       )}
                       title="Copy"
@@ -175,6 +242,7 @@ function ClientCard({ tunnels, onDelete, onToggle, onCopy, onReboot, onSsh }) {
                     <Trash2 size={10} />
                   </button>
                 </div>
+                <HostKeyRow tunnel={tunnel} onForget={onForgetHostKey} />
               </div>
             );
           })}
@@ -184,7 +252,8 @@ function ClientCard({ tunnels, onDelete, onToggle, onCopy, onReboot, onSsh }) {
         <div className="flex items-center gap-2">
           <button
             onClick={handleRebootClick}
-            title={rebootStep === 1 ? 'Click again to confirm reboot' : 'Reboot device'}
+            disabled={rebootStep === 2}
+            title={rebootStep === 1 ? 'Click again to send the reboot command' : REBOOT_HINT}
             style={{
               ...btnBase,
               ...(rebootStep === 1
@@ -195,8 +264,9 @@ function ClientCard({ tunnels, onDelete, onToggle, onCopy, onReboot, onSsh }) {
             }}
           >
             <RotateCcw size={11} />
-            {rebootStep === 1 ? 'Confirm?' : rebootStep === 2 ? 'Rebooting…' : 'Reboot Device'}
+            {rebootStep === 1 ? 'Confirm reboot?' : rebootStep === 2 ? 'Sending…' : 'Reboot Device'}
           </button>
+          <span className="text-xs" style={{ color: 'var(--text-dim)' }}>Works only if remote reboot is enabled on the device (--allow-reboot).</span>
         </div>
       </div>
     </div>
@@ -204,25 +274,12 @@ function ClientCard({ tunnels, onDelete, onToggle, onCopy, onReboot, onSsh }) {
 }
 
 // ── Single tunnel card ────────────────────────────────────────
-function TunnelCard({ tunnel, onDelete, onToggle, onCopy, onReboot, onSsh }) {
+function TunnelCard({ tunnel, host, onDelete, onToggle, onCopy, onReboot, onSsh, onForgetHostKey }) {
   const isActive = tunnel.status === 'active';
   const isInactive = tunnel.status === 'inactive';
   const isPaused = tunnel.status === 'paused';
-  const [rebootStep, setRebootStep] = useState(0);
-  const rebootTimerRef = useRef(null);
-
-  const handleRebootClick = () => {
-    if (rebootStep === 0) {
-      setRebootStep(1);
-      rebootTimerRef.current = setTimeout(() => setRebootStep(0), 4000);
-    } else if (rebootStep === 1) {
-      clearTimeout(rebootTimerRef.current);
-      setRebootStep(2);
-      onReboot(tunnel.id).finally(() => {
-        setTimeout(() => setRebootStep(0), 3000);
-      });
-    }
-  };
+  const [rebootStep, clickReboot] = useRebootStep(onReboot);
+  const handleRebootClick = () => clickReboot(tunnel.id);
 
   const statusColor = isActive ? 'var(--accent)' : isPaused ? 'var(--amber)' : isInactive ? 'var(--border2)' : 'var(--red)';
   const statusLabel = isInactive ? 'disconnected' : tunnel.status;
@@ -272,9 +329,10 @@ function TunnelCard({ tunnel, onDelete, onToggle, onCopy, onReboot, onSsh }) {
                 background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: '8px',
                 color: 'var(--text-dim)', fontFamily: 'var(--font-mono)',
               }}>
-                ssh user@{window.location.hostname} -p {tunnel.allocatedPort}
+                ssh user@{host} -p {tunnel.allocatedPort}
               </div>
             )}
+            <HostKeyRow tunnel={tunnel} onForget={onForgetHostKey} />
           </div>
         ) : (
           <div className="mb-4 flex items-center gap-2 px-3 py-2.5 text-sm" style={{
@@ -310,7 +368,7 @@ function TunnelCard({ tunnel, onDelete, onToggle, onCopy, onReboot, onSsh }) {
           <button
             onClick={() => onCopy(
               tunnel.protocol === 'tcp' && tunnel.allocatedPort
-                ? `ssh user@${window.location.hostname} -p ${tunnel.allocatedPort}`
+                ? `ssh user@${host} -p ${tunnel.allocatedPort}`
                 : tunnel.publicUrl
             )}
             style={btn.ghost}
@@ -330,7 +388,8 @@ function TunnelCard({ tunnel, onDelete, onToggle, onCopy, onReboot, onSsh }) {
               </button>
               <button
                 onClick={handleRebootClick}
-                title={rebootStep === 1 ? 'Click again to confirm reboot' : 'Reboot device'}
+                disabled={rebootStep === 2}
+                title={rebootStep === 1 ? 'Click again to send the reboot command' : REBOOT_HINT}
                 style={{
                   ...btnBase,
                   ...(rebootStep === 1
@@ -341,7 +400,7 @@ function TunnelCard({ tunnel, onDelete, onToggle, onCopy, onReboot, onSsh }) {
                 }}
               >
                 <RotateCcw size={11} />
-                {rebootStep === 1 ? 'Confirm?' : rebootStep === 2 ? 'Rebooting…' : 'Reboot'}
+                {rebootStep === 1 ? 'Confirm reboot?' : rebootStep === 2 ? 'Sending…' : 'Reboot'}
               </button>
             </>
           ) : isInactive ? (
@@ -358,11 +417,18 @@ function TunnelCard({ tunnel, onDelete, onToggle, onCopy, onReboot, onSsh }) {
           <button
             onClick={() => onDelete(tunnel.id)}
             className="ml-auto"
+            title="Delete tunnel"
+            aria-label="Delete tunnel"
             style={btn.danger}
           >
             <Trash2 size={11} />
           </button>
         </div>
+        {isActive && (
+          <p className="mt-2 text-xs" style={{ color: 'var(--text-dim)' }}>
+            Reboot works only if remote reboot is enabled on the device (--allow-reboot).
+          </p>
+        )}
       </div>
     </div>
   );
@@ -393,31 +459,49 @@ function groupTunnels(tunnels) {
 }
 
 export default function Tunnels() {
-  const [tunnels, setTunnels] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const { data, error: loadError, loading, refreshing, refresh } = usePolling(getTunnels, 5000);
+  const tunnels = data || [];
+  const { config } = useServerConfig();
+  const host = publicHostname(config);
   const [copied, setCopied] = useState(null);
-  const [refreshing, setRefreshing] = useState(false);
+  const [notice, setNotice] = useState(null); // { tone, text }
   const [sshTunnel, setSshTunnel] = useState(null);
-  const intervalRef = useRef(null);
 
-  const load = useCallback(async (showSpinner) => {
-    if (showSpinner) setRefreshing(true);
-    const data = await getTunnels();
-    setTunnels(data);
-    setLoading(false);
-    if (showSpinner) setTimeout(() => setRefreshing(false), 300);
-  }, []);
-
-  useEffect(() => {
-    load(false);
-    intervalRef.current = setInterval(() => load(false), 5000);
-    return () => clearInterval(intervalRef.current);
-  }, [load]);
-
-  const handleCopy = (url) => {
-    copyToClipboard(url);
-    setCopied(url);
+  const handleCopy = (text) => {
+    if (!text) return;
+    copyToClipboard(text);
+    setCopied(text);
     setTimeout(() => setCopied(null), 2000);
+  };
+
+  // Run a mutation, surface its error, refresh the list. Resolves true on success.
+  const runAction = async (fn, successText) => {
+    try {
+      await fn();
+      setNotice(successText ? { tone: 'info', text: successText } : null);
+      return true;
+    } catch (err) {
+      setNotice({ tone: 'error', text: err?.message || 'Request failed' });
+      return false;
+    } finally {
+      refresh();
+    }
+  };
+
+  const handlers = {
+    host,
+    onDelete: (id) => runAction(() => deleteTunnel(id)),
+    onToggle: (id) => runAction(() => toggleTunnel(id)),
+    onCopy: handleCopy,
+    onReboot: (id) => runAction(
+      () => rebootTunnel(id),
+      'Reboot command sent. The device reboots only if remote reboot is enabled on it (install-client.sh --allow-reboot).',
+    ),
+    onSsh: (t) => setSshTunnel(t),
+    onForgetHostKey: (id) => runAction(
+      () => forgetHostKey(id),
+      'Pinned host key removed. The next web-terminal connection will ask you to verify the device key.',
+    ),
   };
 
   if (loading) {
@@ -436,7 +520,8 @@ export default function Tunnels() {
       {sshTunnel && (
         <SshTerminalModal
           tunnel={sshTunnel}
-          onClose={() => setSshTunnel(null)}
+          onClose={() => { setSshTunnel(null); refresh(); }}
+          onHostKeyChange={refresh}
         />
       )}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -447,7 +532,7 @@ export default function Tunnels() {
           </p>
         </div>
         <button
-          onClick={() => load(true)}
+          onClick={refresh}
           style={{
             display: 'inline-flex', alignItems: 'center', gap: '6px',
             padding: '7px 16px', fontFamily: 'inherit', fontSize: '13px',
@@ -461,6 +546,13 @@ export default function Tunnels() {
           Refresh
         </button>
       </div>
+
+      {loadError && (
+        <Banner tone="error">Could not refresh tunnels: {loadError.message}</Banner>
+      )}
+      {notice && (
+        <Banner tone={notice.tone} onDismiss={() => setNotice(null)}>{notice.text}</Banner>
+      )}
 
       {/* Copied toast */}
       {copied && (
@@ -478,7 +570,7 @@ export default function Tunnels() {
         </div>
       )}
 
-      {totalCards === 0 ? (
+      {!data ? null : totalCards === 0 ? (
         <div className="flex flex-col items-center justify-center py-20" style={{
           border: '2px dashed var(--border)',
           borderRadius: '10px',
@@ -492,22 +584,14 @@ export default function Tunnels() {
             <ClientCard
               key={clientId}
               tunnels={group}
-              onDelete={async (id) => { await deleteTunnel(id); load(); }}
-              onToggle={async (id) => { await toggleTunnel(id); load(); }}
-              onCopy={handleCopy}
-              onReboot={async (id) => { await rebootTunnel(id); }}
-              onSsh={(t) => setSshTunnel(t)}
+              {...handlers}
             />
           ))}
           {ungrouped.map((tunnel) => (
             <TunnelCard
               key={tunnel.id}
               tunnel={tunnel}
-              onDelete={async (id) => { await deleteTunnel(id); load(); }}
-              onToggle={async (id) => { await toggleTunnel(id); load(); }}
-              onCopy={handleCopy}
-              onReboot={async (id) => { await rebootTunnel(id); }}
-              onSsh={(t) => setSshTunnel(t)}
+              {...handlers}
             />
           ))}
         </div>

@@ -1,86 +1,184 @@
-const EMPTY_STATS = {
-  activeTunnels: 0,
-  activeConnections: 0,
-  totalConnections: 0,
-  dataTransferred: '0 B',
-  uptime: '0s',
-  activeTokens: 0,
-  liveSessions: 0,
-  chartData: [],
-  recentActivity: [],
-};
+/**
+ * TunnelVault dashboard API client.
+ *
+ * Authentication is cookie based: POST /api/auth/login sets an HttpOnly session
+ * cookie and every request below is sent with `credentials: 'same-origin'`.
+ * The admin AUTH_TOKEN is never stored in the browser (no localStorage, no
+ * query strings). A 401 from any endpoint dispatches UNAUTHORIZED_EVENT so the
+ * AuthGate can send the user back to the login screen.
+ */
 
-// ── Auth helpers ──
-export function getAuthToken() {
-  return localStorage.getItem('tunnelvault_auth_token') || '';
+// Key used by old dashboard versions to persist the admin token in localStorage.
+export const LEGACY_AUTH_TOKEN_KEY = 'tunnelvault_auth_token';
+
+// Fired on window whenever the API answers 401 (session expired / logged out).
+export const UNAUTHORIZED_EVENT = 'tunnelvault:unauthorized';
+
+const MAX_ERROR_MESSAGE_LENGTH = 300;
+
+/** Remove the admin token that older dashboard versions left in browser storage. */
+export function purgeLegacyAuthToken() {
+  try { window.localStorage.removeItem(LEGACY_AUTH_TOKEN_KEY); } catch { /* storage unavailable */ }
+  try { window.sessionStorage.removeItem(LEGACY_AUTH_TOKEN_KEY); } catch { /* storage unavailable */ }
 }
 
-export function setAuthToken(token) {
-  localStorage.setItem('tunnelvault_auth_token', token);
-}
-
-export function clearAuthToken() {
-  localStorage.removeItem('tunnelvault_auth_token');
-}
-
-async function request(url, options = {}) {
-  try {
-    const authToken = getAuthToken();
-    const headers = {
-      'Content-Type': 'application/json',
-      ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
-      ...options.headers,
-    };
-    const res = await fetch(url, { ...options, headers });
-    if (res.status === 401) {
-      // Return special error so UI can show login prompt
-      return { __unauthorized: true };
-    }
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json();
-  } catch {
-    return null;
+export class ApiError extends Error {
+  /**
+   * @param {string} message human readable message (safe to show in the UI)
+   * @param {{ status?: number, data?: any }} [info] status 0 = network error
+   */
+  constructor(message, { status = 0, data = null } = {}) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.data = data;
   }
 }
 
-export function isUnauthorized(data) {
-  return data && data.__unauthorized === true;
+function describeStatus(status) {
+  if (status === 401) return 'Your session has expired. Please sign in again.';
+  if (status === 403) return 'The server refused this request (HTTP 403).';
+  if (status === 404) return 'Not found (HTTP 404).';
+  if (status === 429) return 'Too many requests. Please wait a moment and try again.';
+  if (status >= 500) return `The server reported an error (HTTP ${status}).`;
+  return `Request failed (HTTP ${status}).`;
 }
 
-// ── Tunnel endpoints ──
+function serverErrorMessage(data) {
+  if (!data || typeof data !== 'object') return null;
+  const msg = typeof data.error === 'string' ? data.error
+    : typeof data.message === 'string' ? data.message
+    : null;
+  if (!msg) return null;
+  return msg.length > MAX_ERROR_MESSAGE_LENGTH ? msg.slice(0, MAX_ERROR_MESSAGE_LENGTH) + '…' : msg;
+}
+
+/**
+ * Perform an API request. Resolves with the parsed JSON body (or null for an
+ * empty body, e.g. 204). Rejects with ApiError for network errors (status 0),
+ * non-2xx responses (message taken from the server's {error} when present) and
+ * non-JSON success bodies.
+ */
+export async function apiFetch(path, { method = 'GET', body, signal, notifyUnauthorized = true } = {}) {
+  const headers = { Accept: 'application/json' };
+  const init = { method, headers, credentials: 'same-origin', cache: 'no-store', signal };
+  if (body !== undefined) {
+    headers['Content-Type'] = 'application/json';
+    init.body = JSON.stringify(body);
+  }
+
+  let res;
+  try {
+    res = await fetch(path, init);
+  } catch (err) {
+    if (err && err.name === 'AbortError') throw err;
+    throw new ApiError('Cannot reach the server. Check your connection and try again.', { status: 0 });
+  }
+
+  let text = '';
+  try { text = await res.text(); } catch { text = ''; }
+  let data = null;
+  let parsed = false;
+  if (text) {
+    try { data = JSON.parse(text); parsed = true; } catch { data = null; }
+  }
+
+  if (!res.ok) {
+    if (res.status === 401 && notifyUnauthorized) {
+      window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT));
+    }
+    throw new ApiError(serverErrorMessage(data) || describeStatus(res.status), { status: res.status, data });
+  }
+  if (text && !parsed) {
+    throw new ApiError('Unexpected response from the server.', { status: res.status });
+  }
+  return data;
+}
+
+function listFrom(data, key) {
+  if (Array.isArray(data)) return data;
+  if (data && Array.isArray(data[key])) return data[key];
+  return [];
+}
+
+const enc = encodeURIComponent;
+
+// ── Auth ──
+
+/** GET /api/auth/session -> { authenticated: bool, authRequired: bool } */
+export async function getSession() {
+  const data = await apiFetch('/api/auth/session', { notifyUnauthorized: false });
+  if (!data || typeof data.authenticated !== 'boolean') {
+    throw new ApiError('Unexpected response from the server.', { status: 200 });
+  }
+  return { authenticated: data.authenticated, authRequired: data.authRequired !== false };
+}
+
+/** POST /api/auth/login — the server answers with an HttpOnly session cookie. */
+export async function login(token) {
+  return apiFetch('/api/auth/login', { method: 'POST', body: { token }, notifyUnauthorized: false });
+}
+
+/** POST /api/auth/logout — clears the session cookie server side. */
+export async function logout() {
+  clearConfigCache();
+  return apiFetch('/api/auth/logout', { method: 'POST', notifyUnauthorized: false });
+}
+
+// ── Server config ──
+
+let configPromise = null;
+
+/** GET /api/config (cached for the lifetime of the page; failures are not cached). */
+export function getConfig({ force = false } = {}) {
+  if (force || !configPromise) {
+    const p = apiFetch('/api/config');
+    configPromise = p;
+    p.catch(() => { if (configPromise === p) configPromise = null; });
+  }
+  return configPromise;
+}
+
+export function clearConfigCache() {
+  configPromise = null;
+}
+
+// ── Stats ──
+
+function formatBytes(bytes) {
+  if (bytes > 1e9) return (bytes / 1e9).toFixed(2) + ' GB';
+  if (bytes > 1e6) return (bytes / 1e6).toFixed(1) + ' MB';
+  if (bytes > 1e3) return (bytes / 1e3).toFixed(0) + ' KB';
+  return bytes + ' B';
+}
+
+function formatActivityTime(ts) {
+  if (!ts || typeof ts !== 'string') return '–';
+  const d = new Date(ts.endsWith('Z') ? ts : ts + 'Z');
+  if (Number.isNaN(d.getTime())) return '–';
+  return d.toLocaleString('en-US', { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
 
 export async function getStats() {
-  const data = await request('/api/stats');
-  if (!data || isUnauthorized(data)) return EMPTY_STATS;
+  const data = (await apiFetch('/api/stats')) || {};
 
-  // Normalize real API response to match frontend expectations
-  const bytes = data.bytesTransferred || 0;
-  let dataTransferred;
-  if (bytes > 1e9) dataTransferred = (bytes / 1e9).toFixed(2) + ' GB';
-  else if (bytes > 1e6) dataTransferred = (bytes / 1e6).toFixed(1) + ' MB';
-  else if (bytes > 1e3) dataTransferred = (bytes / 1e3).toFixed(0) + ' KB';
-  else dataTransferred = bytes + ' B';
-
-  const chartData = (data.connectionHistory || []).map((p) => ({
+  const chartData = (Array.isArray(data.connectionHistory) ? data.connectionHistory : []).map((p) => ({
     time: new Date(p.time).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
     connections: p.count,
   }));
 
-  // Build recent activity from recent sessions
-  const recentActivity = (data.recent_sessions || []).slice(0, 8).map((s, idx) => ({
-    id: s.id || idx,
+  const recentActivity = (Array.isArray(data.recent_sessions) ? data.recent_sessions : []).slice(0, 8).map((s, idx) => ({
+    id: s.id ?? idx,
     type: s.disconnected_at ? 'session_ended' : 'session_started',
-    message: `${s.token_label || s.token || 'unknown'} ${s.disconnected_at ? 'disconnected' : 'connected'} from ${s.client_ip || 'unknown'}`,
-    time: s.disconnected_at
-      ? new Date(s.disconnected_at.endsWith('Z') ? s.disconnected_at : s.disconnected_at + 'Z').toLocaleString('en-US', { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' })
-      : new Date(s.connected_at.endsWith('Z') ? s.connected_at : s.connected_at + 'Z').toLocaleString('en-US', { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' }),
+    message: `${s.token_label || s.tunnel_name || s.token || 'unknown'} ${s.disconnected_at ? 'disconnected' : 'connected'} from ${s.client_ip || 'unknown'}`,
+    time: formatActivityTime(s.disconnected_at || s.connected_at),
   }));
 
   return {
     activeTunnels: data.activeTunnels ?? 0,
     activeConnections: data.activeConnections ?? 0,
     totalConnections: data.totalConnections ?? 0,
-    dataTransferred,
+    dataTransferred: formatBytes(Number(data.bytesTransferred) || 0),
     uptime: data.uptime || '0s',
     activeTokens: data.active_tokens ?? 0,
     liveSessions: data.live_sessions ?? 0,
@@ -89,104 +187,71 @@ export async function getStats() {
   };
 }
 
+// ── Tunnels ──
+
 export async function getTunnels() {
-  const data = await request('/api/tunnels');
-  if (data && !isUnauthorized(data)) {
-    const tunnels = Array.isArray(data) ? data : data.tunnels || [];
-    return tunnels;
-  }
-  return [];
+  return listFrom(await apiFetch('/api/tunnels'), 'tunnels');
 }
 
-export async function createTunnel(tunnel) {
-  const data = await request('/api/tunnels', {
-    method: 'POST',
-    body: JSON.stringify(tunnel),
-  });
-  return data || null;
+export function deleteTunnel(id) {
+  return apiFetch(`/api/tunnels/${enc(id)}`, { method: 'DELETE' });
 }
 
-export async function deleteTunnel(id) {
-  const data = await request(`/api/tunnels/${id}`, { method: 'DELETE' });
-  return data || null;
+export function toggleTunnel(id) {
+  return apiFetch(`/api/tunnels/${enc(id)}/toggle`, { method: 'POST' });
 }
 
-export async function toggleTunnel(id) {
-  const data = await request(`/api/tunnels/${id}/toggle`, { method: 'POST' });
-  return data || null;
+export function rebootTunnel(id) {
+  return apiFetch(`/api/tunnels/${enc(id)}/reboot`, { method: 'POST' });
 }
 
-export async function rebootTunnel(id) {
-  const data = await request(`/api/tunnels/${id}/reboot`, { method: 'POST' });
-  return data || null;
+/** Forget the pinned SSH host key of a tunnel (next web-terminal connect re-verifies). */
+export function forgetHostKey(id) {
+  return apiFetch(`/api/tunnels/${enc(id)}/hostkey`, { method: 'DELETE' });
 }
 
 export async function getConnections() {
-  const data = await request('/api/connections');
-  if (data && !isUnauthorized(data)) {
-    const connections = Array.isArray(data) ? data : data.connections || [];
-    return connections;
-  }
-  return [];
+  return listFrom(await apiFetch('/api/connections'), 'connections');
 }
 
-// ── SSH Token endpoints ──
+// ── Device tokens ──
 
 export async function getTokens() {
-  const data = await request('/api/tokens');
-  if (data && !isUnauthorized(data)) {
-    const tokens = Array.isArray(data) ? data : data.tokens || [];
-    return tokens;
-  }
-  return [];
+  return listFrom(await apiFetch('/api/tokens'), 'tokens');
 }
 
-export async function createToken(tokenData) {
-  const data = await request('/api/tokens', {
-    method: 'POST',
-    body: JSON.stringify(tokenData),
-  });
-  return data || null;
+export function createToken(tokenData) {
+  return apiFetch('/api/tokens', { method: 'POST', body: tokenData });
 }
 
-export async function getTokenDetail(token) {
-  const data = await request(`/api/tokens/${token}`);
-  return data || null;
+export function getTokenDetail(token) {
+  return apiFetch(`/api/tokens/${enc(token)}`);
 }
 
-export async function updateToken(token, updates) {
-  const data = await request(`/api/tokens/${token}`, {
-    method: 'PATCH',
-    body: JSON.stringify(updates),
-  });
-  return data || null;
+export function updateToken(token, updates) {
+  return apiFetch(`/api/tokens/${enc(token)}`, { method: 'PATCH', body: updates });
 }
 
-export async function deleteToken(token) {
-  const data = await request(`/api/tokens/${token}`, { method: 'DELETE' });
-  return data || null;
+/** Store (PEM string) or clear ('') the token's SSH private key for the web terminal. */
+export function setTokenPrivateKey(token, privateKey) {
+  return updateToken(token, { private_key: privateKey });
 }
 
-// ── SSH Session endpoints ──
-
-// ── SSH WebSocket URL ──
-
-export function getSshWsUrl(tunnelId) {
-  const token = getAuthToken();
-  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-  const host = window.location.host;
-  const params = new URLSearchParams({ tunnelId });
-  if (token) params.set('auth_token', token);
-  return `${proto}://${host}/ws/ssh?${params.toString()}`;
+export function deleteToken(token) {
+  return apiFetch(`/api/tokens/${enc(token)}`, { method: 'DELETE' });
 }
+
+// ── Sessions ──
 
 export async function getSessions(activeOnly = false) {
-  const url = activeOnly ? '/api/sessions?active=1' : '/api/sessions';
-  const data = await request(url);
-  if (data && !isUnauthorized(data)) {
-    // API returns {sessions: [...]} — unwrap if needed
-    const sessions = Array.isArray(data) ? data : data.sessions || [];
-    return sessions;
-  }
-  return [];
+  return listFrom(await apiFetch(activeOnly ? '/api/sessions?active=1' : '/api/sessions'), 'sessions');
+}
+
+// ── Web SSH terminal ──
+
+/** WebSocket URL of the browser SSH terminal. Authenticated by the session cookie. */
+export function getSshWsUrl(tunnelId) {
+  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  const params = new URLSearchParams({ tunnelId: String(tunnelId) });
+  return `${proto}://${window.location.host}/ws/ssh?${params.toString()}`;
 }

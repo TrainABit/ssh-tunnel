@@ -40,6 +40,13 @@ const STREAM_WRITE_HIGH_WATER = 256 * 1024;   // public->device buffering before
 // Hard cap on data buffered for one connection that the peer keeps sending
 // although we asked it to pause (or a legacy v1 peer that cannot be paused).
 const STREAM_MAX_BUFFERED = 32 * 1024 * 1024;
+// ...and on all connections of one device WebSocket together (a device with
+// many slow public readers, or a peer that ignores tcp-pause on many streams).
+const CHANNEL_MAX_BUFFERED = 64 * 1024 * 1024;
+const BUDGET_CHECK_STEP = 1024 * 1024;
+// Concurrent tunnel streams per device connection (memory bound; each stream
+// is one public TCP connection or one proxied HTTP request).
+const MAX_STREAMS_PER_CHANNEL = 4096;
 
 const CLOSE_CODES = Object.freeze({
   TOKEN_REVOKED: 4000,
@@ -251,6 +258,7 @@ class TunnelStream extends Duplex {
     this._timeoutMs = 0;
     this._timer = null;
     this._lastActivity = Date.now();
+    this._budgetMark = 0;          // readableLength (in MiB) at the last channel budget check
   }
 
   // ── Writable side ──
@@ -326,8 +334,8 @@ class TunnelStream extends Duplex {
     this._touch();
     if (this._onTraffic) this._safeTraffic(0, n);
     if (this.push(payload)) return;
-    if (this.readableLength > this.channel.streamMaxBuffered) {
-      log.warn('Tunnel peer ignored flow control; dropping connection', {
+    if (this.readableLength > this.channel.streamMaxBuffered || this.channel._overBudget(this)) {
+      log.warn('Tunnel peer ignored flow control or buffer budget exceeded; dropping connection', {
         connId: this.connId, tunnelId: this.tunnelId, buffered: this.readableLength,
       });
       if (this.channel.flowControl) this.channel._reportViolation('Flow control ignored');
@@ -414,6 +422,8 @@ class TunnelChannel {
     this.lowWater = Math.min(opts.lowWater || WS_LOW_WATER, this.highWater);
     this.maxFramePayload = Math.min(opts.maxFramePayload || MAX_FRAME_PAYLOAD, MAX_FRAME_PAYLOAD);
     this.streamMaxBuffered = opts.streamMaxBuffered || STREAM_MAX_BUFFERED;
+    this.channelMaxBuffered = opts.channelMaxBuffered || CHANNEL_MAX_BUFFERED;
+    this.maxStreams = opts.maxStreams || MAX_STREAMS_PER_CHANNEL;
     this.streamOptions = {
       readableHighWaterMark: opts.readableHighWaterMark,
       writableHighWaterMark: opts.writableHighWaterMark,
@@ -437,6 +447,10 @@ class TunnelChannel {
   /** Open a new tunnel stream: sends tcp-open and returns the stream (or null). */
   openStream({ tunnelId, localPort, onTraffic } = {}) {
     if (!this.isOpen) return null;
+    if (this.streams.size >= this.maxStreams) {
+      log.warn('Too many concurrent tunnel streams on one device connection', { tunnelId, limit: this.maxStreams });
+      return null;
+    }
     const connId = randomUUID();
     const stream = new TunnelStream(this, connId, { tunnelId, localPort, onTraffic, ...this.streamOptions });
     this.streams.set(connId, stream);
@@ -492,6 +506,23 @@ class TunnelChannel {
       this._waiting.delete(stream);
       stream._retryWrite();
     }
+  }
+
+  /**
+   * Is the data buffered for all streams of this channel above the budget?
+   * Only evaluated (O(streams)) each time `stream` grows past another MiB
+   * above its high-water mark, so tiny frames cannot make it expensive.
+   */
+  _overBudget(stream) {
+    const mark = Math.floor(stream.readableLength / BUDGET_CHECK_STEP);
+    if (mark <= stream._budgetMark) {
+      stream._budgetMark = mark;
+      return false;
+    }
+    stream._budgetMark = mark;
+    let total = 0;
+    for (const s of this.streams.values()) total += s.readableLength;
+    return total > this.channelMaxBuffered;
   }
 
   _reportViolation(reason) {
@@ -598,6 +629,8 @@ module.exports = {
   STREAM_READ_HIGH_WATER,
   STREAM_WRITE_HIGH_WATER,
   STREAM_MAX_BUFFERED,
+  CHANNEL_MAX_BUFFERED,
+  MAX_STREAMS_PER_CHANNEL,
   CLOSE_CODES,
   ERROR_CODES,
   TUNNEL_NOT_FOUND_MESSAGE,

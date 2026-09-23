@@ -18,8 +18,11 @@ export const FRAME_HEADER_LENGTH = 1 + CONN_ID_LENGTH;
 
 /** Senders never exceed this payload size per frame (binary DATA or legacy tcp-data). */
 export const MAX_FRAME_PAYLOAD = 256 * 1024;
-/** Raw bytes per legacy JSON tcp-data message (base64 of this stays <= MAX_FRAME_PAYLOAD). */
-export const MAX_LEGACY_CHUNK = 192 * 1024;
+/**
+ * Raw bytes per legacy JSON tcp-data message: base64 (4/3) plus the JSON envelope stays
+ * below MAX_FRAME_PAYLOAD.
+ */
+export const MAX_LEGACY_CHUNK = 190 * 1024;
 
 /** Stop reading local sockets while ws.bufferedAmount is above this ... */
 export const WS_HIGH_WATER_MARK = 8 * 1024 * 1024;
@@ -154,7 +157,9 @@ export function buildWsUrl(serverUrl) {
   try {
     u = new URL(String(serverUrl));
   } catch {
-    throw new TypeError(`Invalid server URL: ${sanitizeText(serverUrl, 100)}`);
+    // Never echo the query string or userinfo: it may carry a token.
+    const shown = String(serverUrl).split(/[?#]/)[0].replace(/\/\/[^/@]*@/, '//');
+    throw new TypeError(`Invalid server URL: ${sanitizeText(shown, 100)}`);
   }
   if (u.protocol === 'http:') u.protocol = 'ws:';
   else if (u.protocol === 'https:') u.protocol = 'wss:';

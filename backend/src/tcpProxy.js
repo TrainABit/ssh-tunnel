@@ -41,8 +41,8 @@ class TcpProxy {
       this.portMin = 10000;
       this.portMax = 10999;
     }
-    // TCP_BIND_HOST unset = all interfaces (IPv4 + IPv6 where available).
-    this.bindHost = options.bindHost || process.env.TCP_BIND_HOST || undefined;
+    // Interface for the public TCP listeners (TCP_BIND_HOST, default all IPv4 interfaces).
+    this.bindHost = options.bindHost || (process.env.TCP_BIND_HOST || '').trim() || '0.0.0.0';
     this.maxConnectionsPerTunnel = options.maxConnectionsPerTunnel || envInt('TCP_MAX_CONNECTIONS_PER_TUNNEL', 1000);
     this._starting = new Map();   // tunnelId -> { ws } of the start in progress (newest wins)
     this._lastSeen = new Map();   // token -> ms of last tokens.last_seen write
@@ -54,15 +54,30 @@ class TcpProxy {
     }
   }
 
-  _allocatePort(preferred, exclude) {
+  /** Ports remembered as the stable port of OTHER tunnels (offline devices keep theirs if possible). */
+  _reservedPorts(tunnelId) {
+    const reserved = new Set();
+    if (!this.tunnelManager || !(this.tunnelManager.tunnels instanceof Map)) return reserved;
+    for (const t of this.tunnelManager.tunnels.values()) {
+      if (t.id === tunnelId || t.protocol !== 'tcp') continue;
+      const p = t.preferredPort || t.allocatedPort;
+      if (p) reserved.add(p);
+    }
+    return reserved;
+  }
+
+  _allocatePort(preferred, exclude, tunnelId) {
     // Try the preferred port first (e.g., previously used port for this tunnel)
     if (preferred && preferred >= this.portMin && preferred <= this.portMax
         && !this.usedPorts.has(preferred) && !exclude.has(preferred)) {
       this.usedPorts.add(preferred);
       return preferred;
     }
-    for (let p = this.portMin; p <= this.portMax; p++) {
-      if (!this.usedPorts.has(p) && !exclude.has(p)) {
+    // Then a port nobody else remembers, then any free port.
+    const reserved = this._reservedPorts(tunnelId);
+    for (const skipReserved of [true, false]) {
+      for (let p = this.portMin; p <= this.portMax; p++) {
+        if (this.usedPorts.has(p) || exclude.has(p) || (skipReserved && reserved.has(p))) continue;
         this.usedPorts.add(p);
         return p;
       }
@@ -120,7 +135,7 @@ class TcpProxy {
     let port = null;
     let preferredAttempts = 0;
     for (;;) {
-      port = this._allocatePort(preferredPort || null, tried);
+      port = this._allocatePort(preferredPort || null, tried, tunnelId);
       if (port === null) {
         log.error('No TCP ports available', { tunnelId });
         return null;

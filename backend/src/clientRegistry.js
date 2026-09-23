@@ -92,6 +92,14 @@ class ClientRegistry {
     } catch (err) {
       log.warn('Error closing WebSocket', { error: err.message });
     }
+    // Drop every tunnelled connection right away instead of waiting for the
+    // closing handshake (public listeners refuse new connections as soon as
+    // the socket is no longer OPEN).
+    if (ws.tunnelChannel && typeof ws.tunnelChannel.close === 'function') {
+      try { ws.tunnelChannel.close(); } catch (err) {
+        log.warn('Error closing tunnel channel', { error: err.message });
+      }
+    }
     if (ws.readyState === 3) return;
     const timer = setTimeout(() => {
       try { ws.terminate(); } catch {}

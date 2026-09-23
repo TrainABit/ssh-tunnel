@@ -1,25 +1,38 @@
-import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { RefreshCw, Download, Search } from 'lucide-react';
 import { getSessions } from '../services/api';
 import { formatGeo } from '../utils/geo';
+import usePolling from '../hooks/usePolling';
+import Banner from '../components/Banner';
+
+function parseTs(ts) {
+  if (!ts || typeof ts !== 'string') return null;
+  const d = new Date(ts.endsWith('Z') ? ts : ts + 'Z');
+  return Number.isNaN(d.getTime()) ? null : d;
+}
 
 function formatTimestamp(ts) {
-  if (!ts || typeof ts !== 'string') return '–';
-  const d = new Date(ts.endsWith('Z') ? ts : ts + 'Z');
+  const d = parseTs(ts);
+  if (!d) return '–';
   return d.toLocaleString('en-US', { month: 'short', day: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
 function formatDuration(start, end) {
-  if (!start || typeof start !== 'string') return '–';
-  const s = new Date(start.endsWith('Z') ? start : start + 'Z');
-  const e = end ? new Date(end.endsWith('Z') ? end : end + 'Z') : new Date();
-  const sec = Math.floor((e - s) / 1000);
+  const s = parseTs(start);
+  if (!s) return '–';
+  const e = parseTs(end) || new Date();
+  const sec = Math.max(0, Math.floor((e - s) / 1000));
   if (sec < 60) return `${sec}s`;
   if (sec < 3600) return `${Math.floor(sec / 60)}m`;
   return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`;
 }
 
 const PAGE_SIZE = 50;
+
+function shortToken(token) {
+  if (!token) return '';
+  return token.length > 12 ? token.slice(0, 12) + '…' : token;
+}
 
 const btnBase = {
   display: 'inline-flex', alignItems: 'center', gap: '6px',
@@ -44,43 +57,31 @@ function exportCsv(sessions) {
   a.href = url;
   a.download = `tunnelvault-sessions-${new Date().toISOString().slice(0, 10)}.csv`;
   a.click();
-  URL.revokeObjectURL(url);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 export default function Sessions() {
-  const [sessions, setSessions] = useState([]);
   const [filter, setFilter] = useState('all');
   const [search, setSearch] = useState('');
   const [dateRange, setDateRange] = useState('all');
   const [page, setPage] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const intervalRef = useRef(null);
 
-  const load = useCallback(async (showSpinner) => {
-    if (showSpinner) setRefreshing(true);
-    const data = await getSessions(filter === 'active');
-    setSessions(data);
-    setLoading(false);
-    if (showSpinner) setTimeout(() => setRefreshing(false), 300);
-  }, [filter]);
+  const loader = useCallback(() => getSessions(filter === 'active'), [filter]);
+  // updatedAt (time of the last successful load) is the reference for the date filter.
+  const { data, error: loadError, loading, refreshing, refresh, updatedAt } = usePolling(loader, 10000);
+  const sessions = useMemo(() => data || [], [data]);
 
-  useEffect(() => {
-    setPage(0);
-    load(false);
-    intervalRef.current = setInterval(() => load(false), 10000);
-    return () => clearInterval(intervalRef.current);
-  }, [load]);
-
-  useEffect(() => { setPage(0); }, [search, dateRange, filter]);
+  const changeFilter = (f) => { setFilter(f); setPage(0); };
+  const changeSearch = (q) => { setSearch(q); setPage(0); };
+  const changeDateRange = (r) => { setDateRange(r); setPage(0); };
 
   const filtered = useMemo(() => {
     let result = sessions;
     if (dateRange !== 'all') {
-      const cutoff = Date.now() - (dateRange === '24h' ? 86400000 : 7 * 86400000);
+      const cutoff = updatedAt - (dateRange === '24h' ? 86400000 : 7 * 86400000);
       result = result.filter(s => {
-        const t = s.connected_at ? new Date(s.connected_at.endsWith('Z') ? s.connected_at : s.connected_at + 'Z').getTime() : 0;
-        return t >= cutoff;
+        const d = parseTs(s.connected_at);
+        return d ? d.getTime() >= cutoff : false;
       });
     }
     if (search.trim()) {
@@ -92,10 +93,11 @@ export default function Sessions() {
       );
     }
     return result;
-  }, [sessions, search, dateRange]);
+  }, [sessions, search, dateRange, updatedAt]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const pageSessions = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  const currentPage = Math.min(page, totalPages - 1);
+  const pageSessions = filtered.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE);
 
   if (loading) {
     return (
@@ -117,13 +119,13 @@ export default function Sessions() {
         <div className="flex items-center gap-2 flex-wrap">
           {/* Date range */}
           {['all', '7d', '24h'].map(d => (
-            <button key={d} onClick={() => setDateRange(d)}
+            <button key={d} onClick={() => changeDateRange(d)}
               style={{ ...btnBase, color: dateRange === d ? 'var(--accent)' : 'var(--text-mid)', borderColor: dateRange === d ? 'var(--accent-dim)' : 'var(--border)', background: dateRange === d ? 'var(--accent-bg)' : 'transparent' }}>
               {d === 'all' ? 'All time' : d === '7d' ? 'Last 7d' : 'Last 24h'}
             </button>
           ))}
           {/* Active filter */}
-          <button onClick={() => setFilter(f => f === 'active' ? 'all' : 'active')}
+          <button onClick={() => changeFilter(filter === 'active' ? 'all' : 'active')}
             style={{ ...btnBase, color: filter === 'active' ? 'var(--amber)' : 'var(--text-mid)', borderColor: filter === 'active' ? 'rgba(240,165,0,0.4)' : 'var(--border)', background: filter === 'active' ? 'rgba(240,165,0,0.08)' : 'transparent' }}>
             Active only
           </button>
@@ -134,7 +136,7 @@ export default function Sessions() {
             <Download size={13} /> CSV
           </button>
           {/* Refresh */}
-          <button onClick={() => load(true)} style={btnBase}
+          <button onClick={refresh} aria-label="Refresh" style={btnBase}
             onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent-dim)'; e.currentTarget.style.color = 'var(--text)'; }}
             onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-mid)'; }}>
             <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />
@@ -149,7 +151,7 @@ export default function Sessions() {
           type="text"
           placeholder="Search by IP, token, or label…"
           value={search}
-          onChange={e => setSearch(e.target.value)}
+          onChange={e => changeSearch(e.target.value)}
           style={{
             width: '100%', background: 'var(--surface)', border: '1px solid var(--border)',
             borderRadius: '8px', color: 'var(--text)', padding: '9px 14px 9px 38px',
@@ -164,8 +166,10 @@ export default function Sessions() {
       <div className="text-sm" style={{ color: 'var(--text-dim)' }}>
         {filtered.length} session{filtered.length !== 1 ? 's' : ''}
         {(search || dateRange !== 'all' || filter !== 'all') ? ' (filtered)' : ''}
-        {totalPages > 1 && ` · page ${page + 1} of ${totalPages}`}
+        {totalPages > 1 && ` · page ${currentPage + 1} of ${totalPages}`}
       </div>
+
+      {loadError && <Banner tone="error">Could not refresh sessions: {loadError.message}</Banner>}
 
       <div style={{
         background: 'var(--surface)',
@@ -193,7 +197,7 @@ export default function Sessions() {
                   </td>
                 </tr>
               ) : pageSessions.map((s) => {
-                const isLive = s.disconnected_at === null;
+                const isLive = !s.disconnected_at;
                 const geo = formatGeo(s.country_code, s.city);
                 return (
                   <tr
@@ -204,15 +208,15 @@ export default function Sessions() {
                   >
                     <td className="px-5 py-3">
                       <div className="text-sm font-medium" style={{ color: 'var(--text)' }}>
-                        {s.token_label || (
+                        {s.token_label || s.tunnel_name || (
                           <span style={{ color: 'var(--blue)', fontFamily: 'var(--font-mono)', fontSize: '12px' }}>
-                            {(s.token || '').length > 12 ? s.token.slice(0, 12) + '…' : s.token || '–'}
+                            {shortToken(s.token) || shortToken(s.tunnel_id) || '–'}
                           </span>
                         )}
                       </div>
-                      {s.token_label && s.token && (
+                      {(s.token_label || s.tunnel_name) && s.token && (
                         <div className="text-xs mt-0.5" style={{ color: 'var(--text-dim)', fontFamily: 'var(--font-mono)' }}>
-                          {s.token.length > 12 ? s.token.slice(0, 12) + '…' : s.token}
+                          {shortToken(s.token)}
                         </div>
                       )}
                     </td>
@@ -262,19 +266,19 @@ export default function Sessions() {
         {totalPages > 1 && (
           <div className="flex items-center justify-between px-5 py-3" style={{ borderTop: '1px solid var(--border)' }}>
             <button
-              onClick={() => setPage(p => Math.max(0, p - 1))}
-              disabled={page === 0}
-              style={{ ...btnBase, opacity: page === 0 ? 0.35 : 1, cursor: page === 0 ? 'default' : 'pointer' }}
+              onClick={() => setPage(Math.max(0, currentPage - 1))}
+              disabled={currentPage === 0}
+              style={{ ...btnBase, opacity: currentPage === 0 ? 0.35 : 1, cursor: currentPage === 0 ? 'default' : 'pointer' }}
             >
               ← Prev
             </button>
             <span className="text-sm" style={{ color: 'var(--text-dim)' }}>
-              {page + 1} / {totalPages}
+              {currentPage + 1} / {totalPages}
             </span>
             <button
-              onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
-              disabled={page >= totalPages - 1}
-              style={{ ...btnBase, opacity: page >= totalPages - 1 ? 0.35 : 1, cursor: page >= totalPages - 1 ? 'default' : 'pointer' }}
+              onClick={() => setPage(Math.min(totalPages - 1, currentPage + 1))}
+              disabled={currentPage >= totalPages - 1}
+              style={{ ...btnBase, opacity: currentPage >= totalPages - 1 ? 0.35 : 1, cursor: currentPage >= totalPages - 1 ? 'default' : 'pointer' }}
             >
               Next →
             </button>
