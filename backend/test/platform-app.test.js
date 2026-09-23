@@ -1,0 +1,227 @@
+'use strict';
+
+const { TMP_DIR, ADMIN_TOKEN, startVault, request, waitUntil, insertToken } = require('./helpers/platform-env');
+const { test, describe } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('fs');
+const net = require('net');
+const path = require('path');
+const crypto = require('crypto');
+const WebSocket = require('ws');
+const db = require('../src/database');
+const { createSecretBox } = require('../src/secretBox');
+const { readAutoUpdate, loadConfig, ConfigError } = require('../src/app');
+
+/** Device connection (protocol v2 header, Bearer auth). */
+function connectDevice(vault, token) {
+  const ws = new WebSocket(`ws://127.0.0.1:${vault.port}/ws`, {
+    headers: { authorization: `Bearer ${token}`, 'x-tunnelvault-protocol': '2' },
+  });
+  const messages = [];
+  ws.on('message', (data, isBinary) => {
+    if (!isBinary) messages.push(JSON.parse(data.toString()));
+  });
+  const closed = new Promise((resolve) => ws.on('close', (code) => resolve(code)));
+  const opened = new Promise((resolve, reject) => {
+    ws.on('open', resolve);
+    ws.on('error', reject);
+  });
+  return {
+    ws,
+    messages,
+    closed,
+    opened,
+    async waitFor(type) {
+      return waitUntil(() => messages.find((m) => m.type === type), 5000, `device message ${type}`);
+    },
+  };
+}
+
+describe('createTunnelVault()', () => {
+  test('starts on ephemeral ports, serves API/dashboard/proxy, and stops cleanly', async () => {
+    const vault = await startVault();
+    assert.ok(vault.port > 0);
+    assert.ok(vault.proxyPort > 0);
+    assert.notEqual(vault.port, vault.proxyPort);
+    const health = await request(vault.baseUrl, 'GET', '/api/health');
+    assert.equal(health.status, 200);
+    assert.equal(health.body.status, 'ok');
+    // The HTTP tunnel proxy answers (no tunnel for this host)
+    const proxied = await fetch(`http://127.0.0.1:${vault.proxyPort}/`, { headers: { host: 'nothing.test.local' } });
+    assert.ok(proxied.status >= 400);
+    await proxied.text();
+
+    const t0 = Date.now();
+    await vault.stop();
+    assert.ok(Date.now() - t0 < 5000, 'stop() should be quick');
+    await vault.stop(); // idempotent
+    await assert.rejects(fetch(`${vault.baseUrl}/api/health`));
+    await assert.rejects(vault.start(), /stopped/);
+  });
+
+  test('GET /api/config reports the effective configuration', async () => {
+    fs.writeFileSync(process.env.TUNNELVAULT_UPDATE_CONF, 'ENABLED=1\nSCHEDULE="12h"\nUPDATE_REPO=TrainABit/ssh-tunnel\n');
+    const installDir = path.join(TMP_DIR, 'install');
+    fs.mkdirSync(installDir, { recursive: true });
+    fs.writeFileSync(path.join(installDir, 'VERSION'), '2.0.0\n');
+    process.env.INSTALL_DIR = installDir;
+    const vault = await startVault({
+      publicUrl: 'https://tunnel.example.com',
+      httpTunnelUrlTemplate: 'https://{subdomain}.tunnel.example.com',
+      trustProxy: 'loopback',
+      sessionRetentionDays: 14,
+      tunnelIdleRetentionDays: 0,
+      secretBox: createSecretBox({ key: crypto.randomBytes(32).toString('hex') }),
+    });
+    try {
+      const unauth = await request(vault.baseUrl, 'GET', '/api/config');
+      assert.equal(unauth.status, 401);
+      const r = await request(vault.baseUrl, 'GET', '/api/config', { bearer: ADMIN_TOKEN });
+      assert.equal(r.status, 200);
+      assert.deepEqual(r.body, {
+        version: '2.0.0',
+        domain: 'test.local',
+        apiPort: vault.port,
+        proxyPort: vault.proxyPort,
+        tcpPortRange: [vault.tcpProxy.portMin, vault.tcpProxy.portMax],
+        publicUrl: 'https://tunnel.example.com',
+        httpTunnelUrlTemplate: 'https://{subdomain}.tunnel.example.com',
+        trustProxy: true,
+        geoipProvider: 'off',
+        storedKeysEnabled: true,
+        sessionRetentionDays: 14,
+        tunnelIdleRetentionDays: 0,
+        maxTunnelsPerToken: 10,
+        autoUpdate: { enabled: true, schedule: '12h' },
+      });
+      assert.ok(!JSON.stringify(r.body).includes(ADMIN_TOKEN));
+    } finally {
+      delete process.env.INSTALL_DIR;
+      fs.rmSync(process.env.TUNNELVAULT_UPDATE_CONF, { force: true });
+      await vault.stop();
+    }
+  });
+
+  test('defaults: template from DOMAIN/proxy port, auto-update disabled when update.conf is absent', async () => {
+    const vault = await startVault();
+    try {
+      const r = await request(vault.baseUrl, 'GET', '/api/config', { bearer: ADMIN_TOKEN });
+      assert.equal(r.body.httpTunnelUrlTemplate, `http://{subdomain}.test.local:${vault.proxyPort}`);
+      assert.equal(r.body.publicUrl, null);
+      assert.equal(r.body.trustProxy, false);
+      assert.equal(r.body.storedKeysEnabled, false);
+      assert.deepEqual(r.body.autoUpdate, { enabled: false, schedule: null });
+      assert.equal(r.body.sessionRetentionDays, 90);
+      assert.equal(r.body.tunnelIdleRetentionDays, 30);
+      assert.match(r.body.version, /^\d+\.\d+\.\d+/);
+    } finally {
+      await vault.stop();
+    }
+  });
+
+  test('readAutoUpdate / loadConfig parsing', () => {
+    const f = path.join(TMP_DIR, 'u.conf');
+    fs.writeFileSync(f, "# comment\nENABLED=0\nSCHEDULE='24h'\n");
+    assert.deepEqual(readAutoUpdate(f), { enabled: false, schedule: '24h' });
+    fs.writeFileSync(f, 'ENABLED=true # yes\n');
+    assert.deepEqual(readAutoUpdate(f), { enabled: true, schedule: null });
+    const cfg = loadConfig({ PORT: '0', PROXY_PORT: '8081', BIND_HOST: '127.0.0.1', TRUST_PROXY: '10.0.0.0/8' });
+    assert.equal(cfg.port, 0);
+    assert.equal(cfg.proxyPort, 8081);
+    assert.equal(cfg.bindHost, '127.0.0.1');
+    assert.deepEqual(cfg.trustProxy, ['10.0.0.0/8']);
+    assert.equal(loadConfig({}).port, 4000);
+    assert.equal(loadConfig({}).bindHost, '0.0.0.0');
+    assert.equal(loadConfig({}).trustProxy, false);
+    assert.throws(() => loadConfig({ PORT: 'abc' }), ConfigError);
+    assert.throws(() => loadConfig({ PROXY_PORT: '70000' }), ConfigError);
+  });
+
+  test('startup: encrypts plaintext stored keys and closes dangling tunnel sessions', async () => {
+    const pem = '-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n';
+    const token = insertToken(db, { privateKey: pem });
+    const s = db.run("INSERT INTO sessions (token, client_ip, tunnel_id) VALUES (?, '203.0.113.9', 'tid')", [token]);
+    const box = createSecretBox({ key: crypto.randomBytes(32).toString('hex') });
+    const vault = await startVault({ secretBox: box });
+    try {
+      const stored = db.queryOne('SELECT private_key FROM tokens WHERE token = ?', [token]).private_key;
+      assert.ok(stored.startsWith('tvenc:v1:'));
+      assert.equal(box.decrypt(stored), pem);
+      assert.ok(db.queryOne('SELECT disconnected_at FROM sessions WHERE id = ?', [Number(s.lastInsertRowid)]).disconnected_at);
+    } finally {
+      await vault.stop();
+    }
+  });
+});
+
+describe('token revocation through the API (live device connections)', () => {
+  test('PATCH active=0 closes the device WebSocket with 4000 within 5 s; public port closes', async () => {
+    const vault = await startVault();
+    try {
+      const token = insertToken(db);
+      const dev = connectDevice(vault, token);
+      await dev.opened;
+      await dev.waitFor('hello');
+      dev.ws.send(JSON.stringify({ type: 'register', name: 'ssh', localPort: 22, subdomain: 'ssh', protocol: 'tcp' }));
+      const reg = await dev.waitFor('registered');
+      assert.ok(reg.allocatedPort > 0);
+      await new Promise((resolve, reject) => {
+        const s = net.connect(reg.allocatedPort, '127.0.0.1', () => { s.destroy(); resolve(); });
+        s.on('error', reject);
+      });
+
+      const t0 = Date.now();
+      const r = await request(vault.baseUrl, 'PATCH', `/api/tokens/${token}`, { bearer: ADMIN_TOKEN, body: { active: 0 } });
+      assert.equal(r.status, 200);
+      assert.equal(r.body.disconnected, 1);
+      const code = await Promise.race([dev.closed, new Promise((resolve) => setTimeout(() => resolve('timeout'), 5000))]);
+      assert.equal(code, 4000);
+      assert.ok(Date.now() - t0 < 5000);
+
+      await waitUntil(() => new Promise((resolve) => {
+        const s = net.connect(reg.allocatedPort, '127.0.0.1');
+        s.on('connect', () => { s.destroy(); resolve(false); });
+        s.on('error', () => resolve(true));
+      }), 5000, 'public TCP port to close');
+
+      // A deactivated token cannot reconnect
+      const again = new WebSocket(`ws://127.0.0.1:${vault.port}/ws`, { headers: { authorization: `Bearer ${token}` } });
+      const status = await new Promise((resolve) => {
+        again.on('unexpected-response', (_req, res) => { resolve(res.statusCode); res.resume(); });
+        again.on('open', () => resolve(101));
+        again.on('error', () => {});
+      });
+      assert.equal(status, 401);
+    } finally {
+      await vault.stop();
+    }
+  });
+
+  test('DELETE closes the connection, removes its tunnels and pins', async () => {
+    const vault = await startVault();
+    try {
+      const token = insertToken(db);
+      const dev = connectDevice(vault, token);
+      await dev.opened;
+      await dev.waitFor('hello');
+      dev.ws.send(JSON.stringify({ type: 'register', name: 'ssh', localPort: 22, subdomain: 'ssh', protocol: 'tcp' }));
+      const reg = await dev.waitFor('registered');
+      db.run('INSERT INTO ssh_host_keys (pin_key, key_type, fingerprint) VALUES (?, ?, ?)', [`token:${token}:22`, 'ssh-ed25519', 'SHA256:x']);
+      assert.ok(vault.tunnelManager.getTunnel(reg.tunnelId));
+
+      const r = await request(vault.baseUrl, 'DELETE', `/api/tokens/${token}`, { bearer: ADMIN_TOKEN });
+      assert.equal(r.status, 200);
+      assert.equal(r.body.disconnected, 1);
+      assert.equal(r.body.tunnels_removed, 1);
+      const code = await Promise.race([dev.closed, new Promise((resolve) => setTimeout(() => resolve('timeout'), 5000))]);
+      assert.equal(code, 4000);
+      assert.equal(vault.tunnelManager.getTunnel(reg.tunnelId), null);
+      assert.equal(db.queryOne('SELECT COUNT(*) AS n FROM tunnels WHERE client_token = ?', [token]).n, 0);
+      assert.equal(db.queryOne('SELECT COUNT(*) AS n FROM ssh_host_keys WHERE pin_key = ?', [`token:${token}:22`]).n, 0);
+      const list = await request(vault.baseUrl, 'GET', '/api/tunnels', { bearer: ADMIN_TOKEN });
+      assert.ok(!list.body.tunnels.some((t) => t.id === reg.tunnelId));
+    } finally {
+      await vault.stop();
+    }
+  });
+});

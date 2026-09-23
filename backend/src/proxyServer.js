@@ -77,6 +77,35 @@ function filterResponseHeaders(headers) {
   return out;
 }
 
+const HEADER_NAME_RE = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+const HEADER_VALUE_BAD_RE = /[\r\n\0]/;
+
+/**
+ * Raw response head for an upgrade request (written straight to the client
+ * socket). Same header rules as filterResponseHeaders; for a 101 the
+ * Connection/Upgrade headers are kept, otherwise the connection is closed
+ * after the (already de-chunked) body.
+ */
+function serializeResponseHead(proxyRes, upgraded) {
+  const reason = String(proxyRes.statusMessage || '').replace(/[^\t\x20-\x7e]/g, '');
+  const lines = [`HTTP/1.1 ${proxyRes.statusCode} ${reason}`.trimEnd()];
+  const listed = connectionTokens(proxyRes.headers.connection);
+  const raw = proxyRes.rawHeaders || [];
+  for (let i = 0; i + 1 < raw.length; i += 2) {
+    const name = String(raw[i]);
+    let value = String(raw[i + 1]);
+    const lower = name.toLowerCase();
+    if (!HEADER_NAME_RE.test(name) || HEADER_VALUE_BAD_RE.test(value)) continue;
+    if (BLOCKED_RESPONSE_HEADERS.has(lower)) continue;
+    const keepForUpgrade = upgraded && (lower === 'connection' || lower === 'upgrade');
+    if (!keepForUpgrade && (HOP_BY_HOP.has(lower) || listed.has(lower))) continue;
+    if (lower === 'set-cookie') value = stripCookieDomain(value);
+    lines.push(`${name}: ${value}`);
+  }
+  if (!upgraded) lines.push('Connection: close');
+  return `${lines.join('\r\n')}\r\n\r\n`;
+}
+
 function sendJson(res, status, body) {
   if (res.headersSent) {
     res.destroy();
@@ -105,7 +134,8 @@ function rejectRaw(socket, status, text) {
  * the tunnel's localPort), with backpressure and WebSocket upgrade passthrough.
  *
  * Routing: Host header "<subdomain>.<DOMAIN>" (only hosts under DOMAIN), or
- * the `?tunnel=<id>` query parameter.
+ * the `?tunnel=<id>` query parameter for hosts outside DOMAIN (e.g. a bare IP;
+ * all tunnels then share one origin, so this is meant for testing only).
  *
  * @param {TunnelManager} tunnelManager
  * @param {ConnectionTracker} connectionTracker
@@ -128,11 +158,13 @@ function createProxyServer(tunnelManager, connectionTracker, options = {}) {
     const hostname = hostnameOf(req.headers.host);
     if (hostname.endsWith(domainSuffix)) {
       const sub = hostname.slice(0, -domainSuffix.length);
-      if (sub && !sub.includes('.')) {
-        const t = tunnelManager.getTunnelBySubdomain(sub);
-        if (t) return t;
-      }
+      if (sub && !sub.includes('.')) return tunnelManager.getTunnelBySubdomain(sub);
+      return null;
     }
+    // `?tunnel=<id>` fallback (setups without wildcard DNS). Never on our own
+    // names: tunnel content must not appear on the dashboard's host or on
+    // another tunnel's subdomain (cookie tossing / same-origin access).
+    if (hostname === domain) return null;
     const q = typeof req.url === 'string' ? req.url.indexOf('?') : -1;
     if (q >= 0) {
       let id = null;
@@ -170,9 +202,37 @@ function createProxyServer(tunnelManager, connectionTracker, options = {}) {
     return { trusted, clientIp, xff, proto, host };
   }
 
+  /**
+   * Headers sent to the device: hop-by-hop headers dropped (Connection and
+   * Upgrade kept for upgrade requests), forwarding headers regenerated.
+   */
+  function requestHeaders(req, fwd, upgrade) {
+    const listed = connectionTokens(req.headers.connection);
+    const headers = {};
+    for (const [name, value] of Object.entries(req.headers)) {
+      if (value === undefined || name === 'expect') continue;
+      if (HOP_BY_HOP.has(name) || listed.has(name)) continue;
+      if (FORWARDING_HEADERS.has(name) && !(fwd.trusted && name === 'forwarded')) continue;
+      headers[name] = value;
+    }
+    if (upgrade) {
+      headers.connection = 'Upgrade';
+      headers.upgrade = req.headers.upgrade;
+    } else {
+      if (/\bchunked\b/i.test(String(req.headers['transfer-encoding'] || ''))) {
+        headers['transfer-encoding'] = 'chunked';
+      }
+      headers.connection = 'close';
+    }
+    headers['x-forwarded-for'] = fwd.xff;
+    headers['x-forwarded-proto'] = fwd.proto;
+    if (fwd.host) headers['x-forwarded-host'] = fwd.host;
+    headers['x-real-ip'] = fwd.clientIp;
+    return headers;
+  }
+
   function startAccounting(tunnel, clientIp) {
     const trackId = connectionTracker ? connectionTracker.startConnection(tunnel.id, clientIp) : null;
-    tunnelManager.incrementConnections(tunnel.id);
     const onTraffic = (bytesIn, bytesOut) => {
       if (trackId) connectionTracker.updateBytes(trackId, bytesIn, bytesOut);
       tunnelManager.addBytes(tunnel.id, bytesIn + bytesOut);
@@ -202,23 +262,9 @@ function createProxyServer(tunnelManager, connectionTracker, options = {}) {
       acct.finish();
       return sendJson(res, 502, { error: 'Tunnel client disconnected' });
     }
+    tunnelManager.incrementConnections(tunnel.id);
 
-    // Request headers: drop hop-by-hop, regenerate forwarding headers.
-    const listed = connectionTokens(req.headers.connection);
-    const headers = {};
-    for (const [name, value] of Object.entries(req.headers)) {
-      if (HOP_BY_HOP.has(name) || listed.has(name) || name === 'expect') continue;
-      if (FORWARDING_HEADERS.has(name) && !(fwd.trusted && name === 'forwarded')) continue;
-      headers[name] = value;
-    }
-    if (/\bchunked\b/i.test(String(req.headers['transfer-encoding'] || ''))) {
-      headers['transfer-encoding'] = 'chunked';
-    }
-    headers.connection = 'close';
-    headers['x-forwarded-for'] = fwd.xff;
-    headers['x-forwarded-proto'] = fwd.proto;
-    if (fwd.host) headers['x-forwarded-host'] = fwd.host;
-    headers['x-real-ip'] = fwd.clientIp;
+    const headers = requestHeaders(req, fwd, false);
 
     let timedOut = false;
     stream.setTimeout(idleTimeoutMs, () => {
@@ -232,7 +278,7 @@ function createProxyServer(tunnelManager, connectionTracker, options = {}) {
         method: req.method,
         path: req.url,
         headers,
-        agent: false,
+        // No `agent`: with an agent Node ignores createConnection.
         setHost: false,
         createConnection: () => stream,
       });
@@ -262,6 +308,8 @@ function createProxyServer(tunnelManager, connectionTracker, options = {}) {
       }
       proxyRes.pipe(res);
       proxyRes.on('error', () => res.destroy());
+      // Device went away mid-body: abort the client response (never truncate silently).
+      proxyRes.on('close', () => { if (!proxyRes.complete) res.destroy(); });
     });
 
     proxyReq.on('error', (err) => {
@@ -282,7 +330,11 @@ function createProxyServer(tunnelManager, connectionTracker, options = {}) {
     log.debug('Forwarding request', { tunnelId: tunnel.id, method: req.method });
   }
 
-  /** WebSocket (or any Upgrade) passthrough: replay the request head, then a raw pipe. */
+  /**
+   * WebSocket (or any Upgrade) passthrough. The handshake goes through the
+   * HTTP client so the device's response headers get the same filtering as
+   * normal responses; after a 101 both sides are spliced as raw streams.
+   */
   function onUpgrade(req, socket, head) {
     socket.on('error', () => {});
     const tunnel = resolveTunnel(req);
@@ -296,27 +348,69 @@ function createProxyServer(tunnelManager, connectionTracker, options = {}) {
       acct.finish();
       return rejectRaw(socket, 502, 'Bad Gateway');
     }
+    tunnelManager.incrementConnections(tunnel.id);
 
-    const lines = [`${req.method} ${req.url} HTTP/1.1`];
-    const raw = req.rawHeaders;
-    for (let i = 0; i + 1 < raw.length; i += 2) {
-      const lower = raw[i].toLowerCase();
-      if (FORWARDING_HEADERS.has(lower) && !(fwd.trusted && lower === 'forwarded')) continue;
-      if (lower === 'proxy-authorization' || lower === 'proxy-connection' || lower === 'keep-alive') continue;
-      lines.push(`${raw[i]}: ${raw[i + 1]}`);
+    let proxyReq;
+    try {
+      proxyReq = http.request({
+        method: req.method,
+        path: req.url,
+        headers: requestHeaders(req, fwd, true),
+        // No `agent`: with an agent Node ignores createConnection.
+        setHost: false,
+        createConnection: () => stream,
+      });
+    } catch (err) {
+      stream.destroy();
+      acct.finish();
+      return rejectRaw(socket, 400, 'Bad Request');
     }
-    lines.push(`X-Forwarded-For: ${fwd.xff}`);
-    lines.push(`X-Forwarded-Proto: ${fwd.proto}`);
-    if (fwd.host) lines.push(`X-Forwarded-Host: ${fwd.host}`);
-    lines.push(`X-Real-IP: ${fwd.clientIp}`);
 
-    stream.write(`${lines.join('\r\n')}\r\n\r\n`);
-    if (head && head.length) stream.write(head);
+    let upgraded = false;
+    // Handshake deadline (the upgraded connection itself has no idle timeout).
+    stream.setTimeout(idleTimeoutMs, () => { if (!upgraded) stream.destroy(); });
+    socket.once('close', () => {
+      acct.finish();
+      if (!upgraded) {
+        proxyReq.destroy();
+        stream.destroy();
+      }
+    });
 
-    socket.setTimeout(0);
-    socket.setNoDelay(true);
-    socket.once('close', acct.finish);
-    spliceSocket(socket, stream);
+    proxyReq.on('upgrade', (proxyRes, proxySocket, proxyHead) => {
+      upgraded = true;
+      stream.setTimeout(0);
+      if (socket.destroyed) {
+        proxySocket.destroy();
+        return;
+      }
+      socket.write(serializeResponseHead(proxyRes, true));
+      if (proxyHead && proxyHead.length) socket.write(proxyHead);
+      if (head && head.length) proxySocket.write(head);
+      socket.setTimeout(0);
+      socket.setNoDelay(true);
+      spliceSocket(socket, proxySocket);
+    });
+
+    proxyReq.on('response', (proxyRes) => {
+      // The application declined the upgrade: relay its response, then close.
+      if (socket.destroyed) {
+        proxyRes.resume();
+        return;
+      }
+      socket.write(serializeResponseHead(proxyRes, false));
+      proxyRes.pipe(socket);
+      proxyRes.on('error', () => socket.destroy());
+      proxyRes.on('close', () => { if (!proxyRes.complete) socket.destroy(); });
+    });
+
+    proxyReq.on('error', (err) => {
+      log.debug('Tunnel upgrade failed', { tunnelId: tunnel.id, error: err.message });
+      if (!upgraded && !socket.destroyed) rejectRaw(socket, 502, 'Bad Gateway');
+    });
+
+    proxyReq.end();
+    log.debug('Forwarding upgrade request', { tunnelId: tunnel.id });
   }
 
   let server;
@@ -343,4 +437,4 @@ function createProxyServer(tunnelManager, connectionTracker, options = {}) {
   return server;
 }
 
-module.exports = { createProxyServer, stripCookieDomain, filterResponseHeaders, hostnameOf };
+module.exports = { createProxyServer, stripCookieDomain, filterResponseHeaders, serializeResponseHead, hostnameOf };

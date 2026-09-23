@@ -113,7 +113,7 @@ export class Display {
     }
     this.stopLiveRender();
     this.render();
-    console.log(chalk.red(`\n  Disconnected: ${clean(reason)}`));
+    this._line(chalk.red(`\n  Disconnected: ${clean(reason)}`));
   }
 
   setReconnecting(attempt, delayMs) {
@@ -125,7 +125,7 @@ export class Display {
     }
     this.stopLiveRender();
     this.render();
-    console.log(chalk.yellow(`\n  Reconnecting (attempt ${attempt})${when}...`));
+    this._line(chalk.yellow(`\n  Reconnecting (attempt ${attempt})${when}...`));
   }
 
   logRequest(method, path, statusCode, statusText, durationMs) {

@@ -365,6 +365,12 @@ class TunnelManager extends EventEmitter {
     return n;
   }
 
+  /** One tunnel in API form (no ws, no ownerSecret), or null. */
+  getTunnelInfo(id) {
+    const t = this.tunnels.get(id);
+    return t ? this._serialize(t) : null;
+  }
+
   /** Return all tunnels (serializable, without ws reference). */
   getAllTunnels() {
     const result = [];

@@ -104,10 +104,11 @@ function initWebSocket(server, deps = {}, ...legacyArgs) {
   const wss = new WebSocket.Server({ noServer: true, maxPayload: WS_MAX_PAYLOAD, perMessageDeflate: false });
   const upgradeContext = new WeakMap(); // req -> { clientToken, protocolVersion, ip }
 
+  /** Device token row ({ id, token, label, active }) or null (unknown / lookup failed). */
   function lookupDeviceToken(token) {
     if (!db || !token || token.length > MAX_TOKEN_LENGTH) return null;
     try {
-      return db.queryOne('SELECT id, token, label, active FROM tokens WHERE token = ? AND active = 1', [token]) || null;
+      return db.queryOne('SELECT id, token, label, active FROM tokens WHERE token = ?', [token]) || null;
     } catch (err) {
       log.error('Token lookup failed', { error: err.message });
       return null;
@@ -134,19 +135,28 @@ function initWebSocket(server, deps = {}, ...legacyArgs) {
     const token = bearerToken(req);
     let clientToken = null;
     let authorized = false;
+    let revoked = false;
     if (token) {
       if (AUTH_TOKEN && safeTokenCompare(token, AUTH_TOKEN)) {
         authorized = true;
       } else {
-        clientToken = lookupDeviceToken(token);
-        authorized = !!clientToken;
+        const row = lookupDeviceToken(token);
+        if (row && Number(row.active) === 1) {
+          clientToken = row;
+          authorized = true;
+        } else if (row) {
+          revoked = true; // a deactivated token is refused even in dev mode
+        }
       }
     }
-    if (!authorized && !AUTH_TOKEN) authorized = true; // dev mode: unauthenticated admin
+    // Dev mode (no AUTH_TOKEN configured): unauthenticated connections act as admin.
+    if (!authorized && !AUTH_TOKEN && !revoked) authorized = true;
 
     if (!authorized) {
-      failureLimiter.hit(ip);
-      log.warn('WebSocket upgrade unauthorized', { ip });
+      // Only unknown/missing tokens count as guessing; a device retrying with its
+      // revoked token must not lock out other devices behind the same NAT.
+      if (!revoked) failureLimiter.hit(ip);
+      log.warn('WebSocket upgrade unauthorized', { ip, reason: revoked ? 'token deactivated' : 'invalid token' });
       rejectUpgrade(socket, 401, 'Unauthorized');
       return;
     }
@@ -235,9 +245,10 @@ function initWebSocket(server, deps = {}, ...legacyArgs) {
     let allocatedPort = null;
     if (protocol === 'tcp' && tcpProxy && !paused) {
       allocatedPort = await tcpProxy.startListener(tunnel.id, ws, msg.localPort, tokenRow, tunnel.preferredPort || null);
+      if (ws.readyState !== WebSocket.OPEN || ws._tvClosing) return; // device went away meanwhile
       if (allocatedPort !== null) {
         tunnelManager.setAllocatedPort(tunnel.id, allocatedPort);
-      } else if (ws.readyState === WebSocket.OPEN) {
+      } else {
         log.error('Could not start TCP listener', { tunnelId: tunnel.id });
       }
     } else if (paused) {
@@ -298,6 +309,7 @@ function initWebSocket(server, deps = {}, ...legacyArgs) {
     if (tunnel.protocol === 'tcp' && tcpProxy) {
       allocatedPort = await tcpProxy.startListener(tunnelId, ws, tunnel.localPort, ws.clientToken,
         tunnel.preferredPort || tunnel.allocatedPort || null);
+      if (ws.readyState !== WebSocket.OPEN || ws._tvClosing) return; // device went away meanwhile
       if (allocatedPort !== null) tunnelManager.setAllocatedPort(tunnelId, allocatedPort);
     }
 

@@ -43,6 +43,7 @@ class FakeConn {
     this.json = [];
     this.binaryFrames = 0;
     this.maxFrameLength = 0;
+    this.maxTextLength = 0;
     this.data = new Map(); // connId -> Buffer[] (binary or legacy tcp-data)
     this.tunnels = new Map(); // localPort -> tunnelId
     ws.on('message', (data, isBinary) => {
@@ -53,6 +54,7 @@ class FakeConn {
         if (frame && frame.type === FRAME_DATA) this._addData(frame.connId, Buffer.from(frame.payload));
         return;
       }
+      this.maxTextLength = Math.max(this.maxTextLength, data.length);
       const msg = JSON.parse(data.toString());
       this.json.push(msg);
       if (msg.type === 'tcp-data') this._addData(msg.connId, Buffer.from(msg.data, 'base64'));
@@ -116,7 +118,7 @@ class FakeConn {
 }
 
 class FakeServer {
-  static async start({ hello = true, autoRegister = true, onReconnect = null, verifyClient = undefined } = {}) {
+  static async start({ hello = true, autoRegister = true, onReconnect = null, verifyClient = undefined, autoPong = true } = {}) {
     const s = new FakeServer();
     s.hello = hello;
     s.autoRegister = autoRegister;
@@ -126,6 +128,7 @@ class FakeServer {
     s.wss = new WebSocketServer({
       host: '127.0.0.1',
       port: 0,
+      autoPong,
       verifyClient: (info, cb) => {
         s.upgradeAttempts++;
         if (verifyClient) verifyClient(info, cb);
@@ -197,6 +200,7 @@ function makeClient(server, options = {}) {
     reconnectDelayMs: 20,
     maxReconnectDelayMs: 100,
     rebootDelayMs: 5,
+    runAsRoot: false,
     ...options,
   });
   client.logs = logs;
@@ -249,7 +253,13 @@ test('v2: protocol header + Bearer auth; binary DATA frames after hello; echo ro
   assert.equal(sha256(conn.received(connId)), sha256(payload));
   assert.equal(conn.jsonOf('tcp-data').length, 0, 'no legacy base64 frames in v2');
   assert.ok(conn.binaryFrames > 0);
-  assert.ok(conn.maxFrameLength <= 17 + MAX_FRAME_PAYLOAD);
+  // A local read bigger than one frame is split (senders never exceed 256 KiB of payload).
+  const big = randomBytes(MAX_FRAME_PAYLOAD * 2 + 5);
+  const already = conn.receivedLength(connId);
+  client._onLocalData(client.conns.get(connId), big);
+  await waitFor(() => conn.receivedLength(connId) >= already + big.length, { what: 'split frames' });
+  assert.equal(sha256(conn.received(connId).subarray(already)), sha256(big));
+  assert.ok(conn.maxFrameLength <= 17 + MAX_FRAME_PAYLOAD, `frame of ${conn.maxFrameLength} bytes`);
 
   // Server says "no more data": the client ends the local socket, the echo service ends
   // its side, and the client reports tcp-close exactly once, then forgets the connId.
@@ -291,6 +301,12 @@ test('v1 fallback: without hello the client uses JSON base64 tcp-data and never 
   assert.equal(sha256(conn.received(connId)), sha256(payload));
   assert.equal(conn.binaryFrames, 0, 'no binary frames to a v1 server');
   assert.ok(conn.jsonOf('tcp-data', (m) => m.connId === connId).length > 0);
+  const big = randomBytes(MAX_FRAME_PAYLOAD * 2 + 5);
+  const already = conn.receivedLength(connId);
+  client._onLocalData(client.conns.get(connId), big);
+  await waitFor(() => conn.receivedLength(connId) >= already + big.length, { what: 'split legacy messages' });
+  assert.equal(sha256(conn.received(connId).subarray(already)), sha256(big));
+  assert.ok(conn.maxTextLength <= MAX_FRAME_PAYLOAD, `legacy message of ${conn.maxTextLength} bytes`);
 
   // Local service that does not read: socket.write() returns false, but v1 has no flow control.
   const slowId = randomUUID();
@@ -305,6 +321,17 @@ test('v1 fallback: without hello the client uses JSON base64 tcp-data and never 
   await waitFor(() => client.conns.get(slowId)?.socket.writableLength === 0, { what: 'local buffer to drain' });
   await sleep(50);
   assert.equal(conn.jsonOf('tcp-pause').length + conn.jsonOf('tcp-resume').length, 0);
+
+  // A hello arriving after streams exist does not switch the framing mid-session
+  // (a legacy, non-UUID connection id cannot be carried in a binary frame).
+  const legacyId = 'legacy-conn-1';
+  conn.sendJson({ type: 'tcp-open', connId: legacyId, tunnelId: conn.tunnels.get(echo.port), localPort: echo.port });
+  conn.sendJson({ type: 'hello', protocolVersion: 2, features: ['binary-data', 'flow-control'] });
+  await conn.sendData(legacyId, Buffer.from('late hello'), { legacy: true });
+  await waitFor(() => conn.received(legacyId).toString() === 'late hello', { what: 'legacy echo after late hello' });
+  assert.equal(client.useBinary, false);
+  assert.equal(client.useFlowControl, false);
+  assert.equal(conn.binaryFrames, 0);
 });
 
 test('tcp-open for a port that is not configured is rejected without any local connection', async (t) => {
@@ -538,6 +565,19 @@ test('remote reboot is ignored unless explicitly allowed', async (t) => {
   conn2.sendJson({ type: 'reboot' });
   await waitFor(() => allowed.execCalls.length === 2, { what: 'reboot commands' });
   assert.deepEqual(allowed.execCalls, [['sudo', ['-n', 'systemctl', 'reboot']], ['sudo', ['-n', 'reboot']]]);
+  // A second reboot request while one is pending is ignored.
+  conn2.sendJson({ type: 'reboot' });
+  await sleep(50);
+  assert.equal(allowed.execCalls.length, 2);
+
+  // Allowed via the same opt-in, running as root: no sudo dependency; failures are logged.
+  const asRoot = makeClient(server, { tunnels: [{ port, protocol: 'tcp' }], allowReboot: true, runAsRoot: true });
+  asRoot.exec = (file, args, cb) => { asRoot.execCalls.push([file, args]); cb(new Error('not permitted')); };
+  onCleanup(() => asRoot.disconnect());
+  const conn3 = await connectAndRegister(asRoot, server, 2);
+  conn3.sendJson({ type: 'reboot' });
+  await waitFor(() => /Remote reboot failed: not permitted/.test(asRoot.logText()), { what: 'reboot failure log' });
+  assert.deepEqual(asRoot.execCalls, [['systemctl', ['reboot']], ['reboot', []]]);
 });
 
 test('state.json is written 0600 inside a 0700 directory; old loose permissions are tightened', async (t) => {
@@ -746,6 +786,24 @@ test('close code 4000 after open: logs "token revoked or invalid" and reconnects
   assert.match(client.logText(), /token revoked or invalid/);
 });
 
+test('a server that accepts and immediately drops the connection gets exponential backoff', async (t) => {
+  t.after(runCleanups);
+  const server = await FakeServer.start();
+  server.wss.on('connection', (ws) => ws.close(1011, 'try again later'));
+  onCleanup(() => server.close());
+  const client = makeClient(server, {
+    tunnels: [{ port: await freePort(), protocol: 'tcp' }],
+    reconnectDelayMs: 20,
+    maxReconnectDelayMs: 5000,
+  });
+  onCleanup(() => client.disconnect());
+  client.connect();
+  await waitFor(() => client.reconnectAttempt >= 4, { what: 'four reconnect attempts' });
+  // 20 -> 40 -> 80 -> 160 -> 320 ms (resetting on every open would keep it at 40 ms)
+  assert.ok(client.reconnectDelay >= 320, `backoff grows (${client.reconnectDelay} ms)`);
+  assert.ok(server.connections.length >= 4);
+});
+
 test('malformed or hostile server input does not crash the client', async (t) => {
   t.after(runCleanups);
   const server = await FakeServer.start();
@@ -778,6 +836,127 @@ test('malformed or hostile server input does not crash the client', async (t) =>
   await conn.sendData(connId, Buffer.from('still alive'));
   await waitFor(() => conn.received(connId).toString() === 'still alive', { what: 'echo after garbage' });
   assert.equal(client.ws.readyState, 1);
+});
+
+test('tcp-pause stays in force after the server\'s tcp-close; a stalled half-closed connection is given up', async (t) => {
+  t.after(runCleanups);
+  const server = await FakeServer.start();
+  onCleanup(() => server.close());
+  let produced = 0;
+  let stop = false;
+  let gotEnd = false;
+  const source = await localServer((socket) => {
+    socket.on('end', () => { gotEnd = true; }); // half-closed by the client; keeps sending
+    const chunk = randomBytes(64 * 1024);
+    const pump = () => {
+      while (!stop && !socket.destroyed && socket.writable) {
+        produced += chunk.length;
+        if (!socket.write(chunk)) return;
+      }
+    };
+    socket.on('drain', pump);
+    pump();
+  }, { allowHalfOpen: true });
+  onCleanup(() => { stop = true; return source.close(); });
+  const client = makeClient(server, { tunnels: [{ port: source.port, protocol: 'tcp' }], halfCloseStallMs: 400 });
+  onCleanup(() => client.disconnect());
+  const conn = await connectAndRegister(client, server);
+
+  const connId = randomUUID();
+  conn.sendJson({ type: 'tcp-open', connId, tunnelId: conn.tunnels.get(source.port), localPort: source.port });
+  await waitFor(() => conn.receivedLength(connId) > 256 * 1024, { what: 'initial data' });
+  conn.sendJson({ type: 'tcp-pause', connId });
+  conn.sendJson({ type: 'tcp-close', connId });
+  await waitFor(() => gotEnd, { what: 'local socket half-closed' });
+  assert.equal(client.conns.get(connId).readPaused, true, 'pause survives tcp-close');
+  await sleep(150); // let frames already in flight arrive
+  const before = conn.receivedLength(connId);
+  await sleep(150);
+  assert.equal(conn.receivedLength(connId), before, 'no data while paused after tcp-close');
+
+  // The peer can still lift the pause after closing its own direction.
+  conn.sendJson({ type: 'tcp-resume', connId });
+  await waitFor(() => conn.receivedLength(connId) > before + 512 * 1024, { what: 'data after resume' });
+  assert.equal(conn.jsonOf('tcp-close', (m) => m.connId === connId).length, 0, 'local side still open');
+
+  // Paused again and never resumed: the connection is aborted after halfCloseStallMs.
+  conn.sendJson({ type: 'tcp-pause', connId });
+  await conn.waitJson('tcp-close', (m) => m.connId === connId, 5000);
+  await waitFor(() => client.conns.size === 0, { what: 'stalled connection dropped' });
+  assert.match(client.logText(), /stalled connection/);
+  assert.equal(conn.jsonOf('tcp-close', (m) => m.connId === connId).length, 1);
+});
+
+test('saved state: non-UUID tunnel ids are registered afresh; tunnel ids match case-insensitively', async (t) => {
+  t.after(runCleanups);
+  const [portA, portB] = [await freePort(), await freePort()];
+  const idB = randomUUID().toUpperCase();
+  const server = await FakeServer.start({
+    onReconnect: (msg, conn) => {
+      const tunnelId = msg.tunnelId.toLowerCase(); // servers answer with canonical ids
+      conn.tunnels.set(portB, tunnelId);
+      conn.sendJson({ type: 'reconnected', tunnelId, publicUrl: 'tcp://x', allocatedPort: 10777, localPort: portB, protocol: 'tcp' });
+    },
+  });
+  onCleanup(() => server.close());
+  const stateDir = freshStateDir();
+  seedState(stateDir, [[portA, 'not-a-uuid'], [portB, idB]]);
+  const echo = await echoServer();
+  onCleanup(() => echo.close());
+  const client = makeClient(server, {
+    tunnels: [{ port: portA, protocol: 'tcp' }, { port: portB, protocol: 'tcp' }],
+    stateDir,
+  });
+  onCleanup(() => client.disconnect());
+  client.connect();
+  client.connect(); // second call while connecting is a no-op
+  const conn = await server.nextConnection(0);
+  await waitFor(() => client.liveTunnels.size === 2, { what: 'both tunnels live' });
+  await sleep(50);
+  assert.equal(server.connections.length, 1, 'connect() twice opens one WebSocket');
+  assert.deepEqual(conn.jsonOf('reconnect').map((m) => m.tunnelId), [idB]);
+  assert.deepEqual(conn.jsonOf('register').map((m) => m.localPort), [portA]);
+  assert.equal(client.stateByPort[portA].tunnelId, conn.tunnels.get(portA));
+
+  // tcp-open naming the canonical (lower-case) id of portB's tunnel is accepted.
+  const connId = randomUUID();
+  conn.sendJson({ type: 'tcp-open', connId, tunnelId: idB.toLowerCase(), localPort: portB });
+  await conn.waitJson('tcp-close', (m) => m.connId === connId); // nothing listens on portB
+  assert.match(client.logText(), /not reachable \(ECONNREFUSED\)/);
+  assert.doesNotMatch(client.logText(), /not this client's tunnel/);
+
+  // Per-tunnel server errors that only carry a tunnelId are shown on that tunnel's line.
+  conn.sendJson({ type: 'error', message: 'No public TCP port available for this tunnel', tunnelId: idB.toLowerCase() });
+  await waitFor(() => client._buildTunnelLines()[1].status?.startsWith('error:'), { what: 'tunnel error line' });
+  assert.match(client._buildTunnelLines()[1].status, /No public TCP port/);
+});
+
+test('heartbeat: the client pings the server and reconnects when nothing comes back', async (t) => {
+  t.after(runCleanups);
+  const timing = { heartbeatTimeoutMs: 300, pingIntervalMs: 50 };
+  const port = await freePort();
+
+  // A server that never pings on its own: the client's pings (answered with pongs) keep it up.
+  const healthy = await FakeServer.start();
+  onCleanup(() => healthy.close());
+  let pings = 0;
+  const ok = makeClient(healthy, { tunnels: [{ port, protocol: 'tcp' }], ...timing });
+  onCleanup(() => ok.disconnect());
+  const conn = await connectAndRegister(ok, healthy);
+  conn.ws.on('ping', () => { pings++; });
+  await sleep(800);
+  assert.equal(healthy.connections.length, 1, 'no spurious reconnect');
+  assert.equal(ok.ws.readyState, 1);
+  assert.ok(pings >= 5, `client pinged (${pings})`);
+
+  // A server that has gone silent (no pongs, no messages): the client reconnects.
+  const silent = await FakeServer.start({ autoPong: false });
+  onCleanup(() => silent.close());
+  const dead = makeClient(silent, { tunnels: [{ port, protocol: 'tcp' }], ...timing });
+  onCleanup(() => dead.disconnect());
+  await connectAndRegister(dead, silent);
+  await silent.nextConnection(1);
+  assert.match(dead.logText(), /No heartbeat from server/);
 });
 
 test('plaintext ws:// to a public host triggers a warning; configuration errors throw', async () => {

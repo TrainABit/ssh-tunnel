@@ -11,8 +11,8 @@ function sessionsRouter(db) {
   // GET /api/sessions — list sessions with token label and target info
   router.get('/', (req, res) => {
     const activeOnly = req.query.active === '1';
-    const days = parseInt(req.query.days, 10) || 0;
-    const limit = Math.min(parseInt(req.query.limit, 10) || 500, 2000);
+    const days = Math.min(Math.max(parseInt(req.query.days, 10) || 0, 0), 36500);
+    const limit = Math.max(1, Math.min(parseInt(req.query.limit, 10) || 500, 2000));
 
     const conditions = [];
     const params = [];
@@ -38,16 +38,16 @@ function sessionsRouter(db) {
       FROM sessions s
       LEFT JOIN tokens t ON t.token = s.token
       ${where}
-      ORDER BY s.connected_at DESC LIMIT ${limit}
+      ORDER BY s.connected_at DESC LIMIT ?
     `;
 
-    const sessions = db.query(sql, params);
+    const sessions = db.query(sql, [...params, limit]);
     res.json({ sessions });
   });
 
   // POST /api/sessions — create session entry (called by ssh_router.sh)
   router.post('/', (req, res) => {
-    const { token, client_ip, pid } = req.body;
+    const { token, client_ip, pid } = req.body || {};
 
     if (!token) {
       return res.status(400).json({ error: 'token is required' });
@@ -81,7 +81,7 @@ function sessionsRouter(db) {
       [token]
     );
 
-    log.info('Session started', { token, client_ip: client_ip || 'unknown', sessionId: Number(result.lastInsertRowid) });
+    log.info('Session started', { token: `${String(token).slice(0, 4)}***`, client_ip: safeIp || 'unknown', sessionId: Number(result.lastInsertRowid) });
     res.status(201).json({ id: Number(result.lastInsertRowid) });
   });
 
@@ -102,8 +102,8 @@ function sessionsRouter(db) {
       return res.status(404).json({ error: 'Session not found' });
     }
 
-    const session = db.queryOne('SELECT * FROM sessions WHERE id = ?', [req.params.id]);
-    log.info('Session ended', { sessionId: req.params.id });
+    const session = db.queryOne('SELECT * FROM sessions WHERE id = ?', [sessionId]);
+    log.info('Session ended', { sessionId });
     res.json({ session });
   });
 

@@ -34,9 +34,17 @@ import {
 
 const INITIAL_RECONNECT_DELAY = 1000;
 const MAX_RECONNECT_DELAY = 30000;
+// The reconnect backoff starts over only after a connection stayed up this long, so a
+// server that accepts and immediately drops us is not hammered once per second.
+const STABLE_CONNECTION_MS = 10000;
 const HEARTBEAT_TIMEOUT = 35000;
+// The client pings the server this often (the server pings every 30 s as well), so a
+// healthy connection always has recent traffic well inside HEARTBEAT_TIMEOUT.
+const PING_INTERVAL = 15000;
 const HANDSHAKE_TIMEOUT = 15000;
 const REBOOT_DELAY = 500;
+// A connection the server closed while keeping us paused is given up after this long.
+const HALF_CLOSE_STALL_TIMEOUT = 5 * 60 * 1000;
 
 // Largest message accepted from the server. v2 servers never exceed 256 KiB per frame;
 // the headroom is for legacy `request` messages (old servers accept 10 MB bodies, base64).
@@ -79,6 +87,11 @@ export function resolveAllowReboot(config, env = process.env) {
     if (/^(0|false|no|off)$/i.test(v)) return false;
   }
   return Boolean(config && config.allow_reboot === true);
+}
+
+/** Tunnel ids are UUIDs; servers may differ in letter case. */
+function sameTunnelId(a, b) {
+  return typeof a === 'string' && typeof b === 'string' && a !== '' && a.toLowerCase() === b.toLowerCase();
 }
 
 function validPort(value) {
@@ -142,8 +155,9 @@ function legacyRequestHeaders(headers, body) {
  *   exec          execFile-compatible function used for reboot (default: child_process.execFile)
  *   stateDir      directory for state.json (default: $TUNNELVAULT_STATE_DIR or ~/.tunnelvault)
  *   localHost     host local services listen on (default 'localhost')
- *   reconnectDelayMs / maxReconnectDelayMs / heartbeatTimeoutMs / rebootDelayMs /
- *   wsHighWaterMark / wsLowWaterMark   tuning knobs (mainly for tests)
+ *   runAsRoot     reboot without sudo (default: process runs as uid 0)
+ *   reconnectDelayMs / maxReconnectDelayMs / stableConnectionMs / heartbeatTimeoutMs / pingIntervalMs / rebootDelayMs /
+ *   halfCloseStallMs / wsHighWaterMark / wsLowWaterMark   tuning knobs (mainly for tests)
  *
  * The constructor throws TypeError on invalid configuration; the class never exits the process.
  */
@@ -173,14 +187,20 @@ export class TunnelClient {
 
     this.allowReboot = options.allowReboot === true;
     this.exec = typeof options.exec === 'function' ? options.exec : execFile;
+    this.runAsRoot = typeof options.runAsRoot === 'boolean'
+      ? options.runAsRoot
+      : typeof process.getuid === 'function' && process.getuid() === 0;
     this.stateDir = options.stateDir || defaultStateDir();
     this.stateFile = join(this.stateDir, 'state.json');
     this.localHost = options.localHost || 'localhost';
 
     this.initialReconnectDelay = options.reconnectDelayMs ?? INITIAL_RECONNECT_DELAY;
     this.maxReconnectDelay = options.maxReconnectDelayMs ?? MAX_RECONNECT_DELAY;
+    this.stableConnectionMs = options.stableConnectionMs ?? STABLE_CONNECTION_MS;
     this.heartbeatTimeout = options.heartbeatTimeoutMs ?? HEARTBEAT_TIMEOUT;
+    this.pingInterval = options.pingIntervalMs ?? PING_INTERVAL;
     this.rebootDelay = options.rebootDelayMs ?? REBOOT_DELAY;
+    this.halfCloseStallMs = options.halfCloseStallMs ?? HALF_CLOSE_STALL_TIMEOUT;
     this.wsHighWater = options.wsHighWaterMark ?? WS_HIGH_WATER_MARK;
     this.wsLowWater = options.wsLowWaterMark ?? WS_LOW_WATER_MARK;
 
@@ -193,6 +213,7 @@ export class TunnelClient {
     this.rebootTimer = null;
     this.rebootPending = false;
     this.lastActivity = 0;
+    this.openedAt = 0;
     this.upgradeStatus = null;
     this.conns = new Map(); // connId -> conn (see _openLocal)
 
@@ -213,6 +234,7 @@ export class TunnelClient {
   // ── Lifecycle ──────────────────────────────────────────────────────────────
 
   connect() {
+    if (this.ws || this.reconnectTimer) return; // already connecting / connected
     this.shouldReconnect = true;
     for (const w of this.startupWarnings) this.display.warn(w);
     if (isInsecureRemoteUrl(this.wsUrl)) {
@@ -265,6 +287,8 @@ export class TunnelClient {
     this.peerVersion = 1;
     this.useBinary = false; // v2 binary DATA frames (only after hello)
     this.useFlowControl = false; // v2 tcp-pause / tcp-resume (only after hello)
+    this.helloSeen = false;
+    this.streamsSeen = false; // a tcp-open arrived on this connection
     this.wsCongested = false;
     this.pendingReconnects = new Map(); // tunnelId -> port, reconnects awaiting a reply
     this.unattributedNotFound = 0; // TUNNEL_NOT_FOUND errors without tunnelId (old servers)
@@ -308,8 +332,7 @@ export class TunnelClient {
 
   _onOpen(ws) {
     if (ws !== this.ws) return;
-    this.reconnectDelay = this.initialReconnectDelay;
-    this.reconnectAttempt = 0;
+    this.openedAt = Date.now();
     this._touch();
     this._startHeartbeat(ws);
     this._updateDisplay();
@@ -317,8 +340,10 @@ export class TunnelClient {
     // Register or reconnect each tunnel
     for (const t of this.tunnels) {
       const saved = this.stateByPort[t.port];
-      if (saved?.tunnelId && saved?.ownerSecret) {
-        this.pendingReconnects.set(saved.tunnelId, t.port);
+      // Servers only know UUID tunnel ids (a v2 server rejects anything else as an invalid
+      // message, which would leave the tunnel unregistered): register such entries afresh.
+      if (isUuid(saved?.tunnelId) && saved?.ownerSecret) {
+        this.pendingReconnects.set(saved.tunnelId.toLowerCase(), t.port);
         this._sendJson(ws, { type: 'reconnect', tunnelId: saved.tunnelId, ownerSecret: saved.ownerSecret });
       } else {
         this._sendRegister(t);
@@ -340,6 +365,11 @@ export class TunnelClient {
     this._destroyAllConns();
     this.ws = null;
     this.wsCongested = false;
+    if (this.openedAt && Date.now() - this.openedAt >= this.stableConnectionMs) {
+      this.reconnectDelay = this.initialReconnectDelay;
+      this.reconnectAttempt = 0;
+    }
+    this.openedAt = 0;
 
     const reasonText = sanitizeText(reason ? reason.toString() : '', 120);
     const retryIn = `${Math.round(this.maxReconnectDelay / 1000)}s`;
@@ -386,20 +416,27 @@ export class TunnelClient {
     this.lastActivity = Date.now();
   }
 
+  /**
+   * Liveness: anything received from the server (messages, pings, pongs) counts. We ping
+   * the server every pingInterval (it answers with a pong) and drop the connection when
+   * nothing arrived for heartbeatTimeout — a half-open TCP connection is never noticed
+   * otherwise and the tunnels would stay dead until the next restart.
+   */
   _startHeartbeat(ws) {
     this._clearHeartbeat();
-    const check = () => {
+    const tick = () => {
       this.heartbeatTimer = null;
-      if (ws !== this.ws) return;
+      if (ws !== this.ws || ws.readyState !== WebSocket.OPEN) return;
       const idle = Date.now() - this.lastActivity;
       if (idle >= this.heartbeatTimeout) {
         this.display.warn(`No heartbeat from server for ${Math.round(idle / 1000)}s; reconnecting`);
         ws.terminate();
         return;
       }
-      this.heartbeatTimer = setTimeout(check, this.heartbeatTimeout - idle);
+      try { ws.ping(); } catch { /* closing */ }
+      this.heartbeatTimer = setTimeout(tick, Math.max(1, Math.min(this.pingInterval, this.heartbeatTimeout - idle)));
     };
-    this.heartbeatTimer = setTimeout(check, this.heartbeatTimeout);
+    this.heartbeatTimer = setTimeout(tick, Math.max(1, Math.min(this.pingInterval, this.heartbeatTimeout)));
   }
 
   _clearHeartbeat() {
@@ -498,6 +535,10 @@ export class TunnelClient {
   }
 
   _onHello(msg) {
+    // The server greets first. A late or repeated hello must not switch the framing of
+    // connections that are already open (legacy ids cannot be encoded in binary frames).
+    if (this.helloSeen || this.streamsSeen) return;
+    this.helloSeen = true;
     const version = Number(msg.protocolVersion);
     if (!Number.isFinite(version) || version < 2) return;
     const features = Array.isArray(msg.features) ? msg.features : null;
@@ -509,7 +550,7 @@ export class TunnelClient {
   _portForTunnelId(tunnelId) {
     if (typeof tunnelId !== 'string' || !tunnelId) return null;
     for (const t of this.tunnels) {
-      if (this.stateByPort[t.port]?.tunnelId === tunnelId) return t.port;
+      if (sameTunnelId(this.stateByPort[t.port]?.tunnelId, tunnelId)) return t.port;
     }
     return null;
   }
@@ -533,7 +574,7 @@ export class TunnelClient {
   _onReconnected(msg) {
     const port = this._portForTunnelId(msg.tunnelId);
     if (port === null) return;
-    this.pendingReconnects.delete(msg.tunnelId);
+    this.pendingReconnects.delete(msg.tunnelId.toLowerCase());
     const s = this.stateByPort[port];
     if (typeof msg.publicUrl === 'string') s.publicUrl = msg.publicUrl.slice(0, 2048);
     s.allocatedPort = validPort(msg.allocatedPort);
@@ -551,7 +592,7 @@ export class TunnelClient {
       this.display.info('Tunnel paused (resume from dashboard)');
       return;
     }
-    this.pendingReconnects.delete(msg.tunnelId);
+    this.pendingReconnects.delete(msg.tunnelId.toLowerCase());
     this.liveTunnels.delete(port);
     this.pausedTunnels.add(port);
     const t = this.tunnels.find((x) => x.port === port);
@@ -565,7 +606,7 @@ export class TunnelClient {
     const isNotFound = msg.code === ERROR_TUNNEL_NOT_FOUND || msg.message === LEGACY_TUNNEL_NOT_FOUND_MESSAGE;
     if (isNotFound) {
       if (typeof msg.tunnelId === 'string' && msg.tunnelId) {
-        this.pendingReconnects.delete(msg.tunnelId);
+        this.pendingReconnects.delete(msg.tunnelId.toLowerCase());
         const port = this._portForTunnelId(msg.tunnelId);
         if (port !== null) this._reRegister([port]);
         this._checkUnattributedNotFound();
@@ -578,8 +619,9 @@ export class TunnelClient {
       return;
     }
     const code = typeof msg.code === 'string' ? ` (${sanitizeText(msg.code, 40)})` : '';
-    const port = validPort(msg.localPort);
-    if (port !== null && this.tunnelPorts.has(port)) {
+    let port = validPort(msg.localPort);
+    if (port === null || !this.tunnelPorts.has(port)) port = this._portForTunnelId(msg.tunnelId);
+    if (port !== null) {
       this.tunnelErrors.set(port, message);
       this._updateDisplay();
     }
@@ -624,16 +666,31 @@ export class TunnelClient {
     this.rebootPending = true;
     this.display.warn('Remote reboot requested by the server; rebooting device…');
     this.display.setDisconnected('rebooting device…');
+    // Fixed argv via execFile (no shell). Non-root services need the sudoers rule the
+    // installer adds with --allow-reboot; -n makes sudo fail instead of prompting.
+    const commands = this.runAsRoot
+      ? [['systemctl', ['reboot']], ['reboot', []]]
+      : [['sudo', ['-n', 'systemctl', 'reboot']], ['sudo', ['-n', 'reboot']]];
+    const attempt = (i) => {
+      const [file, args] = commands[i];
+      const done = (err) => {
+        if (!err) return;
+        if (i + 1 < commands.length) {
+          attempt(i + 1);
+          return;
+        }
+        this.rebootPending = false;
+        this.display.error(`Remote reboot failed: ${sanitizeText(err.message)}`);
+      };
+      try {
+        this.exec(file, args, done);
+      } catch (err) {
+        done(err);
+      }
+    };
     this.rebootTimer = setTimeout(() => {
       this.rebootTimer = null;
-      this.exec('sudo', ['-n', 'systemctl', 'reboot'], (err) => {
-        if (!err) return;
-        this.exec('sudo', ['-n', 'reboot'], (err2) => {
-          if (!err2) return;
-          this.rebootPending = false;
-          this.display.error(`Remote reboot failed: ${sanitizeText(err2.message)}`);
-        });
-      });
+      attempt(0);
     }, this.rebootDelay);
   }
 
@@ -650,7 +707,7 @@ export class TunnelClient {
     }
     if (tunnelId !== undefined && tunnelId !== null && tunnelId !== '') {
       const own = this.stateByPort[port]?.tunnelId;
-      if (typeof tunnelId !== 'string' || !own || own !== tunnelId) {
+      if (!sameTunnelId(own, tunnelId)) {
         return { ok: false, reason: `tunnel ${sanitizeText(tunnelId, 64)} is not this client's tunnel for port ${port}` };
       }
     }
@@ -659,6 +716,7 @@ export class TunnelClient {
 
   _onTcpOpen(msg) {
     const ws = this.ws;
+    this.streamsSeen = true;
     const connId = normalizeConnId(msg.connId);
     if (!connId) {
       this._warnThrottled('Ignored tcp-open with an invalid connection id');
@@ -696,6 +754,7 @@ export class TunnelClient {
       pausedByPeer: false, // peer sent tcp-pause
       readPaused: false, // socket.pause() currently in effect
       sentPause: false, // we sent tcp-pause and owe a tcp-resume
+      stallTimer: null, // see _updateStallTimer
     };
     this.conns.set(connId, conn);
     socket.setNoDelay(true);
@@ -751,6 +810,10 @@ export class TunnelClient {
 
   _onLocalClose(conn) {
     this._sendClose(conn);
+    if (conn.stallTimer) {
+      clearTimeout(conn.stallTimer);
+      conn.stallTimer = null;
+    }
     if (this.conns.get(conn.id) === conn) this.conns.delete(conn.id);
   }
 
@@ -801,24 +864,49 @@ export class TunnelClient {
     const conn = this.conns.get(normalizeConnId(rawConnId));
     if (!conn || conn.receivedClose) return; // unknown / duplicate closes are ignored
     conn.receivedClose = true;
-    // A closed peer can no longer lift an earlier tcp-pause; a peer that still reads will
-    // simply pause us again. Without this a paused half-closed socket could leak.
-    conn.pausedByPeer = false;
-    this._updateReading(conn);
+    // tcp-close only ends the peer's sending direction: an earlier tcp-pause stays in
+    // force (the peer may still be draining what we sent and will send tcp-resume).
+    this._updateStallTimer(conn);
     conn.socket.end();
   }
 
   _onRemotePause(rawConnId, paused) {
     const conn = this.conns.get(normalizeConnId(rawConnId));
     if (!conn || conn.pausedByPeer === paused) return;
-    if (paused && conn.receivedClose) return;
     conn.pausedByPeer = paused;
     this._updateReading(conn);
+    this._updateStallTimer(conn);
+  }
+
+  /**
+   * A connection the peer has closed (tcp-close) while keeping us paused can only make
+   * progress through a tcp-resume. A peer that forgot the connection never sends one,
+   * and the local service would stay blocked on a socket we no longer read: give up
+   * after halfCloseStallMs.
+   */
+  _updateStallTimer(conn) {
+    const stalled = conn.receivedClose && conn.pausedByPeer;
+    if (stalled && !conn.stallTimer) {
+      conn.stallTimer = setTimeout(() => {
+        conn.stallTimer = null;
+        if (!conn.receivedClose || !conn.pausedByPeer || conn.socket.destroyed) return;
+        this._warnThrottled(`Closing stalled connection to local port ${conn.port}: the server closed it without resuming`);
+        this._abortConn(conn);
+      }, this.halfCloseStallMs);
+      if (typeof conn.stallTimer.unref === 'function') conn.stallTimer.unref();
+    } else if (!stalled && conn.stallTimer) {
+      clearTimeout(conn.stallTimer);
+      conn.stallTimer = null;
+    }
   }
 
   _destroyAllConns() {
     for (const conn of this.conns.values()) {
       conn.sentClose = true; // the session is gone; nothing to tell the peer
+      if (conn.stallTimer) {
+        clearTimeout(conn.stallTimer);
+        conn.stallTimer = null;
+      }
       conn.socket.destroy();
     }
     this.conns.clear();

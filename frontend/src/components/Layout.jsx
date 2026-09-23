@@ -11,10 +11,13 @@ import {
   X,
   Sun,
   Moon,
+  LogOut,
 } from 'lucide-react';
 import { useState, useEffect, useCallback } from 'react';
 import { getStats } from '../services/api';
-import SyntaxLogo from '../assets/SyntaxLogo';
+import { useAuth } from '../auth/AuthContext';
+import usePolling from '../hooks/usePolling';
+import TunnelVaultLogo from '../assets/TunnelVaultLogo';
 
 const NAV_MAIN = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard },
@@ -29,7 +32,8 @@ const NAV_CLIENTS = [
   { to: '/setup', label: 'Setup Guide', icon: BookOpen },
 ];
 
-function NavItem({ to, label, icon: Icon, onClick }) {
+function NavItem({ to, label, icon, onClick }) {
+  const Icon = icon;
   return (
     <NavLink
       to={to}
@@ -49,19 +53,52 @@ function NavItem({ to, label, icon: Icon, onClick }) {
   );
 }
 
+const headerButtonStyle = {
+  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+  width: '32px', height: '32px', borderRadius: '8px',
+  background: 'var(--surface2)', border: '1px solid var(--border)',
+  cursor: 'pointer', color: 'var(--text-mid)',
+  flexShrink: 0,
+  transition: 'all .15s',
+};
+
+function LogoutButton() {
+  const { authRequired, logout } = useAuth();
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+  if (!authRequired) return null;
+  const handleClick = async () => {
+    setBusy(true);
+    setFailed(false);
+    try {
+      await logout(); // AuthGate switches to the login screen and unmounts this component
+    } catch {
+      setFailed(true);
+      setBusy(false);
+    }
+  };
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      disabled={busy}
+      title={failed ? 'Sign-out failed (server unreachable). Click to retry.' : 'Sign out'}
+      aria-label="Sign out"
+      style={{ ...headerButtonStyle, color: failed ? 'var(--red)' : 'var(--text-mid)', opacity: busy ? 0.5 : 1 }}
+    >
+      <LogOut size={14} />
+    </button>
+  );
+}
+
 function ThemeToggle({ theme, onToggle }) {
   return (
     <button
+      type="button"
       onClick={onToggle}
+      aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
       title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-      style={{
-        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-        width: '32px', height: '32px', borderRadius: '8px',
-        background: 'var(--surface2)', border: '1px solid var(--border)',
-        cursor: 'pointer', color: 'var(--text-mid)',
-        flexShrink: 0,
-        transition: 'all .15s',
-      }}
+      style={headerButtonStyle}
       onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent-dim)'; e.currentTarget.style.color = 'var(--accent)'; }}
       onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-mid)'; }}
     >
@@ -72,33 +109,26 @@ function ThemeToggle({ theme, onToggle }) {
 
 export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [headerStats, setHeaderStats] = useState({ activeTunnels: 0, liveSessions: 0, activeTokens: 0 });
   const [theme, setTheme] = useState(() => {
-    try { return localStorage.getItem('tv-theme') || 'dark'; } catch { return 'dark'; }
+    try { return localStorage.getItem('tv-theme') === 'light' ? 'light' : 'dark'; } catch { return 'dark'; }
   });
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
-    try { localStorage.setItem('tv-theme', theme); } catch {}
+    try { localStorage.setItem('tv-theme', theme); } catch { /* storage unavailable (private mode) */ }
   }, [theme]);
 
   const toggleTheme = useCallback(() => {
     setTheme(t => t === 'dark' ? 'light' : 'dark');
   }, []);
 
-  useEffect(() => {
-    const load = async () => {
-      const s = await getStats();
-      setHeaderStats({
-        activeTunnels: s.activeTunnels ?? 0,
-        liveSessions: s.liveSessions ?? 0,
-        activeTokens: s.activeTokens ?? 0,
-      });
-    };
-    load();
-    const iv = setInterval(load, 15000);
-    return () => clearInterval(iv);
-  }, []);
+  const { data: stats, error: statsError, loading: statsLoading } = usePolling(getStats, 15000);
+  const headerStats = {
+    activeTunnels: stats?.activeTunnels ?? 0,
+    liveSessions: stats?.liveSessions ?? 0,
+    activeTokens: stats?.activeTokens ?? 0,
+  };
+  const serverOnline = !statsError && !statsLoading;
 
   return (
     <div className="flex h-screen overflow-hidden" style={{ background: 'var(--bg)', color: 'var(--text)' }}>
@@ -122,8 +152,10 @@ export default function Layout() {
           className="flex h-16 items-center justify-center px-5 relative"
           style={{ borderBottom: '1px solid var(--border)' }}
         >
-          <SyntaxLogo height={35} />
+          <TunnelVaultLogo height={22} />
           <button
+            type="button"
+            aria-label="Close navigation"
             className="absolute right-4 lg:hidden"
             style={{ color: 'var(--text-dim)', background: 'none', border: 'none', cursor: 'pointer' }}
             onClick={() => setSidebarOpen(false)}
@@ -156,8 +188,11 @@ export default function Layout() {
           className="flex items-center gap-2 px-5 py-3.5 text-xs"
           style={{ borderTop: '1px solid var(--border)', color: 'var(--text-dim)' }}
         >
-          <div className="h-2 w-2 rounded-full pulse-dot" style={{ background: 'var(--accent)' }} />
-          Server online
+          <div
+            className={`h-2 w-2 rounded-full ${serverOnline ? 'pulse-dot' : ''}`}
+            style={{ background: statsLoading ? 'var(--text-dim)' : serverOnline ? 'var(--accent)' : 'var(--red)' }}
+          />
+          {statsLoading ? 'Connecting…' : serverOnline ? 'Server online' : 'Server unreachable'}
         </div>
       </aside>
 
@@ -169,6 +204,8 @@ export default function Layout() {
           style={{ background: 'var(--surface)', borderBottom: '1px solid var(--border)' }}
         >
           <button
+            type="button"
+            aria-label="Open navigation"
             className="mr-4 lg:hidden"
             style={{ color: 'var(--text-dim)', background: 'none', border: 'none', cursor: 'pointer' }}
             onClick={() => setSidebarOpen(true)}
@@ -194,6 +231,7 @@ export default function Layout() {
 
             <div style={{ width: '1px', height: '18px', background: 'var(--border)' }} />
             <ThemeToggle theme={theme} onToggle={toggleTheme} />
+            <LogoutButton />
           </div>
         </header>
 

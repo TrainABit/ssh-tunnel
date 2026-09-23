@@ -7,7 +7,7 @@
 
 /* ─────────────────────────────────────────────────────
    DARK MODE (default)
-   Syntax corporate palette — deep navy / cyan accent
+   TunnelVault palette — deep navy / cyan accent
 ───────────────────────────────────────────────────── */
 :root,
 [data-theme="dark"] {
@@ -17,7 +17,7 @@
   --border:      #1a2b50;
   --border2:     #213560;
 
-  /* Syntax cyan accent */
+  /* Cyan accent */
   --accent:      #1eb4e6;
   --accent-dim:  rgba(30,180,230,0.3);
   --accent-glow: rgba(30,180,230,0.08);
@@ -43,7 +43,7 @@
 
 /* ─────────────────────────────────────────────────────
    LIGHT MODE
-   Syntax corporate palette — white surface / deep blue
+   TunnelVault palette — white surface / deep blue
 ───────────────────────────────────────────────────── */
 [data-theme="light"] {
   --bg:          #f0f4fa;
@@ -52,7 +52,7 @@
   --border:      #dce4f0;
   --border2:     #c8d4e8;
 
-  /* Syntax deep blue accent */
+  /* Deep blue accent */
   --accent:      #0632A0;
   --accent-dim:  rgba(6,50,160,0.2);
   --accent-glow: rgba(6,50,160,0.06);

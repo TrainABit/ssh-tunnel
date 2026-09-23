@@ -1,12 +1,22 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { getConnections, getTunnels } from '../services/api';
 import { formatGeo } from '../utils/geo';
+import usePolling from '../hooks/usePolling';
+import Banner from '../components/Banner';
+
+async function loadConnections() {
+  const [connections, tunnels] = await Promise.all([getConnections(), getTunnels()]);
+  return { connections, tunnels };
+}
 
 function formatDuration(startTime) {
   if (!startTime) return '--';
-  const start = new Date(startTime.endsWith?.('Z') ? startTime : startTime + 'Z');
-  const sec = Math.floor((new Date() - start) / 1000);
+  const start = typeof startTime === 'number'
+    ? new Date(startTime)
+    : new Date(String(startTime).endsWith('Z') ? startTime : startTime + 'Z');
+  if (Number.isNaN(start.getTime())) return '--';
+  const sec = Math.max(0, Math.floor((new Date() - start) / 1000));
   if (sec < 60) return `${sec}s`;
   if (sec < 3600) return `${Math.floor(sec / 60)}m`;
   return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`;
@@ -21,27 +31,10 @@ function formatBytes(bytes) {
 }
 
 export default function Connections() {
-  const [connections, setConnections] = useState([]);
-  const [tunnels, setTunnels] = useState([]);
+  const { data, error: loadError, loading, refreshing, refresh } = usePolling(loadConnections, 5000);
+  const connections = data?.connections || [];
+  const tunnels = data?.tunnels || [];
   const [filter, setFilter] = useState('all');
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const intervalRef = useRef(null);
-
-  const load = useCallback(async (showSpinner) => {
-    if (showSpinner) setRefreshing(true);
-    const [connData, tunnelData] = await Promise.all([getConnections(), getTunnels()]);
-    setConnections(connData);
-    setTunnels(tunnelData);
-    setLoading(false);
-    if (showSpinner) setTimeout(() => setRefreshing(false), 300);
-  }, []);
-
-  useEffect(() => {
-    load(false);
-    intervalRef.current = setInterval(() => load(false), 5000);
-    return () => clearInterval(intervalRef.current);
-  }, [load]);
 
   const tunnelNameMap = {};
   tunnels.forEach((t) => { tunnelNameMap[t.id] = t.name; });
@@ -66,7 +59,7 @@ export default function Connections() {
           </p>
         </div>
         <button
-          onClick={() => load(true)}
+          onClick={refresh}
           style={{
             display: 'inline-flex', alignItems: 'center', gap: '6px',
             padding: '7px 16px', fontFamily: 'inherit', fontSize: '13px',
@@ -80,6 +73,8 @@ export default function Connections() {
           Refresh
         </button>
       </div>
+
+      {loadError && <Banner tone="error">Could not refresh connections: {loadError.message}</Banner>}
 
       {/* Filter chips */}
       <div className="flex flex-wrap gap-2">
@@ -131,7 +126,7 @@ export default function Connections() {
                 const geo = formatGeo(conn.country_code, conn.city);
                 return (
                 <tr
-                  key={conn.connectionId}
+                  key={conn.connectionId || conn.id}
                   style={{ borderBottom: '1px solid var(--border)' }}
                   onMouseEnter={e => e.currentTarget.style.background = 'var(--accent-bg)'}
                   onMouseLeave={e => e.currentTarget.style.background = 'transparent'}

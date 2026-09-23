@@ -88,6 +88,10 @@ test('buildWsUrl normalises server URLs', () => {
   assert.throws(() => buildWsUrl('ftp://host'), TypeError);
   assert.throws(() => buildWsUrl('not a url'), TypeError);
   assert.throws(() => buildWsUrl('ws://user:pw@host'), TypeError);
+  // Error messages never echo credentials or query strings (they may hold a token).
+  for (const bad of ['wss://h:99999/?auth_token=SECRET', 'ws://user:SECRET@h:99999/x', 'ws://h:99999/#SECRET']) {
+    assert.throws(() => buildWsUrl(bad), (err) => err instanceof TypeError && !err.message.includes('SECRET'));
+  }
 });
 
 test('local / private host detection', () => {

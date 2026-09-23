@@ -3,19 +3,25 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
-import { readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { TunnelClient, resolveAllowReboot } from '../src/tunnel.js';
 import { CLIENT_VERSION, isInsecureRemoteUrl } from '../src/protocol.js';
 
 /**
- * Config file: $TUNNELVAULT_CONFIG or ~/.tunnelvault/config.json (if it exists).
+ * Config file: $TUNNELVAULT_CONFIG, else ~/.tunnelvault/config.json, else the system-wide
+ * /etc/tunnelvault/config.json written by install-client.sh (first one that exists).
  * Keys: server, tunnels[], allow_reboot (and legacy auth_token).
  * Priority: CLI flag > env var > config.json > hardcoded default
  */
+const SYSTEM_CONFIG = '/etc/tunnelvault/config.json';
+
 function configPath() {
-  return process.env.TUNNELVAULT_CONFIG || join(homedir(), '.tunnelvault', 'config.json');
+  if (process.env.TUNNELVAULT_CONFIG) return process.env.TUNNELVAULT_CONFIG;
+  const userConfig = join(homedir(), '.tunnelvault', 'config.json');
+  if (!existsSync(userConfig) && existsSync(SYSTEM_CONFIG)) return SYSTEM_CONFIG;
+  return userConfig;
 }
 
 function loadConfig() {
@@ -94,7 +100,9 @@ function apiBase(serverUrl) {
   try {
     u = new URL(String(serverUrl));
   } catch {
-    console.error(chalk.red(`Error: invalid server URL: ${String(serverUrl).slice(0, 100)}`));
+    // Never echo query strings or userinfo (they may carry a token).
+    const shown = clean(String(serverUrl).split(/[?#]/)[0].replace(/\/\/[^/@]*@/, '//')).slice(0, 100);
+    console.error(chalk.red(`Error: invalid server URL: ${shown}`));
     process.exit(1);
   }
   if (u.protocol === 'ws:') u.protocol = 'http:';
@@ -126,6 +134,9 @@ program
       DEFAULT_WS_SERVER,
     );
     const authToken = resolve(program.opts().authToken, 'TUNNELVAULT_AUTH_TOKEN', 'auth_token', undefined, undefined);
+    if (!authToken) {
+      console.error(chalk.yellow('Warning: no auth token configured (set TUNNELVAULT_AUTH_TOKEN); the server will likely refuse the connection.'));
+    }
 
     let clientOptions;
 
