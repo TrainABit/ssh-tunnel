@@ -21,6 +21,12 @@ Security remediation release. It fixes every finding of the external security re
   HTTPS) and never stores the token in the browser; the old `localStorage` copy is deleted.
   Cookie-authenticated `POST`/`PUT`/`PATCH`/`DELETE` requests must come from the dashboard's own
   origin. Changing `AUTH_TOKEN` logs out every dashboard session.
+- **Dashboard sessions are bound to a session key; everyone signs in again after the upgrade.**
+  Without TLS the browser sends the dashboard cookie to every port of the host, including TCP
+  tunnel ports that serve device-controlled pages. The login response therefore also returns a
+  per-session key, which the dashboard keeps in its origin's `localStorage` and sends as
+  `X-TV-Session-Key` (web terminal: `tv-key.<key>` WebSocket subprotocol). The cookie alone is
+  no longer accepted, so existing sessions end and the dashboard shows the login screen once.
 - **Remote reboot is opt-in on each device.** A device ignores the dashboard's reboot command
   unless it was installed with `--allow-reboot` (config `"allow_reboot": true` or
   `TUNNELVAULT_ALLOW_REBOOT=1`). Upgrading a 1.x device turns remote reboot **off** and removes
@@ -136,8 +142,9 @@ Security remediation release. It fixes every finding of the external security re
   restart in a loop.
 - Dashboard font (IBM Plex Mono) is self-hosted; the web terminal and install commands use
   `wss://` when the dashboard is served over HTTPS.
-- License metadata: `backend`, `client` and the root `package.json` declare MIT, matching the
-  README.
+- License: `backend`, `client` and the root `package.json` declare MIT, matching the README, and
+  the repository ships the MIT license text as a root `LICENSE` file (included in release
+  archives and the container image).
 
 ### Fixed
 

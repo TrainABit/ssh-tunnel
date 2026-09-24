@@ -22,10 +22,17 @@ readonly INSTALL_DIR="/opt/tunnelvault"
 readonly SERVICE_USER="tunnelvault"
 readonly HELPER="${INSTALL_DIR}/gateway-helper.sh"
 readonly HELPER_TIMEOUT=15
+# While a session runs, the token is re-checked every RECHECK_SECS: disabling or
+# deleting it (dashboard, API, register_token.sh, direct DB change) or changing its
+# target ends the session. After MAX_LOOKUP_FAILURES failed checks in a row (helper
+# timeout, database unavailable) the session is ended as well (fail closed).
+readonly RECHECK_SECS=10
+readonly MAX_LOOKUP_FAILURES=6
 
 USER_HINT="?"
 SESSION_ID=""
 NC_PID=""
+WATCHDOG_PID=""
 TARGET=""
 
 log() { logger -t tunnelvault-gateway -p auth.info -- "[$$] user=${USER_HINT} $*" 2>/dev/null || true; }
@@ -78,6 +85,9 @@ TARGET="${TARGET_IP}:${TARGET_PORT}"
 # shellcheck disable=SC2317,SC2329 # invoked through the EXIT trap (SC2317: shellcheck < 0.10)
 cleanup() {
     trap - EXIT HUP INT TERM
+    if [[ -n "$WATCHDOG_PID" ]]; then
+        kill "$WATCHDOG_PID" 2>/dev/null || true
+    fi
     if [[ -n "$NC_PID" ]]; then
         kill "$NC_PID" 2>/dev/null || true
     fi
@@ -98,11 +108,54 @@ if [[ ! "$SESSION_ID" =~ ^[0-9]+$ ]]; then
 fi
 log "SESSION_START id=${SESSION_ID:-none} client=${CLIENT_IP} target=${TARGET}"
 
+# ── Revocation watchdog ──────────────────────────────────────
+# Runs in the background next to the relay and kills it when the token is no
+# longer allowed to use this target. It never touches the SSH stream (all of its
+# standard streams are /dev/null) and dies with the session (see cleanup).
+# shellcheck disable=SC2317,SC2329 # runs in the background subshell below
+watchdog() {
+    local failures=0 row rc ip port active
+    WD_SLEEP_PID=""
+    trap - EXIT HUP INT
+    trap 'if [[ -n "$WD_SLEEP_PID" ]]; then kill "$WD_SLEEP_PID" 2>/dev/null; fi; exit 0' TERM
+    while :; do
+        sleep "$RECHECK_SECS" &
+        WD_SLEEP_PID=$!
+        wait "$WD_SLEEP_PID"
+        WD_SLEEP_PID=""
+        kill -0 "$NC_PID" 2>/dev/null || return 0
+        row="$(helper lookup)"
+        rc=$?
+        if (( rc == 0 )); then
+            failures=0
+            IFS='|' read -r ip port active _ <<< "$row"
+            if [[ "${active:-}" != "1" ]]; then
+                log "REVOKED: token disabled, ending session ${SESSION_ID:-none} (target=${TARGET})"
+            elif [[ "${ip:-}:${port:-}" != "$TARGET" ]]; then
+                log "REVOKED: token target changed, ending session ${SESSION_ID:-none} (target=${TARGET})"
+            else
+                continue
+            fi
+        elif (( rc == 3 )); then
+            log "REVOKED: token deleted, ending session ${SESSION_ID:-none} (target=${TARGET})"
+        else
+            failures=$(( failures + 1 ))
+            log "WARN: token re-check failed (rc=${rc}, ${failures}/${MAX_LOOKUP_FAILURES})"
+            (( failures >= MAX_LOOKUP_FAILURES )) || continue
+            log "REVOKED: token could not be re-checked, ending session ${SESSION_ID:-none} (target=${TARGET})"
+        fi
+        kill "$NC_PID" 2>/dev/null || true
+        return 0
+    done
+}
+
 # ── Relay ──────────────────────────────────────────────────────
 # Runs in the background (with the SSH stream as explicit stdin) so that a
 # hangup/termination signal is handled immediately and the session is closed.
 nc -q0 "$TARGET_IP" "$TARGET_PORT" <&0 &
 NC_PID=$!
+watchdog </dev/null >/dev/null 2>&1 &
+WATCHDOG_PID=$!
 wait "$NC_PID"
 rc=$?
 NC_PID=""

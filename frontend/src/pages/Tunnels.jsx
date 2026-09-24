@@ -2,7 +2,7 @@ import { useState, useRef } from 'react';
 import { Copy, Trash2, Power, Check, RefreshCw, ArrowRight, RotateCcw, Terminal, Globe, Fingerprint } from 'lucide-react';
 import { getTunnels, deleteTunnel, toggleTunnel, rebootTunnel, forgetHostKey } from '../services/api';
 import { copyToClipboard } from '../utils/clipboard';
-import { publicHostname, isHttpUrl } from '../utils/serverUrl';
+import { publicHostname, isHttpUrl, tcpOpenUrl, tcpAddress } from '../utils/serverUrl';
 import usePolling from '../hooks/usePolling';
 import useServerConfig from '../hooks/useServerConfig';
 import SshTerminalModal from '../components/SshTerminalModal';
@@ -10,6 +10,10 @@ import Banner from '../components/Banner';
 
 const REBOOT_HINT = 'Reboot the device. Only works if remote reboot is enabled on the device '
   + '(install-client.sh --allow-reboot); otherwise the device ignores the command.';
+
+// Shown instead of an "Open" link for TCP tunnels when the dashboard runs over HTTPS.
+const HSTS_HINT = 'Browsers that have visited this dashboard over HTTPS force HTTPS on every port of this host; '
+  + 'open plain-HTTP services via the server IP or an HTTP tunnel.';
 
 const btnBase = {
   display: 'inline-flex', alignItems: 'center', gap: '5px',
@@ -104,7 +108,7 @@ function useRebootStep(onReboot) {
 }
 
 // ── Grouped card: multiple tunnels from one client token ─────
-function ClientCard({ tunnels, host, onDelete, onToggle, onCopy, onReboot, onSsh, onForgetHostKey }) {
+function ClientCard({ tunnels, host, tcpOpen, tcpAddr, onDelete, onToggle, onCopy, onReboot, onSsh, onForgetHostKey }) {
   const anyActive = tunnels.some(t => t.status === 'active');
   const allInactive = tunnels.every(t => t.status === 'inactive');
   const clientName = tunnels[0].name;
@@ -157,9 +161,9 @@ function ClientCard({ tunnels, host, onDelete, onToggle, onCopy, onReboot, onSsh
             const isSsh = tunnel.localPort === 22 && tunnel.protocol === 'tcp';
             const isWeb = tunnel.protocol === 'http';
             const isWebPort = !isSsh && tunnel.protocol === 'tcp' && tunnel.allocatedPort;
-            const webUrl = isWebPort
-              ? `http://${host}:${tunnel.allocatedPort}`
-              : tunnel.publicUrl;
+            // null over HTTPS: HSTS would rewrite http://HOST:<port> to https:// and the link would fail.
+            const webUrl = isWebPort ? tcpOpen(tunnel.allocatedPort) : tunnel.publicUrl;
+            const tcpAddrText = isWebPort ? tcpAddr(tunnel.allocatedPort) : null;
 
             return (
               <div key={tunnel.id} style={{
@@ -212,14 +216,24 @@ function ClientCard({ tunnels, host, onDelete, onToggle, onCopy, onReboot, onSsh
                       <Globe size={10} /> Open
                     </a>
                   )}
+                  {isActive && isWebPort && !webUrl && (
+                    <span
+                      title={HSTS_HINT}
+                      style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--text-mid)' }}
+                    >
+                      {tcpAddrText}
+                    </span>
+                  )}
                   {isActive && !isWeb && (
                     <button
                       onClick={() => onCopy(
-                        tunnel.protocol === 'tcp' && tunnel.allocatedPort
+                        isWebPort
+                          ? tcpAddrText
+                          : tunnel.protocol === 'tcp' && tunnel.allocatedPort
                           ? `ssh user@${host} -p ${tunnel.allocatedPort}`
                           : tunnel.publicUrl
                       )}
-                      title="Copy"
+                      title={isWebPort ? 'Copy address' : 'Copy'}
                       style={{ ...btnBase, padding: '3px 8px', fontSize: '11px', borderColor: 'var(--border)', color: 'var(--text-mid)' }}
                     >
                       <Copy size={10} />
@@ -242,6 +256,11 @@ function ClientCard({ tunnels, host, onDelete, onToggle, onCopy, onReboot, onSsh
                     <Trash2 size={10} />
                   </button>
                 </div>
+                {isActive && isWebPort && !webUrl && (
+                  <p style={{ fontSize: '11px', color: 'var(--text-dim)', margin: '6px 0 0' }}>
+                    {HSTS_HINT}
+                  </p>
+                )}
                 <HostKeyRow tunnel={tunnel} onForget={onForgetHostKey} />
               </div>
             );
@@ -493,6 +512,8 @@ export default function Tunnels() {
 
   const handlers = {
     host,
+    tcpOpen: (port) => tcpOpenUrl(config, port),
+    tcpAddr: (port) => tcpAddress(config, port),
     onDelete: (id) => runAction(() => deleteTunnel(id)),
     onToggle: (id) => runAction(() => toggleTunnel(id)),
     onCopy: handleCopy,

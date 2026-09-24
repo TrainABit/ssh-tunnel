@@ -516,6 +516,8 @@ esac
   const router = patchScript(path.join(GATEWAY, 'ssh_router.sh'), path.join(dir, 'ssh_router.sh'), [
     [/^readonly INSTALL_DIR=.*$/m, `readonly INSTALL_DIR="${install}"`],
     [/^export PATH=.*$/m, pathLine(stubs)],
+    [/^readonly RECHECK_SECS=10$/m, 'readonly RECHECK_SECS=1'],
+    [/^readonly MAX_LOOKUP_FAILURES=6$/m, 'readonly MAX_LOOKUP_FAILURES=3'],
   ]);
   const env = { ...process.env, SSH_CLIENT: '203.0.113.9 51234 22' };
   const run = (input = 'ssh-stream\n', extraEnv = {}) => {
@@ -607,6 +609,146 @@ test('ssh_router: closes the session when terminated', async (t) => {
   const code = await new Promise((resolve) => child.on('close', (c, sig) => resolve(c ?? sig)));
   assert.equal(code, 143);
   assert.match(calls(), /^helper session-end 42$/m);
+});
+
+/** Start a long-running relay session (nc stub = cat on an open stdin) and wait for nc. */
+async function startSession(t, envObj) {
+  const { router, env, calls } = envObj;
+  const child = spawn('bash', [router], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+  t.after(() => { try { child.kill('SIGKILL'); } catch {} });
+  const closed = new Promise((resolve) => child.on('close', (c, sig) => resolve(c ?? sig)));
+  const deadline = Date.now() + 10000;
+  while (!/^nc -q0/m.test(calls())) {
+    if (Date.now() > deadline) throw new Error(`nc never started: ${calls()}`);
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  const within = (ms) => {
+    let timer;
+    const late = new Promise((r) => { timer = setTimeout(() => r('still running'), ms); });
+    return Promise.race([closed, late]).finally(() => clearTimeout(timer));
+  };
+  return { child, closed, within };
+}
+
+test('ssh_router: a session ends when its token is disabled, deleted or re-targeted (F9)', async (t) => {
+  const revocations = [
+    ['disabled', (state) => fs.writeFileSync(path.join(state, 'row'), '10.0.0.5|2222|0\n'), /REVOKED: token disabled/],
+    ['deleted', (state) => fs.writeFileSync(path.join(state, 'lookup_rc'), '3'), /REVOKED: token deleted/],
+    ['re-targeted', (state) => fs.writeFileSync(path.join(state, 'row'), '10.0.0.6|2222|1\n'), /REVOKED: token target changed/],
+  ];
+  await Promise.all(revocations.map(async ([name, revoke, logRe]) => {
+    const e = routerEnv(t);
+    const s = await startSession(t, e);
+    // still allowed: the re-checks keep the session open
+    s.child.stdin.write('ping\n');
+    assert.equal(await s.within(2500), 'still running', `${name}: active session keeps running`);
+    assert.ok((e.calls().match(/^helper lookup$/gm) || []).length >= 2, `${name}: token re-checked while running`);
+    revoke(e.state);
+    const code = await s.within(5000);
+    assert.notEqual(code, 'still running', `${name}: session must end after revocation`);
+    assert.match(e.syslog(), logRe, name);
+    assert.match(e.calls(), /^helper session-end 42$/m, `${name}: session record closed`);
+  }));
+});
+
+test('ssh_router: transient re-check failures keep the session, persistent ones end it (F9)', async (t) => {
+  const e = routerEnv(t);
+  const s = await startSession(t, e);
+  fs.writeFileSync(path.join(e.state, 'lookup_rc'), '1');
+  await new Promise((r) => setTimeout(r, 1500));
+  fs.writeFileSync(path.join(e.state, 'lookup_rc'), '0'); // recovered before MAX_LOOKUP_FAILURES
+  assert.equal(await s.within(3000), 'still running');
+  assert.match(e.syslog(), /WARN: token re-check failed \(rc=1, 1\/3\)/);
+  fs.writeFileSync(path.join(e.state, 'lookup_rc'), '1');
+  assert.notEqual(await s.within(8000), 'still running', 'fails closed after 3 failed checks in a row');
+  assert.match(e.syslog(), /REVOKED: token could not be re-checked/);
+  assert.match(e.calls(), /^helper session-end 42$/m);
+});
+
+test('ssh_router: a normal disconnect ends the session at once (no watchdog delay)', async (t) => {
+  const e = routerEnv(t);
+  const s = await startSession(t, e);
+  const t0 = Date.now();
+  s.child.stdin.end();
+  assert.equal(await s.within(3000), 0);
+  assert.ok(Date.now() - t0 < 900, `took ${Date.now() - t0} ms`);
+  assert.match(e.calls(), /^helper session-end 42$/m);
+});
+
+test('ssh_router + real gateway-helper/sqlite: deactivating the token in the database ends the live session (F9)', needSqlite, async (t) => {
+  const dir = tmpDir(t);
+  const install = path.join(dir, 'opt');
+  const stubs = path.join(dir, 'stubs');
+  const dbPath = path.join(install, 'data', 'tunnelvault.db');
+  fs.mkdirSync(path.join(install, 'backend'), { recursive: true });
+  fs.writeFileSync(path.join(install, 'backend', '.env'), `DB_PATH=${dbPath}\n`, { mode: 0o600 });
+  const db = initDb(dbPath);
+  t.after(() => db.close());
+  addToken(db, 'tok1', { target_ip: '10.0.0.5', target_port: 2222 });
+  patchScript(path.join(GATEWAY, 'gateway-helper.sh'), path.join(install, 'gateway-helper.sh'), [
+    [/^readonly INSTALL_DIR=.*$/m, `readonly INSTALL_DIR="${install}"`],
+    [/^readonly SERVICE_USER=.*$/m, `readonly SERVICE_USER="${ME.username}"`],
+    [/^export PATH=.*$/m, pathLine(stubs)],
+  ]);
+  // "sudo" runs the helper as the service user with SUDO_USER = the gateway user
+  writeExec(path.join(stubs, 'id'), `#!/bin/bash
+if [[ "$1" == -un ]]; then if [[ -n "\${SUDO_USER:-}" ]]; then echo "${ME.username}"; else echo gw-tok1; fi; else exec /usr/bin/id "$@"; fi
+`);
+  writeExec(path.join(stubs, 'sudo'), `#!/bin/bash
+while [[ $# -gt 0 ]]; do case "$1" in -u) shift 2 ;; --) shift; break ;; -*) shift ;; *) break ;; esac; done
+SUDO_USER=gw-tok1 exec "$@"
+`);
+  writeExec(path.join(stubs, 'logger'), `#!/bin/bash\necho "logger $*" >> "${dir}/syslog"\n`);
+  writeExec(path.join(stubs, 'nc'), `#!/bin/bash\necho "nc $*" >> "${dir}/calls"\nexec cat\n`);
+  const router = patchScript(path.join(GATEWAY, 'ssh_router.sh'), path.join(dir, 'ssh_router.sh'), [
+    [/^readonly INSTALL_DIR=.*$/m, `readonly INSTALL_DIR="${install}"`],
+    [/^readonly SERVICE_USER=.*$/m, `readonly SERVICE_USER="${ME.username}"`],
+    [/^export PATH=.*$/m, pathLine(stubs)],
+    [/^readonly RECHECK_SECS=10$/m, 'readonly RECHECK_SECS=1'],
+  ]);
+  const read = (f) => (fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '');
+  const env = { ...process.env, SSH_CLIENT: '203.0.113.9 51234 22' };
+  const s = await startSession(t, { router, env, calls: () => read(path.join(dir, 'calls')) });
+  let echoed = '';
+  s.child.stdout.on('data', (d) => { echoed += d; });
+  s.child.stdin.write('SSH-2.0-client\n');
+  assert.equal(await s.within(2500), 'still running');
+  assert.equal(echoed, 'SSH-2.0-client\n', 'relay works');
+  const open = db.prepare('SELECT id, disconnected_at FROM sessions WHERE token = ?').all('tok1');
+  assert.equal(open.length, 1);
+  assert.equal(open[0].disconnected_at, null);
+
+  // what PATCH /api/tokens/:token {active:0} does to the database
+  db.prepare('UPDATE tokens SET active = 0 WHERE token = ?').run('tok1');
+  const t0 = Date.now();
+  assert.notEqual(await s.within(15000), 'still running', 'session must end after deactivation');
+  assert.ok(Date.now() - t0 < 15000);
+  assert.match(read(path.join(dir, 'syslog')), /REVOKED: token disabled/);
+  const closed = db.prepare('SELECT disconnected_at FROM sessions WHERE id = ?').get(open[0].id);
+  assert.notEqual(closed.disconnected_at, null, 'session row has an end time');
+
+  // reactivated: a new login works again
+  db.prepare('UPDATE tokens SET active = 1 WHERE token = ?').run('tok1');
+  const again = spawnSync('bash', [router], { env, input: 'hello\n', encoding: 'utf8', timeout: 30000 });
+  assert.equal(again.status, 0, again.stderr);
+  assert.equal(again.stdout, 'hello\n');
+});
+
+test('client_example/ssh_config_example uses the gateway as a ProxyCommand (F14)', () => {
+  const text = fs.readFileSync(path.join(__dirname, '..', '..', 'client_example', 'ssh_config_example'), 'utf8');
+  const blocks = text.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n').split(/^Host\s+/m).slice(1);
+  assert.ok(blocks.length >= 1, 'has Host blocks');
+  for (const block of blocks) {
+    const name = block.split('\n')[0].trim();
+    assert.match(block, /^\s+ProxyCommand\s+ssh\s+-T\b.*\bgw-\S+@\S+/m, `${name}: ProxyCommand through gw-<token>`);
+    assert.doesNotMatch(block, /^\s+User\s+gw-/m, `${name}: User is the target account, not gw-<token>`);
+    assert.doesNotMatch(block, /^\s+(LocalForward|RemoteForward|DynamicForward)\b/m, `${name}: no forwarding through the gateway`);
+  }
+  assert.doesNotMatch(text, /-t rsa/, 'recommends ed25519 keys');
+  assert.match(text, /ssh-keygen -t ed25519/);
+  // same form as DEPLOYMENT.md
+  const deployment = fs.readFileSync(path.join(__dirname, '..', '..', 'DEPLOYMENT.md'), 'utf8');
+  assert.match(deployment, /ProxyCommand ssh -T -i ~\/\.ssh\/id_ed25519 gw-TOKEN@/);
 });
 
 // ─────────────────────────────────────────────────────────────

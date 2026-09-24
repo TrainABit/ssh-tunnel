@@ -458,7 +458,7 @@ function createTunnelVault(options = {}) {
   let proxyServer;
   try {
     proxyServer = createProxyServer(tunnelManager, connectionTracker, {
-      tcpProxy, getClientIp, trustProxy, domain: config.domain,
+      tcpProxy, getClientIp, trustProxy, domain: config.domain, publicUrl: config.publicUrl,
     });
   } catch (err) {
     // e.g. unreadable TLS_PROXY_CERT: release everything created so far

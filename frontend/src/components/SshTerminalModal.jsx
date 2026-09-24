@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   X, Terminal, Loader, AlertCircle, KeyRound, Eye, EyeOff, ShieldAlert, ShieldQuestion, RotateCcw, Check,
 } from 'lucide-react';
-import { getSshWsUrl, forgetHostKey, getSession, UNAUTHORIZED_EVENT } from '../services/api';
+import { openSshSocket, forgetHostKey, getSession, UNAUTHORIZED_EVENT } from '../services/api';
+import { useAuth } from '../auth/AuthContext';
 import { chunkBytes } from '../utils/terminalFrames';
 
 // xterm.js is loaded lazily so the bundle stays small on pages that don't need it.
@@ -113,6 +114,7 @@ export default function SshTerminalModal({ tunnel, onClose, onHostKeyChange }) {
   const [privateKey, setPrivateKey] = useState('');
   const [passphrase, setPassphrase] = useState('');
   const [authMode, setAuthMode] = useState('password'); // 'password' | 'key' | 'stored'
+  const { authRequired } = useAuth();
 
   const containerRef = useRef(null); // DOM node xterm renders into
   const termRef = useRef(null);      // xterm Terminal
@@ -307,8 +309,15 @@ export default function SshTerminalModal({ tunnel, onClose, onHostKeyChange }) {
 
     let ws;
     try {
-      ws = new WebSocket(getSshWsUrl(tunnel.id));
+      // Cookie + session key (tv-key.<key> subprotocol); no key = not signed in.
+      ws = openSshSocket(tunnel.id, { authRequired });
     } catch (err) {
+      if (err && err.status === 401) {
+        setErrorMsg('Your session has expired. Please sign in again.');
+        goto('error');
+        window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT));
+        return;
+      }
       setErrorMsg(`Could not open the web terminal connection: ${plain(err && err.message ? err.message : err)}`);
       goto('error');
       return;
@@ -395,7 +404,7 @@ export default function SshTerminalModal({ tunnel, onClose, onHostKeyChange }) {
       }
       // 'hostkey-mismatch', 'error', 'closed': keep what is on screen.
     };
-  }, [tunnel, username, password, privateKey, passphrase, mode, closeSocket, disposeTerminal, goto, writeOutput, writeNotice]);
+  }, [tunnel, authRequired, username, password, privateKey, passphrase, mode, closeSocket, disposeTerminal, goto, writeOutput, writeNotice]);
 
   const acceptHostKey = () => {
     const ws = wsRef.current;

@@ -54,6 +54,7 @@ COPY backend/package.json backend/package-lock.json ./backend/
 COPY backend/src ./backend/src
 COPY --from=frontend /src/frontend/dist ./frontend/dist
 COPY VERSION ./VERSION
+COPY LICENSE ./LICENSE
 
 # /data holds the SQLite database (tokens, tunnel owner secrets, encrypted keys).
 RUN mkdir -p /data \

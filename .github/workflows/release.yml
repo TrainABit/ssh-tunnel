@@ -50,6 +50,12 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends sqlite3 shellcheck
 
+      # backend/test/e2e-stack.test.js runs the real device client against the server:
+      # client/node_modules must exist before the backend tests (same order as ci.yml).
+      - name: Install client dependencies (end-to-end test)
+        working-directory: client
+        run: npm ci --no-audit --no-fund
+
       - name: Backend tests
         working-directory: backend
         run: |
@@ -58,9 +64,7 @@ jobs:
 
       - name: Client tests
         working-directory: client
-        run: |
-          npm ci --no-audit --no-fund
-          npm test
+        run: npm test
 
       - name: Release tooling tests
         run: node --test scripts/release/test/*.test.js
@@ -112,7 +116,9 @@ jobs:
         run: |
           set -euo pipefail
           cd dist/release
-          test "$(ls -1 | sort | tr '\n' ' ')" = "SHA256SUMS tunnelvault-${GITHUB_REF_NAME}.tar.gz "
+          shopt -s nullglob dotglob
+          files=(*)
+          test "${files[*]}" = "SHA256SUMS tunnelvault-${GITHUB_REF_NAME}.tar.gz"
           sha256sum --strict -c SHA256SUMS
 
       - name: Sign SHA256SUMS

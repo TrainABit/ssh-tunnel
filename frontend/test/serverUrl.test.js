@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { deviceServerUrl, publicHostname, isInsecurePublicUrl, shellQuote, isHttpUrl } from '../src/utils/serverUrl.js';
+import { deviceServerUrl, publicHostname, isInsecurePublicUrl, shellQuote, isHttpUrl, tcpOpenUrl, tcpAddress, isHttpsDashboard } from '../src/utils/serverUrl.js';
 
 const httpsLoc = { protocol: 'https:', host: 'tunnel.example.com', hostname: 'tunnel.example.com' };
 const httpLoc = { protocol: 'http:', host: '203.0.113.7:4000', hostname: '203.0.113.7' };
@@ -54,4 +54,26 @@ test('isHttpUrl only accepts absolute http(s) URLs', () => {
   assert.equal(isHttpUrl('javascript:alert(1)'), false);
   assert.equal(isHttpUrl('/relative'), false);
   assert.equal(isHttpUrl(null), false);
+});
+
+test('tcpOpenUrl: no clickable http:// link over HTTPS (HSTS covers every port of the host)', () => {
+  // Dashboard served over HTTPS, or PUBLIC_URL is https:// (--tls): no link.
+  assert.equal(tcpOpenUrl({ publicUrl: 'https://tunnel.example.com' }, 8080, httpsLoc), null);
+  assert.equal(tcpOpenUrl(null, 8080, httpsLoc), null);
+  assert.equal(tcpOpenUrl({ publicUrl: 'https://tunnel.example.com' }, 8080, httpLoc), null);
+  assert.equal(isHttpsDashboard({ publicUrl: 'HTTPS://tunnel.example.com' }, httpLoc), true);
+  // Plain-HTTP mode keeps the link.
+  assert.equal(tcpOpenUrl({ publicUrl: 'http://203.0.113.7:4000' }, 8080, httpLoc), 'http://203.0.113.7:8080');
+  assert.equal(tcpOpenUrl(null, '9000', httpLoc), 'http://203.0.113.7:9000');
+  assert.equal(isHttpsDashboard(null, httpLoc), false);
+  // Invalid ports never produce a link.
+  assert.equal(tcpOpenUrl(null, null, httpLoc), null);
+  assert.equal(tcpOpenUrl(null, 70000, httpLoc), null);
+});
+
+test('tcpAddress is host:port of the public hostname (IPv6 in brackets)', () => {
+  assert.equal(tcpAddress({ publicUrl: 'https://tunnel.example.com' }, 8080, httpLoc), 'tunnel.example.com:8080');
+  assert.equal(tcpAddress(null, 8080, httpLoc), '203.0.113.7:8080');
+  assert.equal(tcpAddress({ publicUrl: 'http://[2001:db8::1]:4000' }, 8080, httpLoc), '[2001:db8::1]:8080');
+  assert.equal(tcpAddress(null, 22, { protocol: 'http:', host: 'x', hostname: '2001:db8::2' }), '[2001:db8::2]:22');
 });
