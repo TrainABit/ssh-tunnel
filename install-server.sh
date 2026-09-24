@@ -65,6 +65,7 @@ DEFAULT_UPDATE_SCHEDULE="12h"
 NGINX_DIR="/etc/nginx"
 ACME_WEBROOT="/var/www/tunnelvault-acme"
 LE_LIVE_DIR="/etc/letsencrypt/live"
+NGINX_LOG_DIR="/var/log/nginx"
 DEPLOY_HOOK="/etc/letsencrypt/renewal-hooks/deploy/tunnelvault-reload-nginx.sh"
 BACKUP_DIR="/var/backups/tunnelvault"
 NGINX_MARKER="# Managed by TunnelVault install-server.sh"
@@ -647,6 +648,17 @@ map \$http_upgrade \$tunnelvault_connection_upgrade {
     ''      close;
 }
 
+# Device tokens are addressed by value in /api/tokens/<token>: never write them to
+# the access log. Query strings are dropped too (they may carry tickets).
+map \$request_uri \$tunnelvault_log_uri {
+    "~*^/api/tokens/[^/?]+(?<tunnelvault_log_rest>[^?]*)"  "/api/tokens/[redacted]\$tunnelvault_log_rest";
+    "~^(?<tunnelvault_log_path>[^?]*)\?"                   "\$tunnelvault_log_path?[redacted]";
+    default                                                \$request_uri;
+}
+log_format tunnelvault_redacted '\$remote_addr - \$remote_user [\$time_local] '
+                                '"\$request_method \$tunnelvault_log_uri \$server_protocol" \$status \$body_bytes_sent '
+                                '"\$http_referer" "\$http_user_agent"';
+
 EOF
     if [[ "$mode" == "acme" ]]; then
         cat <<EOF
@@ -655,6 +667,7 @@ server {
 $(_nginx_listen 80 0 "$ipv6" "$h2")
     server_name ${domain};
     server_tokens off;
+    access_log ${NGINX_LOG_DIR}/access.log tunnelvault_redacted;
 $(_nginx_acme_location)
     location / {
         return 503;
@@ -670,6 +683,7 @@ server {
 $(_nginx_listen 80 0 "$ipv6" "$h2")
     server_name ${domain};
     server_tokens off;
+    access_log ${NGINX_LOG_DIR}/access.log tunnelvault_redacted;
 $(_nginx_acme_location)
     location / {
         return 301 https://\$host\$request_uri;
@@ -681,6 +695,7 @@ server {
 $(_nginx_listen 443 1 "$ipv6" "$h2")
     server_name ${domain};
     server_tokens off;
+    access_log ${NGINX_LOG_DIR}/access.log tunnelvault_redacted;
 $(_nginx_tls "${LE_LIVE_DIR}/${domain}")
 
     client_max_body_size 2m;
@@ -688,6 +703,12 @@ $(_nginx_proxy_headers)
 
     location / {
         proxy_pass http://127.0.0.1:${api_port};
+    }
+    # Upstream errors are logged with the request line: keep token URLs out of error.log
+    # (crit still records real emergencies).
+    location ~* ^/api/tokens/ {
+        proxy_pass http://127.0.0.1:${api_port};
+        error_log ${NGINX_LOG_DIR}/error.log crit;
     }
     location ^~ /ws/ssh {
         proxy_pass http://127.0.0.1:${api_port};
@@ -787,15 +808,37 @@ write_file() {
 }
 
 # chown only regular files/dirs that are not symlinks and not hard-linked
-# (the data directory is writable by the service user).
+# (the data and log directories are writable by the service user).
+# The parent chain must not contain a symlink either — below INSTALL_DIR every
+# component must be a real directory (symlinks above it are root's own choice) —
+# and `chown -h` never dereferences, so a link swapped in after the checks only
+# changes the owner of the link itself.
 safe_chown() {
-    local owner="$1" path="$2"
+    local owner="$1" path="$2" parent canon_parent expected
     [[ -e "$path" && ! -L "$path" ]] || return 0
-    if [[ -f "$path" && "$(stat -c %h "$path")" != "1" ]]; then
+    parent="$(dirname -- "$path")"
+    # a normalised path only: "dir/link/" (trailing slash), "a//b" or "a/./b" would
+    # make -L and chown -h look at something else than the last component
+    if [[ "$path" != "${parent%/}/$(basename -- "$path")" ]]; then
+        warn "Not changing owner of ${path}: not a normalised path"
+        return 0
+    fi
+    canon_parent="$(realpath -e -- "$parent" 2>/dev/null)" || canon_parent=""
+    if [[ "$parent" == "$INSTALL_DIR" || "$parent" == "$INSTALL_DIR"/* ]]; then
+        expected="$(realpath -e -- "$INSTALL_DIR" 2>/dev/null)" || expected=""
+        expected="${expected:+${expected}${parent#"$INSTALL_DIR"}}"
+    else
+        expected="$parent"
+    fi
+    if [[ -z "$canon_parent" || "$canon_parent" != "$expected" ]]; then
+        warn "Not changing owner of ${path}: its directory path contains a symlink"
+        return 0
+    fi
+    if [[ -f "$path" && "$(stat -c %h -- "$path")" != "1" ]]; then
         warn "Not changing owner of hard-linked file ${path}"
         return 0
     fi
-    chown "$owner" "$path"
+    chown -h -- "$owner" "$path"
 }
 
 apt_install() {
@@ -943,10 +986,14 @@ preflight() {
         v="$(env_get "$ENV_FILE" TCP_PORT_MAX)"; if is_valid_port "$v"; then TCP_PORT_MAX="$v"; fi
         v="$(env_get "$ENV_FILE" DB_PATH)"
         if [[ -n "$v" ]]; then
-            if is_safe_path "$v" && [[ "$v" == "${DATA_DIR}/"* ]]; then
+            # The .env file is writable by the service user: accept only a plain file name
+            # directly inside DATA_DIR (no subdirectory — it could be a planted symlink that
+            # makes prepare_data_dirs chown a file elsewhere as root).
+            if is_safe_path "$v" && [[ "$v" == "${DATA_DIR}/$(basename -- "$v")" ]] \
+                && [[ "$(basename -- "$v")" =~ ^[A-Za-z0-9_-][A-Za-z0-9._-]*$ ]]; then
                 DB_PATH="$v"
             else
-                warn "DB_PATH=${v} is outside ${DATA_DIR}; the hardened service can only write to ${DATA_DIR}."
+                warn "DB_PATH=${v} is not a file directly inside ${DATA_DIR}; the hardened service can only write to ${DATA_DIR}."
                 warn "Using ${DEFAULT_DB_PATH} for initialisation — move the database or adjust the unit manually."
             fi
         fi

@@ -336,4 +336,4 @@ für alle Shell-Skripte und `npm audit` aus.
 
 ## Lizenz
 
-MIT
+MIT, siehe [LICENSE](LICENSE).

@@ -178,6 +178,15 @@ connect to `wss://DOMAIN`. Ports 4000/4001 are not opened in the firewall.
 The certificate covers `DOMAIN` only. Without a wildcard certificate, HTTP tunnels on
 `*.DOMAIN` are served over **plain HTTP** on port 80 (nginx forwards them to the HTTP proxy).
 
+**TCP tunnel ports and HSTS.** Over HTTPS the backend sends `Strict-Transport-Security` for
+`DOMAIN`. HSTS applies to a host on every port, so a browser that has opened the dashboard over
+HTTPS rewrites `http://DOMAIN:<port>` to `https://DOMAIN:<port>`, and a plain-HTTP service on a
+TCP tunnel port fails with `ERR_SSL_PROTOCOL_ERROR`. The dashboard therefore shows the
+`DOMAIN:<port>` address with a copy button instead of an "Open" link in TLS mode. Open such
+services via the server's IP address (`http://SERVER_IP:<port>`, not covered by HSTS) or publish
+them as an HTTP tunnel (`<subdomain>.DOMAIN`). Non-HTTP clients (`ssh -p`, database clients)
+are not affected.
+
 If certbot fails (DNS not pointing to the server yet, port 80 blocked), the installer reports it and
 exits with status 1. Fix the cause and re-run
 `sudo bash install-server.sh --upgrade --tls --domain tunnel.example.com`.
@@ -213,6 +222,11 @@ sudo bash install-server.sh --domain tunnel.local
 
 The dashboard, API and device WebSocket listen on port 4000 and the HTTP proxy on 4001, all in
 plaintext: the admin token, device tokens and web-terminal passwords cross the network unencrypted.
+Without TLS the browser also sends the dashboard's session cookie to every other port of the same
+host, including TCP tunnel ports that serve device-controlled web pages (cookies are scoped to a
+host, not to a port). The dashboard session is therefore bound to a per-session key that only the
+dashboard origin (`http://SERVER:4000`) holds; the cookie alone grants nothing. See
+[SECURITY.md](SECURITY.md#what-tunnelvault-does-not-do).
 The installer and the server both warn about this. To switch to TLS later, run
 `sudo bash install-server.sh --upgrade --tls --domain <your domain>` and move the devices over as
 described in [Moving devices from ws:// to wss://](#moving-devices-from-ws-to-wss).
@@ -327,9 +341,12 @@ installer regenerates that file on `--upgrade`; to keep manual changes, delete i
 
 **Dashboard login.** Open `https://DOMAIN` (or `http://SERVER:4000` without TLS) and enter the
 admin token. The server exchanges it for a session cookie: `__Host-tv_session` over HTTPS,
-`tv_session` over plain HTTP. The cookie is HttpOnly and SameSite=Strict, and it expires after
-`SESSION_TTL_HOURS` (default 12) without activity. The browser never stores the token itself. Log
-out from the sidebar. Changing `AUTH_TOKEN` ends every session.
+`tv_session` over plain HTTP, plus a per-session key that the dashboard keeps in its origin's
+`localStorage` and sends as `X-TV-Session-Key` on every request (and as a `tv-key.<key>`
+WebSocket subprotocol for the web terminal). A request with the cookie but without the key is
+unauthenticated. The cookie is HttpOnly and SameSite=Strict, and the session expires after
+`SESSION_TTL_HOURS` (default 12) without activity. The browser never stores the admin token
+itself. Log out from the sidebar. Changing `AUTH_TOKEN` ends every session.
 
 The login is rate limited to 10 attempts per minute per client IP; failed Bearer attempts on the API
 count too. The client IP is the socket address unless `TRUST_PROXY` says otherwise.
@@ -851,7 +868,9 @@ signed updates only, GeoIP off, `trust proxy` only when configured.
    device's own tunnel.
 
 5. **Log in to the dashboard again.** The old dashboard kept the admin token in the browser; 2.0
-   deletes it and asks you to log in. Update scripts that used `?auth_token=` to send
+   deletes it and asks you to log in. Dashboard sessions are bound to a per-session key, so a
+   session cookie from an earlier 2.0 build is not accepted either: sign in once more after
+   every upgrade to this release. Update scripts that used `?auth_token=` to send
    `Authorization: Bearer` instead.
 
 6. **Switch to TLS** if you have not already. See the next section.

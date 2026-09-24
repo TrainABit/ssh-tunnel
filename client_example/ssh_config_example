@@ -1,43 +1,57 @@
-# TunnelVault SSH Gateway – Client Setup
-# =========================================
-# This file goes on the CLIENT machine (not on the gateway server)
-
-# ── Step 1: Generate SSH key (one-time) ───────────────────
-# If you don't have a key pair yet:
+# TunnelVault legacy SSH gateway – client setup
+# ==============================================
+# This file goes on the CLIENT machine (not on the gateway server).
+# See DEPLOYMENT.md, section "Legacy SSH gateway".
 #
-#   ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa
-#   cat ~/.ssh/id_rsa.pub   # <-- send this to the admin
+# How the gateway works: logging in as gw-<TOKEN> does NOT give you a shell on
+# the gateway. The gateway relays the raw SSH stream to the token's fixed target
+# (target_ip:target_port), and your SSH client talks to the target's sshd end to
+# end. So the gateway is always used as a ProxyCommand; a plain
+# `ssh gw-<TOKEN>@<gateway>` only prints the target's SSH banner.
 
-# ── Step 2: Add to ~/.ssh/config ──────────────────────────
-# Replace <VALUES> with your token assignment:
+# ── Step 1: Generate an SSH key for the gateway (one-time) ──
+#
+#   ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519
+#   cat ~/.ssh/id_ed25519.pub   # <-- send this to the admin (it becomes the token's public key)
 
-# Simple connection (gateway routes automatically to target server):
+# ── Step 2: Add to ~/.ssh/config ─────────────────────────
+# Replace <VALUES>:
+#   HostName  a name for the target; only used for its known_hosts entry
+#   User      your account ON THE TARGET server (not gw-<TOKEN>)
+#   ProxyCommand  logs in to the gateway as gw-<TOKEN> with the key from step 1
+
 Host my-server
-    HostName     <GATEWAY_PUBLIC_IP>   # e.g. 54.123.45.67
-    User         gw-<YOUR_TOKEN>       # e.g. gw-xK9mQpR3vL2n
-    IdentityFile ~/.ssh/id_rsa
+    HostName     my-server
+    User         <TARGET_USER>                 # e.g. ubuntu
+    ProxyCommand ssh -T -i ~/.ssh/id_ed25519 gw-<YOUR_TOKEN>@<GATEWAY_HOST>
+    #                          e.g. gw-xK9mQpR3vL2n@tunnel.example.com
+    # IdentityFile ~/.ssh/<key accepted by the TARGET's sshd>   # if it differs
 
 # ── Step 3: Connect ──────────────────────────────────────
 #
 #   ssh my-server
 #
-# That's it. The gateway identifies you by your key, reads the
-# assigned token from the DB, and routes you to the same target
-# server – regardless of restarts or IP changes.
+# The gateway identifies you by your key, looks up the target assigned to your
+# token and relays the connection there. Authentication, host key checks, the
+# shell and everything else happen between your client and the target.
 
-# ── Optional: SCP / SFTP / Port Forwarding ───────────────
+# ── SCP / SFTP / port forwarding ─────────────────────────
+# They work end to end with the target (the gateway only relays the stream):
 #
 #   scp file.txt my-server:/home/ubuntu/
 #   sftp my-server
-#   ssh -L 8080:localhost:8080 my-server   # port forwarding
+#   ssh -L 8080:localhost:8080 my-server   # forwarding is done by the target's sshd
+#
+# (Forwarding THROUGH the gateway itself, e.g. `ssh -L … gw-<TOKEN>@<gateway>`,
+# is refused: the gateway sets AllowTcpForwarding no and PermitTTY no.)
 
-# ── Multiple target servers (different tokens) ───────────
+# ── Multiple target servers (one token per target) ───────
 Host server-dev
-    HostName     54.123.45.67
-    User         gw-TokenForDevServer
-    IdentityFile ~/.ssh/id_rsa
+    HostName     server-dev
+    User         ubuntu
+    ProxyCommand ssh -T -i ~/.ssh/id_ed25519 gw-TokenForDevServer@tunnel.example.com
 
 Host server-prod
-    HostName     54.123.45.67
-    User         gw-TokenForProdServer
-    IdentityFile ~/.ssh/id_rsa
+    HostName     server-prod
+    User         ubuntu
+    ProxyCommand ssh -T -i ~/.ssh/id_ed25519 gw-TokenForProdServer@tunnel.example.com

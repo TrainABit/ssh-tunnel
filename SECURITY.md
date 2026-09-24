@@ -56,6 +56,19 @@ table (personal data); and, above all, the services running on the devices.
   cookie that subdomains can neither read nor overwrite, and it refuses cookie-authenticated
   state-changing requests whose `Origin` is not the dashboard itself (tunnel subdomains included).
   Treat tunnelled applications as untrusted content.
+- **Without TLS, every port of the dashboard host shares its cookies.** Cookies are scoped to a
+  host, not to a port. In plain-HTTP mode a TCP tunnel port (`http://HOST:<port>`) and the
+  proxy's `?tunnel=` fallback are the same site as the dashboard on `http://HOST`, so the browser
+  sends them the dashboard session cookie, and a device-controlled service on such a port can
+  read it. A device token must not become an admin session this way. The dashboard session is
+  therefore bound to a per-session key that only the dashboard origin holds: `POST
+  /api/auth/login` returns it in the response body, the dashboard keeps it in `localStorage`
+  (scoped to scheme, host **and port**) and sends it as `X-TV-Session-Key` on every request, or
+  as a `tv-key.<key>` WebSocket subprotocol for `/ws/ssh`. A request carrying only the cookie is
+  unauthenticated. The key is not the admin token and it expires and is revoked with the
+  session. Script running on the dashboard origin can read it, so the dashboard's CSP
+  (same-origin scripts only) matters. Use `--tls`: with HTTPS the cookie is additionally
+  `Secure`, `__Host-` and never sent to plain-HTTP tunnel ports.
 - **The `?tunnel=<id>` fallback of the HTTP proxy** (used only for hosts outside `DOMAIN`, such
   as a bare IP address) puts every tunnel on the same browser origin. Use it for testing only.
 - **Legacy SSH gateway.** `gw-<token>` users are real Linux accounts on the server (public key
@@ -96,14 +109,14 @@ in CI (`.github/workflows/ci.yml`).
 | Dashboard reachable over plaintext HTTP by default | `--tls` is documented as the standard install. Installing without it prints a prominent warning, and the server logs one at startup. Devices warn about `ws://` to public hosts. |
 | Tunnel/subdomain hijacking by another device | Stale records are replaced only for the same token, local port and protocol. Records of other owners are never deleted. HTTP subdomains are unique across owners (`-2`, `-3`, …). `reconnect` needs the owner secret **and** the same token. |
 | Device trusts the server completely (ports, reboot) | Port allowlist (P2-6). Remote reboot needs `--allow-reboot` on the device, which installs a sudoers rule limited to `systemctl reboot` / `reboot`. |
-| Admin token in query strings, `localStorage`, `ps` | Query-string tokens are rejected everywhere. The dashboard uses an HttpOnly session cookie (only a keyed hash is stored server-side). The device token is kept out of argv. |
+| Admin token in query strings, `localStorage`, `ps` | Query-string tokens are rejected everywhere. The dashboard uses an HttpOnly session cookie bound to a per-session key (`X-TV-Session-Key`, kept in the dashboard origin's `localStorage`, never the admin token), so the cookie alone, as received by a TCP tunnel port on the same host, grants nothing. Only keyed hashes of both are stored server-side. The device token is kept out of argv. |
 | Rate limits bypassable; no limits on WebSocket upgrades | Proxy-aware client IP (P2-8). Limits on the API (300/min), login and bad Bearer tokens (10/min), device WebSocket upgrades (60/min, 10 failed authentications/min) and the web terminal (10/min, 10 concurrent sessions). |
 | GeoIP sends visitor IPs to ip-api.com over HTTP | `GEOIP_PROVIDER=off` by default. `maxmind` does local lookups. `ip-api` is only available as an explicit, warned opt-in. Sessions are deleted after `SESSION_RETENTION_DAYS` (90). |
 | Custom tokens > 29 characters break gateway users silently | Rejected with a clear error when a public key is set; the API reports `linux_user_created` / `linux_user_queued` / `linux_user_error`. |
 | Legacy gateway cannot read config or write the DB (session tracking broken) | `gateway-helper.sh` runs as the service user via a narrow sudo rule. A root worker creates Linux users from a spool directory. |
 | Two installers, three schemas, stale docs | One installer (`gateway/setup.sh` forwards to it), and the backend owns the schema through versioned migrations. The documentation has been rewritten. |
 | HTTP tunnels buffer everything, strip cookies, no WebSockets | Streaming with backpressure, WebSocket passthrough, `Set-Cookie` without `Domain`, idle timeouts. |
-| Leftovers (simulated tunnels, hardcoded settings, `ws://` install commands, branding, license mismatch, repo URL, login gate) | Removed or fixed: `POST /api/tunnels` → 405, settings come from `/api/config`, install commands follow the server URL, MIT everywhere, repo `TrainABit/ssh-tunnel`. The login gate treats 429/5xx/network errors as errors. |
+| Leftovers (simulated tunnels, hardcoded settings, `ws://` install commands, branding, license mismatch, repo URL, login gate) | Removed or fixed: `POST /api/tunnels` → 405, settings come from `/api/config`, install commands follow the server URL, MIT everywhere (package metadata, OCI label and a root `LICENSE` file), repo `TrainABit/ssh-tunnel`. The login gate treats 429/5xx/network errors as errors. |
 | No tests, CI or container image | node:test suites for every component (including an end-to-end test with the real device client), CI workflow, Dockerfile. |
 
 Preserved from 1.x: parameterised SQL everywhere, validated helpers before `useradd` and
@@ -117,8 +130,10 @@ git history.
   and the backend listens on `127.0.0.1` only. HSTS (`max-age=31536000`, without
   `includeSubDomains`, because HTTP tunnels may still be plain HTTP) is sent over HTTPS.
 - **Dashboard session:** the cookie is `__Host-tv_session` (HttpOnly, Secure, SameSite=Strict,
-  Path=/), with a sliding lifetime of `SESSION_TTL_HOURS` (12). The server stores only a keyed
-  hash of the session ID and keeps at most 100 sessions. Changing `AUTH_TOKEN` invalidates all of
+  Path=/), with a sliding lifetime of `SESSION_TTL_HOURS` (12). Every request must also carry
+  the session key returned at login (`X-TV-Session-Key` header, or a `tv-key.<key>` subprotocol
+  on `/ws/ssh`). The server stores only a keyed hash of the session ID and a SHA-256 of the key,
+  and keeps at most 100 sessions. Changing `AUTH_TOKEN` invalidates all of
   them.
 - **Headers:** `Content-Security-Policy` (scripts and fonts from the same origin only, WebSockets
   only to the dashboard's own host, `object-src 'none'`, `frame-ancestors 'none'`),

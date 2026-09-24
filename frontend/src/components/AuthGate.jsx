@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, RefreshCw, ShieldAlert } from 'lucide-react';
-import { getSession, login, logout as apiLogout, UNAUTHORIZED_EVENT } from '../services/api';
+import { getSession, getSessionKey, login, logout as apiLogout, UNAUTHORIZED_EVENT } from '../services/api';
 import { AuthContext } from '../auth/AuthContext';
 import { isInsecurePublicUrl } from '../utils/serverUrl';
 import TunnelVaultLogo from '../assets/TunnelVaultLogo';
@@ -145,7 +145,14 @@ export default function AuthGate({ children }) {
     setFormError('');
     try {
       await login(value);
+      // The session is bound to a per-session key kept in this origin's localStorage.
+      if (!getSessionKey()) {
+        setFormError('The server accepted the token, but this browser cannot store the session key. '
+          + 'Allow site data (localStorage) for this dashboard, or leave private-browsing mode, then sign in again.');
+        return;
+      }
       // Make sure the browser actually kept the session cookie before entering the app.
+      // (getSession() also reports "logged out" when no session key is stored.)
       const s = await getSession();
       if (!s.authenticated) {
         setFormError('The server accepted the token, but the browser did not keep the session cookie. '
@@ -268,7 +275,7 @@ export default function AuthGate({ children }) {
         <p style={{ marginTop: '16px', textAlign: 'center', fontSize: '12px', color: 'var(--text-dim)', marginBottom: 0 }}>
           The token is <code style={{ color: 'var(--blue)', background: 'var(--surface2)', padding: '2px 6px', borderRadius: '4px', fontFamily: 'var(--font-mono)' }}>AUTH_TOKEN</code>
           {' '}in the server&apos;s <code style={{ color: 'var(--blue)', background: 'var(--surface2)', padding: '2px 6px', borderRadius: '4px', fontFamily: 'var(--font-mono)' }}>backend/.env</code>.
-          It is not stored in this browser.
+          It is not stored in this browser (only a per-session key that expires with the session).
         </p>
       </form>
     </Card>

@@ -1,10 +1,16 @@
 /**
  * TunnelVault dashboard API client.
  *
- * Authentication is cookie based: POST /api/auth/login sets an HttpOnly session
- * cookie and every request below is sent with `credentials: 'same-origin'`.
- * The admin AUTH_TOKEN is never stored in the browser (no localStorage, no
- * query strings). A 401 from any endpoint dispatches UNAUTHORIZED_EVENT so the
+ * Authentication: POST /api/auth/login sets an HttpOnly session cookie AND returns
+ * a per-session key ({sessionKey}) in the JSON body. The cookie alone is not
+ * enough: without TLS every port of the dashboard host (TCP tunnel ports, the
+ * proxy's ?tunnel= fallback) is same-site with the dashboard and receives its
+ * cookie. The key is kept in localStorage, which is scoped to scheme+host+port,
+ * so pages served from other ports cannot read it, and is sent as the
+ * `X-TV-Session-Key` header on every request (and as a `tv-key.<key>` WebSocket
+ * subprotocol for /ws/ssh). The key is not the admin token; it expires and is
+ * revoked with the session. The admin AUTH_TOKEN is never stored in the browser.
+ * A 401 from any endpoint clears the key and dispatches UNAUTHORIZED_EVENT so the
  * AuthGate can send the user back to the login screen.
  */
 
@@ -14,12 +20,44 @@ export const LEGACY_AUTH_TOKEN_KEY = 'tunnelvault_auth_token';
 // Fired on window whenever the API answers 401 (session expired / logged out).
 export const UNAUTHORIZED_EVENT = 'tunnelvault:unauthorized';
 
+// localStorage key of the per-session key returned by POST /api/auth/login.
+export const SESSION_KEY_STORAGE_KEY = 'tunnelvault_session_key';
+
+// Request header / WebSocket subprotocols carrying the session key (see backend/src/auth.js).
+export const SESSION_KEY_HEADER = 'X-TV-Session-Key';
+export const SSH_WS_SUBPROTOCOL = 'tunnelvault.v1';
+const SSH_WS_KEY_PREFIX = 'tv-key.';
+// Server format: 32 random bytes, base64url (43 chars). Anything else is never sent.
+const SESSION_KEY_RE = /^[A-Za-z0-9_-]{43}$/;
+
 const MAX_ERROR_MESSAGE_LENGTH = 300;
+
+/** The stored session key, or null (none, malformed, or storage unavailable). */
+export function getSessionKey() {
+  let key = null;
+  try { key = window.localStorage.getItem(SESSION_KEY_STORAGE_KEY); } catch { return null; }
+  return typeof key === 'string' && SESSION_KEY_RE.test(key) ? key : null;
+}
+
+function storeSessionKey(key) {
+  if (typeof key !== 'string' || !SESSION_KEY_RE.test(key)) {
+    clearSessionKey();
+    return;
+  }
+  try { window.localStorage.setItem(SESSION_KEY_STORAGE_KEY, key); } catch { /* storage unavailable */ }
+}
+
+/** Forget the session key (logout, 401, legacy cleanup). */
+export function clearSessionKey() {
+  try { window.localStorage.removeItem(SESSION_KEY_STORAGE_KEY); } catch { /* storage unavailable */ }
+}
 
 /** Remove the admin token that older dashboard versions left in browser storage. */
 export function purgeLegacyAuthToken() {
   try { window.localStorage.removeItem(LEGACY_AUTH_TOKEN_KEY); } catch { /* storage unavailable */ }
   try { window.sessionStorage.removeItem(LEGACY_AUTH_TOKEN_KEY); } catch { /* storage unavailable */ }
+  // Companion cleanup: drop a malformed/tampered session key (it would never be sent anyway).
+  if (!getSessionKey()) clearSessionKey();
 }
 
 export class ApiError extends Error {
@@ -66,6 +104,8 @@ function serverErrorMessage(data) {
  */
 export async function apiFetch(path, { method = 'GET', body, signal, notifyUnauthorized = true } = {}) {
   const headers = { Accept: 'application/json' };
+  const sessionKey = getSessionKey();
+  if (sessionKey) headers[SESSION_KEY_HEADER] = sessionKey;
   const init = { method, headers, credentials: 'same-origin', cache: 'no-store', signal };
   if (body !== undefined) {
     headers['Content-Type'] = 'application/json';
@@ -89,8 +129,10 @@ export async function apiFetch(path, { method = 'GET', body, signal, notifyUnaut
   }
 
   if (!res.ok) {
-    if (res.status === 401 && notifyUnauthorized) {
-      window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT));
+    if (res.status === 401) {
+      // The session (cookie + key) is no longer valid: the key is useless from now on.
+      clearSessionKey();
+      if (notifyUnauthorized) window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT));
     }
     // 401: always the generic "session expired" text (the UI returns to the login screen).
     const message = res.status === 401 ? describeStatus(401) : serverErrorMessage(data) || describeStatus(res.status);
@@ -112,24 +154,41 @@ const enc = encodeURIComponent;
 
 // ── Auth ──
 
-/** GET /api/auth/session -> { authenticated: bool, authRequired: bool } */
+/**
+ * GET /api/auth/session -> { authenticated: bool, authRequired: bool }
+ * When auth is required, a session without a stored session key counts as logged
+ * out (e.g. a cookie from a dashboard version before session keys): the user signs
+ * in once more and receives a key.
+ */
 export async function getSession() {
   const data = await apiFetch('/api/auth/session', { notifyUnauthorized: false });
   if (!data || typeof data.authenticated !== 'boolean') {
     throw new ApiError('Unexpected response from the server.', { status: 200 });
   }
-  return { authenticated: data.authenticated, authRequired: data.authRequired !== false };
+  const authRequired = data.authRequired !== false;
+  const authenticated = data.authenticated && (!authRequired || getSessionKey() !== null);
+  return { authenticated, authRequired };
 }
 
-/** POST /api/auth/login — the server answers with an HttpOnly session cookie. */
+/**
+ * POST /api/auth/login — the server answers with an HttpOnly session cookie and
+ * {sessionKey}, which is stored for this origin and sent with every later request.
+ */
 export async function login(token) {
-  return apiFetch('/api/auth/login', { method: 'POST', body: { token }, notifyUnauthorized: false });
+  clearSessionKey();
+  const data = await apiFetch('/api/auth/login', { method: 'POST', body: { token }, notifyUnauthorized: false });
+  storeSessionKey(data && data.sessionKey);
+  return data;
 }
 
-/** POST /api/auth/logout — clears the session cookie server side. */
+/** POST /api/auth/logout — ends the session server side (needs the key) and forgets the key. */
 export async function logout() {
   clearConfigCache();
-  return apiFetch('/api/auth/logout', { method: 'POST', notifyUnauthorized: false });
+  try {
+    return await apiFetch('/api/auth/logout', { method: 'POST', notifyUnauthorized: false });
+  } finally {
+    clearSessionKey();
+  }
 }
 
 // ── Server config ──
@@ -256,9 +315,33 @@ export async function getSessions(activeOnly = false) {
 
 // ── Web SSH terminal ──
 
-/** WebSocket URL of the browser SSH terminal. Authenticated by the session cookie. */
+/** WebSocket URL of the browser SSH terminal (no credentials in the URL). */
 export function getSshWsUrl(tunnelId) {
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
   const params = new URLSearchParams({ tunnelId: String(tunnelId) });
   return `${proto}://${window.location.host}/ws/ssh?${params.toString()}`;
+}
+
+/**
+ * Subprotocols offered on /ws/ssh: ['tunnelvault.v1', 'tv-key.<sessionKey>'].
+ * The server selects 'tunnelvault.v1' and never echoes the key entry.
+ * Without a stored key only 'tunnelvault.v1' is offered (servers without AUTH_TOKEN).
+ */
+export function sshWsProtocols() {
+  const key = getSessionKey();
+  return key ? [SSH_WS_SUBPROTOCOL, SSH_WS_KEY_PREFIX + key] : [SSH_WS_SUBPROTOCOL];
+}
+
+/**
+ * Open the browser SSH terminal socket, authenticated by the session cookie plus
+ * the session key (subprotocol). Throws ApiError(401) when auth is required and
+ * no session key is stored, so the caller can send the user back to login.
+ * @param {string} tunnelId
+ * @param {{ authRequired?: boolean }} [opts]
+ */
+export function openSshSocket(tunnelId, { authRequired = true } = {}) {
+  if (authRequired && !getSessionKey()) {
+    throw new ApiError(describeStatus(401), { status: 401 });
+  }
+  return new WebSocket(getSshWsUrl(tunnelId), sshWsProtocols());
 }
