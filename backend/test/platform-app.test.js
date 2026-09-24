@@ -61,6 +61,7 @@ describe('createTunnelVault()', () => {
 
   test('GET /api/config reports the effective configuration', async () => {
     fs.writeFileSync(process.env.TUNNELVAULT_UPDATE_CONF, 'ENABLED=1\nSCHEDULE="12h"\nUPDATE_REPO=TrainABit/ssh-tunnel\n');
+    fs.writeFileSync(process.env.TUNNELVAULT_UPDATE_TIMER, '[Timer]\nOnUnitActiveSec=12h\n');
     const installDir = path.join(TMP_DIR, 'install');
     fs.mkdirSync(installDir, { recursive: true });
     fs.writeFileSync(path.join(installDir, 'VERSION'), '2.0.0\n');
@@ -92,12 +93,18 @@ describe('createTunnelVault()', () => {
         sessionRetentionDays: 14,
         tunnelIdleRetentionDays: 0,
         maxTunnelsPerToken: 10,
-        autoUpdate: { enabled: true, schedule: '12h' },
+        autoUpdate: { enabled: true, paused: false, schedule: '12h' },
       });
       assert.ok(!JSON.stringify(r.body).includes(ADMIN_TOKEN));
+      // update.conf is shared with the client updater: without the server's timer the
+      // server does not update itself, whatever ENABLED says.
+      fs.rmSync(process.env.TUNNELVAULT_UPDATE_TIMER);
+      const noTimer = await request(vault.baseUrl, 'GET', '/api/config', { bearer: ADMIN_TOKEN });
+      assert.deepEqual(noTimer.body.autoUpdate, { enabled: false, paused: false, schedule: null });
     } finally {
       delete process.env.INSTALL_DIR;
       fs.rmSync(process.env.TUNNELVAULT_UPDATE_CONF, { force: true });
+      fs.rmSync(process.env.TUNNELVAULT_UPDATE_TIMER, { force: true });
       await vault.stop();
     }
   });
@@ -110,7 +117,7 @@ describe('createTunnelVault()', () => {
       assert.equal(r.body.publicUrl, null);
       assert.equal(r.body.trustProxy, false);
       assert.equal(r.body.storedKeysEnabled, false);
-      assert.deepEqual(r.body.autoUpdate, { enabled: false, schedule: null });
+      assert.deepEqual(r.body.autoUpdate, { enabled: false, paused: false, schedule: null });
       assert.equal(r.body.sessionRetentionDays, 90);
       assert.equal(r.body.tunnelIdleRetentionDays, 30);
       assert.match(r.body.version, /^\d+\.\d+\.\d+/);
@@ -123,20 +130,31 @@ describe('createTunnelVault()', () => {
 
   test('readAutoUpdate / loadConfig parsing', () => {
     const f = path.join(TMP_DIR, 'u.conf');
+    const timer = path.join(TMP_DIR, 'u.timer');
+    const missingTimer = path.join(TMP_DIR, 'missing.timer');
+    fs.writeFileSync(timer, '[Timer]\n');
     fs.writeFileSync(f, "# comment\nENABLED=0\nSCHEDULE='24h'\n");
-    assert.deepEqual(readAutoUpdate(f), { enabled: false, schedule: '24h' });
+    assert.deepEqual(readAutoUpdate(f, timer), { enabled: false, paused: true, schedule: '24h' });
     fs.writeFileSync(f, 'ENABLED=true # yes\n');
-    assert.deepEqual(readAutoUpdate(f), { enabled: true, schedule: null });
+    assert.deepEqual(readAutoUpdate(f, timer), { enabled: true, paused: false, schedule: null });
     // Exactly what install-server.sh / install-client.sh render (unquoted values, empty PINNED_VERSION).
     fs.writeFileSync(f, '# TunnelVault auto-update settings\nENABLED=1\nSCHEDULE=12h\nUPDATE_REPO=TrainABit/ssh-tunnel\n'
       + 'PINNED_VERSION=\nPUBKEY=/etc/tunnelvault/release-signing.pub\n');
-    assert.deepEqual(readAutoUpdate(f), { enabled: true, schedule: '12h' });
+    assert.deepEqual(readAutoUpdate(f, timer), { enabled: true, paused: false, schedule: '12h' });
+    // Same file written by install-client.sh on a device-only host (or seen from a container):
+    // the server has no updater timer, so its auto-update is not enabled.
+    assert.deepEqual(readAutoUpdate(f, missingTimer), { enabled: false, paused: false, schedule: null });
+    assert.deepEqual(readAutoUpdate(f, TMP_DIR), { enabled: false, paused: false, schedule: null }, 'a directory is not the timer');
     for (const [value, enabled] of [['yes', true], ['on', true], ['"1"', true], ['TRUE', true], ['0', false],
       ['no', false], ['off', false], ['', false], ['"0"', false]]) {
       fs.writeFileSync(f, `ENABLED=${value}\r\nSCHEDULE="6h"\r\n`);
-      assert.deepEqual(readAutoUpdate(f), { enabled, schedule: '6h' }, `ENABLED=${value}`);
+      assert.deepEqual(readAutoUpdate(f, timer), { enabled, paused: !enabled, schedule: '6h' }, `ENABLED=${value}`);
     }
-    assert.deepEqual(readAutoUpdate(path.join(TMP_DIR, 'missing.conf')), { enabled: false, schedule: null });
+    // Timer installed but no update.conf: the updater treats that as ENABLED=0 (paused).
+    assert.deepEqual(readAutoUpdate(path.join(TMP_DIR, 'missing.conf'), timer), { enabled: false, paused: true, schedule: null });
+    assert.deepEqual(readAutoUpdate(path.join(TMP_DIR, 'missing.conf'), missingTimer), { enabled: false, paused: false, schedule: null });
+    assert.equal(loadConfig({}).updateTimerPath, '/etc/systemd/system/tunnelvault-autoupdate.timer');
+    assert.equal(loadConfig({ TUNNELVAULT_UPDATE_TIMER: timer }).updateTimerPath, timer);
     // INSTALL_DIR/VERSION wins over the repo-root VERSION; junk is ignored.
     const installDir = fs.mkdtempSync(path.join(TMP_DIR, 'install-'));
     fs.writeFileSync(path.join(installDir, 'VERSION'), '2.3.4\n');
@@ -166,6 +184,62 @@ describe('createTunnelVault()', () => {
       assert.ok(stored.startsWith('tvenc:v1:'));
       assert.equal(box.decrypt(stored), pem);
       assert.ok(db.queryOne('SELECT disconnected_at FROM sessions WHERE id = ?', [Number(s.lastInsertRowid)]).disconnected_at);
+    } finally {
+      await vault.stop();
+    }
+  });
+});
+
+/**
+ * Raw upgrade request; resolves { data, closed, ms } once the server closes the
+ * socket, or { closed: false } after waitMs.
+ */
+function rawUpgrade(port, target, waitMs = 2000) {
+  return new Promise((resolve) => {
+    const t0 = Date.now();
+    const sock = net.connect(port, '127.0.0.1');
+    let data = '';
+    const timer = setTimeout(() => {
+      sock.destroy();
+      resolve({ data, closed: false, ms: Date.now() - t0 });
+    }, waitMs);
+    sock.on('connect', () => {
+      sock.write(`GET ${target} HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n`
+        + 'Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n');
+    });
+    sock.on('data', (d) => { data += d.toString('latin1'); });
+    sock.on('error', () => {});
+    sock.on('close', () => {
+      clearTimeout(timer);
+      resolve({ data, closed: true, ms: Date.now() - t0 });
+    });
+  });
+}
+
+describe('upgrade requests outside /ws and /ws/ssh', () => {
+  test('are answered 404 and closed at once (no unauthenticated socket parking)', async () => {
+    const vault = await startVault();
+    try {
+      for (const target of ['/nope', '/api/health', '/ws/other', '/wss', '/ws/ssh/x', '//']) {
+        const r = await rawUpgrade(vault.port, target);
+        assert.ok(r.closed, `${target}: socket still open after 2 s`);
+        assert.match(r.data, /^HTTP\/1\.1 404 /, `${target}: ${JSON.stringify(r.data.slice(0, 80))}`);
+      }
+      // Many at once: none of them is kept by the server
+      const burst = await Promise.all(Array.from({ length: 20 }, () => rawUpgrade(vault.port, '/x')));
+      assert.ok(burst.every((r) => r.closed && r.data.startsWith('HTTP/1.1 404')));
+      // /ws and /ws/ssh are still handled by their own endpoints
+      const ws = await rawUpgrade(vault.port, '/ws');
+      assert.match(ws.data, /^HTTP\/1\.1 401 /);
+      const ssh = await rawUpgrade(vault.port, '/ws/ssh?tunnelId=x');
+      assert.match(ssh.data, /^HTTP\/1\.1 401 /);
+      const dev = connectDevice(vault, ADMIN_TOKEN);
+      await dev.opened;
+      await dev.waitFor('hello');
+      dev.ws.close();
+      await dev.closed;
+      // Plain requests are unaffected
+      assert.equal((await request(vault.baseUrl, 'GET', '/api/health')).status, 200);
     } finally {
       await vault.stop();
     }

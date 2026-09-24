@@ -94,13 +94,18 @@ async function closeDevices() {
   devices.clear();
 }
 
-function openTerminal(vault, tunnelId, { cookie, bearer, origin } = {}) {
-  const headers = {};
+/**
+ * Open /ws/ssh like the dashboard does: session cookie + subprotocols
+ * ['tunnelvault.v1', 'tv-key.<sessionKey>'] (override with `protocols`), or Bearer.
+ */
+function openTerminal(vault, tunnelId, { cookie, key, bearer, origin, protocols, headers: extra = {} } = {}) {
+  const headers = { ...extra };
   if (cookie) headers.cookie = cookie;
   if (bearer) headers.authorization = `Bearer ${bearer}`;
   const opts = { headers };
   if (origin !== null) opts.origin = origin || `http://127.0.0.1:${vault.port}`;
-  const ws = new WebSocket(`ws://127.0.0.1:${vault.port}/ws/ssh?tunnelId=${encodeURIComponent(tunnelId)}`, opts);
+  const offered = protocols !== undefined ? protocols : (key ? ['tunnelvault.v1', `tv-key.${key}`] : []);
+  const ws = new WebSocket(`ws://127.0.0.1:${vault.port}/ws/ssh?tunnelId=${encodeURIComponent(tunnelId)}`, offered, opts);
   const messages = [];
   const frames = [];
   let textFrames = 0;
@@ -147,6 +152,7 @@ describe('web SSH terminal (/ws/ssh)', () => {
   let vault;
   let ssh;
   let cookie;
+  let key; // session key from the login response (X-TV-Session-Key / tv-key.<key> subprotocol)
   let origin;
   const box = createSecretBox({ key: crypto.randomBytes(32).toString('hex') });
 
@@ -160,6 +166,7 @@ describe('web SSH terminal (/ws/ssh)', () => {
     origin = `http://127.0.0.1:${vault.port}`;
     const login = await request(vault.baseUrl, 'POST', '/api/auth/login', { body: { token: ADMIN_TOKEN } });
     cookie = cookiePair(login.setCookie[0]);
+    key = login.body.sessionKey;
   });
   after(async () => {
     for (const s of ssh.state.streams) s.close();
@@ -168,7 +175,7 @@ describe('web SSH terminal (/ws/ssh)', () => {
     await vault.stop();
   });
 
-  test('upgrade requires a session cookie (or Bearer) and the same Origin; no query tokens', async () => {
+  test('upgrade requires a session cookie + key (or Bearer) and the same Origin; no query tokens', async () => {
     const tunnelId = await registerTunnel(vault, ssh.port);
     const anon = openTerminal(vault, tunnelId);
     await assert.rejects(anon.opened, (e) => e.status === 401);
@@ -179,15 +186,37 @@ describe('web SSH terminal (/ws/ssh)', () => {
       queryToken.on('error', () => {});
     });
     assert.equal(status, 401);
-    const cross = openTerminal(vault, tunnelId, { cookie, origin: 'http://evil.example' });
+    const cross = openTerminal(vault, tunnelId, { cookie, key, origin: 'http://evil.example' });
     await assert.rejects(cross.opened, (e) => e.status === 403);
-    const sameSite = openTerminal(vault, tunnelId, { cookie, origin: 'http://tunnel.test.local' });
+    const sameSite = openTerminal(vault, tunnelId, { cookie, key, origin: 'http://tunnel.test.local' });
     await assert.rejects(sameSite.opened, (e) => e.status === 403);
 
-    const viaCookie = openTerminal(vault, tunnelId, { cookie });
+    // A captured cookie alone (same origin, even with our subprotocol) is refused
+    const onlyCookie = openTerminal(vault, tunnelId, { cookie });
+    await assert.rejects(onlyCookie.opened, (e) => e.status === 401);
+    const onlyCookieProto = openTerminal(vault, tunnelId, { cookie, protocols: ['tunnelvault.v1'] });
+    await assert.rejects(onlyCookieProto.opened, (e) => e.status === 401);
+    const wrongKey = openTerminal(vault, tunnelId, { cookie, key: 'A'.repeat(43) });
+    await assert.rejects(wrongKey.opened, (e) => e.status === 401);
+    const keyNoCookie = openTerminal(vault, tunnelId, { key });
+    await assert.rejects(keyNoCookie.opened, (e) => e.status === 401);
+
+    const viaCookie = openTerminal(vault, tunnelId, { cookie, key });
     await viaCookie.opened;
+    assert.equal(viaCookie.ws.protocol, 'tunnelvault.v1');
     await viaCookie.waitFor('ready');
     viaCookie.ws.close();
+    // The key entry is never selected, whatever its position (the default would echo the first)
+    const keyFirst = openTerminal(vault, tunnelId, { cookie, key, protocols: [`tv-key.${key}`, 'tunnelvault.v1'] });
+    await keyFirst.opened;
+    assert.equal(keyFirst.ws.protocol, 'tunnelvault.v1');
+    keyFirst.ws.close();
+    // Non-browser clients may send the key as a header instead
+    const viaHeader = openTerminal(vault, tunnelId, { cookie, headers: { 'x-tv-session-key': key } });
+    await viaHeader.opened;
+    assert.equal(viaHeader.ws.protocol, '');
+    viaHeader.ws.close();
+    await Promise.all([keyFirst.closed, viaHeader.closed]);
     const viaBearer = openTerminal(vault, tunnelId, { bearer: ADMIN_TOKEN, origin: null });
     await viaBearer.opened;
     await viaBearer.waitFor('ready');
@@ -196,7 +225,7 @@ describe('web SSH terminal (/ws/ssh)', () => {
   });
 
   test('unknown tunnel / inactive tunnel are refused', async () => {
-    const t = openTerminal(vault, 'nope', { cookie });
+    const t = openTerminal(vault, 'nope', { cookie, key });
     await t.opened;
     const err = await t.waitFor('error');
     assert.equal(err.message, 'Tunnel not found');
@@ -206,7 +235,7 @@ describe('web SSH terminal (/ws/ssh)', () => {
   test('TOFU: unknown host key -> accept -> pinned; UTF-8 output is byte-exact in binary frames', async () => {
     const tunnelId = await registerTunnel(vault, ssh.port);
     ssh.state.input.length = 0;
-    const t = openTerminal(vault, tunnelId, { cookie });
+    const t = openTerminal(vault, tunnelId, { cookie, key });
     await t.opened;
     await t.waitFor('ready');
     t.sendJson({ type: 'credentials', username: 'alice', password: 'secret', cols: 100, rows: 30 });
@@ -244,7 +273,7 @@ describe('web SSH terminal (/ws/ssh)', () => {
     assert.deepEqual(ssh.state.resizes, [{ cols: 132, rows: 43 }]);
 
     // The pin shows up in the API
-    const list = await request(vault.baseUrl, 'GET', '/api/tunnels', { cookie });
+    const list = await request(vault.baseUrl, 'GET', '/api/tunnels', { cookie, headers: { 'x-tv-session-key': key } });
     const row = list.body.tunnels.find((x) => x.id === tunnelId);
     assert.equal(row.host_key_fingerprint, HOST_FP);
     assert.equal(row.has_private_key, false);
@@ -253,7 +282,7 @@ describe('web SSH terminal (/ws/ssh)', () => {
     await t.closed;
 
     // Second session: pinned key matches -> no prompt
-    const t2 = openTerminal(vault, tunnelId, { cookie });
+    const t2 = openTerminal(vault, tunnelId, { cookie, key });
     await t2.opened;
     await t2.waitFor('ready');
     t2.sendJson({ type: 'credentials', username: 'alice', password: 'secret' });
@@ -269,7 +298,7 @@ describe('web SSH terminal (/ws/ssh)', () => {
       const tunnelId = await registerTunnel(vault, other.port);
       db.run('INSERT INTO ssh_host_keys (pin_key, key_type, fingerprint) VALUES (?, ?, ?)',
         [`tunnel:${tunnelId}`, 'ssh-ed25519', HOST_FP]);
-      const t = openTerminal(vault, tunnelId, { cookie });
+      const t = openTerminal(vault, tunnelId, { cookie, key });
       await t.opened;
       await t.waitFor('ready');
       t.sendJson({ type: 'credentials', username: 'alice', password: 'secret' });
@@ -285,10 +314,10 @@ describe('web SSH terminal (/ws/ssh)', () => {
       assert.equal(db.queryOne('SELECT fingerprint FROM ssh_host_keys WHERE pin_key = ?', [`tunnel:${tunnelId}`]).fingerprint, HOST_FP);
 
       // Forgetting the pin via the API allows a fresh TOFU prompt
-      const del = await request(vault.baseUrl, 'DELETE', `/api/tunnels/${tunnelId}/hostkey`, { cookie, headers: { origin } });
+      const del = await request(vault.baseUrl, 'DELETE', `/api/tunnels/${tunnelId}/hostkey`, { cookie, headers: { origin, 'x-tv-session-key': key } });
       assert.equal(del.status, 200);
       assert.equal(del.body.removed, true);
-      const t2 = openTerminal(vault, tunnelId, { cookie });
+      const t2 = openTerminal(vault, tunnelId, { cookie, key });
       await t2.opened;
       await t2.waitFor('ready');
       t2.sendJson({ type: 'credentials', username: 'alice', password: 'secret' });
@@ -310,7 +339,7 @@ describe('web SSH terminal (/ws/ssh)', () => {
     // (works with any TCP_BIND_HOST and records no 127.0.0.1 sessions rows).
     assert.equal(vault.tcpProxy.stopListener(tunnelId), true);
     const bytesBefore = vault.tunnelManager.getTunnel(tunnelId).bytesTransferred;
-    const t = openTerminal(vault, tunnelId, { cookie });
+    const t = openTerminal(vault, tunnelId, { cookie, key });
     await t.opened;
     await t.waitFor('ready');
     t.sendJson({ type: 'credentials', username: 'alice', password: 'secret' });
@@ -340,7 +369,7 @@ describe('web SSH terminal (/ws/ssh)', () => {
   test('large paste: 6 MiB in 64 KiB frames reaches a slow SSH shell byte-exact (input backpressure)', async () => {
     const tunnelId = await registerTunnel(vault, ssh.port);
     const earlierShells = new Set(ssh.state.streams);
-    const t = openTerminal(vault, tunnelId, { cookie });
+    const t = openTerminal(vault, tunnelId, { cookie, key });
     await t.opened;
     await t.waitFor('ready');
     t.sendJson({ type: 'credentials', username: 'alice', password: 'secret' });
@@ -366,7 +395,7 @@ describe('web SSH terminal (/ws/ssh)', () => {
   test('device going offline ends the terminal session; offline tunnels are refused', async () => {
     const tunnelId = await registerTunnel(vault, ssh.port);
     const device = [...devices].pop();
-    const t = openTerminal(vault, tunnelId, { cookie });
+    const t = openTerminal(vault, tunnelId, { cookie, key });
     await t.opened;
     await t.waitFor('ready');
     t.sendJson({ type: 'credentials', username: 'alice', password: 'secret' });
@@ -380,7 +409,7 @@ describe('web SSH terminal (/ws/ssh)', () => {
     assert.ok(t.messages.some((m) => m.type === 'disconnected' || m.type === 'error'));
     await waitUntil(() => vault.tunnelManager.getTunnel(tunnelId).status === 'inactive', 5000, 'tunnel inactive');
 
-    const again = openTerminal(vault, tunnelId, { cookie });
+    const again = openTerminal(vault, tunnelId, { cookie, key });
     await again.opened;
     assert.equal((await again.waitFor('error')).message, 'Tunnel is not active');
     assert.equal((await again.closed).code, 1008);
@@ -388,7 +417,7 @@ describe('web SSH terminal (/ws/ssh)', () => {
 
   test('host key prompt times out (reject)', async () => {
     const tunnelId = await registerTunnel(vault, ssh.port);
-    const t = openTerminal(vault, tunnelId, { cookie });
+    const t = openTerminal(vault, tunnelId, { cookie, key });
     await t.opened;
     await t.waitFor('ready');
     t.sendJson({ type: 'credentials', username: 'alice', password: 'secret' });
@@ -402,17 +431,17 @@ describe('web SSH terminal (/ws/ssh)', () => {
   test('stored (encrypted) private key authentication; pin scoped to token + local port', async () => {
     const token = insertToken(db);
     const patch = await request(vault.baseUrl, 'PATCH', `/api/tokens/${token}`, {
-      cookie, headers: { origin }, body: { private_key: USER_KEY.private },
+      cookie, headers: { origin, 'x-tv-session-key': key }, body: { private_key: USER_KEY.private },
     });
     assert.equal(patch.status, 200);
     assert.ok(db.queryOne('SELECT private_key FROM tokens WHERE token = ?', [token]).private_key.startsWith('tvenc:v1:'));
     const tunnelId = await registerTunnel(vault, ssh.port, token);
 
-    const list = await request(vault.baseUrl, 'GET', '/api/tunnels', { cookie });
+    const list = await request(vault.baseUrl, 'GET', '/api/tunnels', { cookie, headers: { 'x-tv-session-key': key } });
     assert.equal(list.body.tunnels.find((x) => x.id === tunnelId).has_private_key, true);
     assert.ok(!JSON.stringify(list.body).includes('BEGIN'));
 
-    const t = openTerminal(vault, tunnelId, { cookie });
+    const t = openTerminal(vault, tunnelId, { cookie, key });
     await t.opened;
     await t.waitFor('ready');
     t.sendJson({ type: 'credentials', username: 'keyuser', useStoredKey: true });
@@ -424,7 +453,7 @@ describe('web SSH terminal (/ws/ssh)', () => {
     await t.closed;
 
     // Wrong password -> SSH auth error, socket closed
-    const bad = openTerminal(vault, tunnelId, { cookie });
+    const bad = openTerminal(vault, tunnelId, { cookie, key });
     await bad.opened;
     await bad.waitFor('ready');
     bad.sendJson({ type: 'credentials', username: 'alice', password: 'wrong' });
@@ -435,21 +464,21 @@ describe('web SSH terminal (/ws/ssh)', () => {
 
   test('stored key refused when the owner has none; invalid credentials messages', async () => {
     const tunnelId = await registerTunnel(vault, ssh.port, insertToken(db));
-    const t = openTerminal(vault, tunnelId, { cookie });
+    const t = openTerminal(vault, tunnelId, { cookie, key });
     await t.opened;
     await t.waitFor('ready');
     t.sendJson({ type: 'credentials', username: 'keyuser', useStoredKey: true });
     assert.equal((await t.waitFor('error')).message, 'No stored SSH key found for this tunnel');
     assert.equal((await t.closed).code, 1008);
 
-    const big = openTerminal(vault, tunnelId, { cookie });
+    const big = openTerminal(vault, tunnelId, { cookie, key });
     await big.opened;
     await big.waitFor('ready');
     big.sendJson({ type: 'credentials', username: 'alice', password: 'x'.repeat(70 * 1024) });
     assert.equal((await big.waitFor('error')).message, 'Message too large');
     assert.equal((await big.closed).code, 1009);
 
-    const badUser = openTerminal(vault, tunnelId, { cookie });
+    const badUser = openTerminal(vault, tunnelId, { cookie, key });
     await badUser.opened;
     await badUser.waitFor('ready');
     badUser.sendJson({ type: 'credentials', username: 'a b\n', password: 'x' });

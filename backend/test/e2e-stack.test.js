@@ -76,6 +76,7 @@ Object.assign(process.env, {
   HTTP_TUNNEL_URL_TEMPLATE: `http://{subdomain}.${DOMAIN}`,
   GEOIP_PROVIDER: 'off',
   TUNNELVAULT_UPDATE_CONF: path.join(TMP_DIR, 'update.conf'),
+  TUNNELVAULT_UPDATE_TIMER: path.join(TMP_DIR, 'tunnelvault-autoupdate.timer'),
 });
 
 const { test, describe, before, after } = require('node:test');
@@ -287,6 +288,7 @@ describe('end-to-end: server + real device client', { timeout: 60_000 }, () => {
   const clientLogs = [];
   const rebootCalls = [];
   let cookie = null;
+  let sessionKey = null; // from the login response; required next to the cookie
   const ids = {};    // localPort role -> tunnel id
   const ports = {};  // role -> public TCP port
 
@@ -294,6 +296,7 @@ describe('end-to-end: server + real device client', { timeout: 60_000 }, () => {
     const headers = { accept: 'application/json' };
     if (useCookie) {
       headers.cookie = cookie;
+      headers['x-tv-session-key'] = sessionKey;
       headers.origin = origin;
     } else {
       headers.authorization = `Bearer ${AUTH_TOKEN}`;
@@ -350,9 +353,9 @@ describe('end-to-end: server + real device client', { timeout: 60_000 }, () => {
   }
 
   function openTerminal(tunnelId) {
-    const ws = new WebSocket(`ws://127.0.0.1:${apiPort}/ws/ssh?tunnelId=${encodeURIComponent(tunnelId)}`, {
-      headers: { cookie }, origin,
-    });
+    // Exactly what the dashboard does: cookie + ['tunnelvault.v1', 'tv-key.<sessionKey>']
+    const ws = new WebSocket(`ws://127.0.0.1:${apiPort}/ws/ssh?tunnelId=${encodeURIComponent(tunnelId)}`,
+      ['tunnelvault.v1', `tv-key.${sessionKey}`], { headers: { cookie }, origin });
     const messages = [];
     const frames = [];
     ws.on('message', (data, isBinary) => {
@@ -460,7 +463,7 @@ describe('end-to-end: server + real device client', { timeout: 60_000 }, () => {
     assert.equal(cfg.json.trustProxy, false);
     assert.equal(cfg.json.geoipProvider, 'off');
     assert.equal(cfg.json.httpTunnelUrlTemplate, `http://{subdomain}.${DOMAIN}`);
-    assert.deepEqual(cfg.json.autoUpdate, { enabled: false, schedule: null });
+    assert.deepEqual(cfg.json.autoUpdate, { enabled: false, paused: false, schedule: null });
 
     // Saved state: owner secrets (keep the ports stable) in a private file.
     const stateFile = path.join(clientStateDir, 'state.json');
@@ -563,11 +566,21 @@ describe('end-to-end: server + real device client', { timeout: 60_000 }, () => {
     assert.match(setCookie[0], /HttpOnly/i);
     assert.match(setCookie[0], /SameSite=Strict/i);
     cookie = setCookie[0].split(';')[0];
-    const session = await httpRequest({ port: apiPort, path: '/api/auth/session', headers: { cookie } });
+    sessionKey = JSON.parse(login.body.toString()).sessionKey;
+    assert.match(sessionKey, /^[A-Za-z0-9_-]{43}$/);
+    // The cookie alone (what a device port on the same host would receive) is not a session
+    const cookieOnly = await httpRequest({ port: apiPort, path: '/api/auth/session', headers: { cookie } });
+    assert.deepEqual(JSON.parse(cookieOnly.body.toString()), { authenticated: false, authRequired: true });
+    const replay = await httpRequest({ port: apiPort, path: '/api/tokens', headers: { cookie } });
+    assert.equal(replay.status, 401);
+    const session = await httpRequest({
+      port: apiPort, path: '/api/auth/session', headers: { cookie, 'x-tv-session-key': sessionKey },
+    });
     assert.deepEqual(JSON.parse(session.body.toString()), { authenticated: true, authRequired: true });
 
     const t = openTerminal(ids.ssh);
     await t.opened;
+    assert.equal(t.ws.protocol, 'tunnelvault.v1');
     await t.waitFor('ready');
     t.send({ type: 'credentials', username: 'e2e', password: 'pw', cols: 120, rows: 40 });
     const unknown = await t.waitFor('hostkey-unknown');

@@ -49,6 +49,11 @@ const DEFAULT_PROXY_PORT = 4001;
 const DEFAULT_API_RATE_LIMIT = 300; // requests per minute per client IP
 const SHUTDOWN_GRACE_MS = 3000;
 const DEFAULT_UPDATE_CONF = '/etc/tunnelvault/update.conf';
+// Installed by install-server.sh --auto-update. update.conf alone says nothing about
+// the server: the client's updater (install-client.sh) shares that file.
+const DEFAULT_UPDATE_TIMER = '/etc/systemd/system/tunnelvault-autoupdate.timer';
+// WebSocket endpoints (wsHandler, sshWsHandler); every other upgrade is refused.
+const WEBSOCKET_PATHS = new Set(['/ws', '/ws/ssh']);
 
 /** Configuration problem the operator must fix (server.js exits with code 78, no restart loop). */
 class ConfigError extends Error {
@@ -104,6 +109,7 @@ function loadConfig(env = process.env, options = {}) {
     maxTunnelsPerToken: positiveInt(env.MAX_TUNNELS_PER_TOKEN, 10),
     apiRateLimitPerMin: positiveInt(pick('apiRateLimitPerMin', 'API_RATE_LIMIT_PER_MIN'), DEFAULT_API_RATE_LIMIT),
     updateConfPath: String(pick('updateConfPath', 'TUNNELVAULT_UPDATE_CONF') || '').trim() || DEFAULT_UPDATE_CONF,
+    updateTimerPath: String(pick('updateTimerPath', 'TUNNELVAULT_UPDATE_TIMER') || '').trim() || DEFAULT_UPDATE_TIMER,
     frontendDist: options.frontendDist || path.join(__dirname, '..', '..', 'frontend', 'dist'),
     installDir: String(env.INSTALL_DIR || '').trim() || null,
   };
@@ -127,13 +133,13 @@ function readVersion(installDir) {
   }
 }
 
-/** Best-effort read of the updater config (ENABLED=1, SCHEDULE="12h"). */
-function readAutoUpdate(file) {
+/** KEY=value lines of a shell-style config file ({} when unreadable). */
+function readConfFile(file) {
   let text;
   try {
     text = fs.readFileSync(file, 'utf8');
   } catch {
-    return { enabled: false, schedule: null };
+    return {};
   }
   const values = {};
   for (const line of text.split(/\r?\n/)) {
@@ -144,9 +150,28 @@ function readAutoUpdate(file) {
     else v = v.replace(/\s+#.*$/, '');
     values[m[1]] = v;
   }
+  return values;
+}
+
+/**
+ * State of the SERVER's signed auto-updater:
+ *   { enabled, paused, schedule }
+ *   enabled - the updater timer is installed AND update.conf has ENABLED=1/true/yes/on
+ *   paused  - the timer is installed but ENABLED is off/missing (the updater does nothing)
+ *   schedule - SCHEDULE from update.conf while the timer is installed, else null
+ * update.conf is shared with the client updater on hosts running both, so ENABLED
+ * alone (e.g. a client-only install, or Docker) does not mean the server updates itself.
+ */
+function readAutoUpdate(file, timerFile = DEFAULT_UPDATE_TIMER) {
+  let installed = false;
+  try {
+    installed = fs.statSync(timerFile).isFile();
+  } catch {}
+  if (!installed) return { enabled: false, paused: false, schedule: null };
+  const values = readConfFile(file);
   const enabled = /^(1|true|yes|on)$/i.test(values.ENABLED || '');
   const schedule = values.SCHEDULE ? String(values.SCHEDULE).slice(0, 64) : null;
-  return { enabled, schedule };
+  return { enabled, paused: !enabled, schedule };
 }
 
 function listen(server, port, host, name) {
@@ -204,7 +229,8 @@ function trackSockets(server) {
 /**
  * @param {object} [options] - overrides: env, port, proxyPort, bindHost, authToken, nodeEnv, trustProxy,
  *   domain, publicUrl, httpTunnelUrlTemplate, tlsCert, tlsKey, sessionTtlHours, sessionRetentionDays,
- *   tunnelIdleRetentionDays, apiRateLimitPerMin, updateConfPath, frontendDist, db, secretBox,
+ *   tunnelIdleRetentionDays, apiRateLimitPerMin, loginAttemptsPerMin (tests; default 10),
+ *   updateConfPath, updateTimerPath, frontendDist, db, secretBox,
  *   tcpProxyOptions, sshOptions, wsOptions, maintenanceIntervalMs, closeDbOnStop (default true)
  */
 function createTunnelVault(options = {}) {
@@ -269,6 +295,7 @@ function createTunnelVault(options = {}) {
     sessionTtlHours: config.sessionTtlHours,
     trustProxy,
     getClientIp: (req) => req.ip || getClientIp(req),
+    loginAttemptsPerMin: options.loginAttemptsPerMin,
   });
   const maintenance = createMaintenance({
     db,
@@ -350,7 +377,7 @@ function createTunnelVault(options = {}) {
       sessionRetentionDays: config.sessionRetentionDays,
       tunnelIdleRetentionDays: config.tunnelIdleRetentionDays,
       maxTunnelsPerToken: config.maxTunnelsPerToken,
-      autoUpdate: readAutoUpdate(config.updateConfPath),
+      autoUpdate: readAutoUpdate(config.updateConfPath, config.updateTimerPath),
     };
   }
 
@@ -408,6 +435,25 @@ function createTunnelVault(options = {}) {
     ...(options.sshOptions || {}),
   });
 
+  // Registered after the /ws and /ws/ssh handlers. Once Node emits 'upgrade' its header
+  // and keep-alive timeouts no longer apply, so an upgrade nobody answers would hold the
+  // socket forever: refuse every other path (and unparseable URLs) right away. Sockets
+  // for /ws and /ws/ssh are left alone — their handlers may complete asynchronously.
+  function refuseUnknownUpgrade(req, socket) {
+    let pathname = null;
+    try {
+      pathname = new URL(req.url, 'http://localhost').pathname;
+    } catch {}
+    if (pathname !== null && WEBSOCKET_PATHS.has(pathname)) return;
+    if (socket.destroyed) return;
+    socket.on('error', () => {}); // the HTTP server no longer listens on upgraded sockets
+    try {
+      socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+    } catch {}
+    socket.destroy();
+  }
+  server.on('upgrade', refuseUnknownUpgrade);
+
   // ─── Public HTTP tunnel proxy ──────────────────────────
   let proxyServer;
   try {
@@ -416,6 +462,7 @@ function createTunnelVault(options = {}) {
     });
   } catch (err) {
     // e.g. unreadable TLS_PROXY_CERT: release everything created so far
+    server.removeListener('upgrade', refuseUnknownUpgrade);
     wsApi.close();
     sshApi.close();
     tcpProxy.destroy();
@@ -457,6 +504,7 @@ function createTunnelVault(options = {}) {
     if (stopPromise) return stopPromise;
     stopPromise = (async () => {
       maintenance.stop();
+      server.removeListener('upgrade', refuseUnknownUpgrade);
       try { wsApi.close(); } catch (err) { log.warn('Error closing device WebSocket server', { error: err.message }); }
       try { sshApi.close(); } catch (err) { log.warn('Error closing web terminal', { error: err.message }); }
       try { tcpProxy.destroy(); } catch (err) { log.warn('Error stopping TCP listeners', { error: err.message }); }

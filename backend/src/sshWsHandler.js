@@ -3,9 +3,11 @@
 /**
  * Browser SSH terminal: WebSocket endpoint /ws/ssh?tunnelId=<id>.
  *
- * Auth: dashboard session cookie (or `Authorization: Bearer <AUTH_TOKEN>`) plus a
- * same-origin Origin check — never a query-string token. Upgrades are rate
- * limited per client IP (proxy-aware getClientIp).
+ * Auth: dashboard session cookie + session key (or `Authorization: Bearer <AUTH_TOKEN>`)
+ * plus a same-origin Origin check — never a query-string token. Browsers pass the
+ * session key as a subprotocol: new WebSocket(url, ['tunnelvault.v1', 'tv-key.<sessionKey>']).
+ * The server selects 'tunnelvault.v1' and never echoes the key entry. Upgrades are
+ * rate limited per client IP (proxy-aware getClientIp).
  *
  * Protocol (control = JSON text frames, terminal data = BINARY frames both ways):
  *   server  {type:'ready'}
@@ -30,6 +32,7 @@ const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
 const { Client } = require('ssh2');
 const { createRateLimiter } = require('./rateLimiter');
+const { WS_SUBPROTOCOL } = require('./auth');
 const { isEncrypted } = require('./secretBox');
 const { openTunnelStream } = require('./protocol');
 const { createLogger } = require('./logger');
@@ -137,7 +140,14 @@ function initSshWebSocket(server, deps = {}, ...legacyArgs) {
     max: deps.rateLimitPerMin > 0 ? deps.rateLimitPerMin : envInt('WEB_SSH_RATE_LIMIT_PER_MIN', DEFAULT_RATE_PER_MIN),
   });
 
-  const wss = new WebSocketServer({ noServer: true, maxPayload: WS_MAX_PAYLOAD, perMessageDeflate: false });
+  const wss = new WebSocketServer({
+    noServer: true,
+    maxPayload: WS_MAX_PAYLOAD,
+    perMessageDeflate: false,
+    // Browsers fail the handshake unless one offered subprotocol is selected. Select
+    // only ours: the default (first offered) could echo the tv-key.<sessionKey> entry.
+    handleProtocols: (protocols) => (protocols.has(WS_SUBPROTOCOL) ? WS_SUBPROTOCOL : false),
+  });
   let activeSessions = 0;
   let closed = false;
 

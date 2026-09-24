@@ -23,13 +23,14 @@ for (const key of [
   'PORT', 'PROXY_PORT', 'BIND_HOST', 'PUBLIC_URL', 'HTTP_TUNNEL_URL_TEMPLATE', 'ALLOWED_ORIGINS',
   'TCP_BIND_HOST', 'SESSION_RETENTION_DAYS', 'TUNNEL_IDLE_RETENTION_DAYS', 'SESSION_TTL_HOURS',
   'API_RATE_LIMIT_PER_MIN', 'WEB_SSH_RATE_LIMIT_PER_MIN', 'WEB_SSH_MAX_SESSIONS', 'INSTALL_DIR',
-  'TUNNELVAULT_UPDATE_CONF', 'MAX_TUNNELS_PER_TOKEN', 'LOG_FILE', 'LOG_FORMAT',
+  'TUNNELVAULT_UPDATE_CONF', 'TUNNELVAULT_UPDATE_TIMER', 'MAX_TUNNELS_PER_TOKEN', 'LOG_FILE', 'LOG_FORMAT',
 ]) {
   delete process.env[key];
 }
 process.env.DOMAIN = 'test.local';
-// Never touch the real updater config
+// Never touch the real updater config (or depend on this host's systemd units)
 process.env.TUNNELVAULT_UPDATE_CONF = path.join(TMP_DIR, 'update.conf');
+process.env.TUNNELVAULT_UPDATE_TIMER = path.join(TMP_DIR, 'tunnelvault-autoupdate.timer');
 
 const ADMIN_TOKEN = 'platform-admin-token-0123456789';
 

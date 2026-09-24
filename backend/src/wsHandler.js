@@ -498,6 +498,9 @@ function initWebSocket(server, deps = {}, ...legacyArgs) {
   function close() {
     if (closed) return;
     closed = true;
+    // From here on devices disconnect because the server stops, not because
+    // they went offline: their tunnels must stay "live at shutdown" in the DB.
+    if (typeof tunnelManager.beginShutdown === 'function') tunnelManager.beginShutdown();
     clearInterval(heartbeat);
     server.removeListener('upgrade', onUpgrade);
     attemptLimiter.destroy();

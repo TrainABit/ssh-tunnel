@@ -203,11 +203,16 @@ with backpressure; WebSocket and other `Upgrade` requests are passed through.
 
 The proxy routes by `Host: <subdomain>.<DOMAIN>` (only hosts under `DOMAIN`),
 or, for hosts outside `DOMAIN` such as a bare IP address, by `?tunnel=<tunnelId>`
-(all tunnels then share one browser origin, so use that only for testing). It regenerates `X-Forwarded-For`,
+(all tunnels then share one browser origin, so use that only for testing).
+It never serves a tunnel on the dashboard's own host name (`DOMAIN` itself or
+the host of `PUBLIC_URL`, whatever the port). It regenerates `X-Forwarded-For`,
 `X-Forwarded-Proto`, `X-Forwarded-Host` and `X-Real-IP`, drops hop-by-hop
 headers, strips any `Domain=` attribute from `Set-Cookie` (cookies stay
 host-only) and blocks `Strict-Transport-Security` / `Public-Key-Pins` from
-tunnelled applications.
+tunnelled applications. The dashboard's session cookies (`tv_session`,
+`__Host-tv_session`) are removed from the `Cookie` header before a request
+reaches the device, and a `Set-Cookie` from the device for one of these names
+is dropped, so a tunnelled application cannot use cookies with these names.
 
 **Legacy (servers < 2.0 only):** old servers send
 `{"type":"request","id","method","path","headers","body"}` (body base64 or
@@ -253,6 +258,15 @@ fields are optional so old devices keep working.
   owner token. Such a record is claimed once, by the first `reconnect` that
   presents its correct `ownerSecret`; from then on it belongs to that token.
   This keeps existing devices on their public TCP ports across the upgrade.
+* Records survive server restarts, upgrades and crashes, so a device that
+  reconnects keeps its tunnel and public TCP port. The server removes a record
+  only after its device has been offline for `TUNNEL_IDLE_RETENTION_DAYS`
+  (default 30; paused tunnels are never removed). "Offline" means no device
+  connection, not "no traffic": while a device is connected its tunnels count
+  as active. A tunnel whose device was connected when the server stopped or
+  crashed counts as active until that restart, however long the server was
+  down. An unclaimed 1.x record counts as offline only from the start of the
+  current server process.
 
 ## 11. Example (v2)
 
