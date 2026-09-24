@@ -5,6 +5,7 @@ const { createLogger } = require('./logger');
 const { compileTrust } = require('./requestIp');
 const { isUuid, openTunnelStream, spliceSocket } = require('./protocol');
 const { normalizeDomain } = require('./tunnelManager');
+const { COOKIE_SECURE, COOKIE_PLAIN } = require('./auth');
 const log = createLogger('proxy');
 
 const DEFAULT_IDLE_TIMEOUT_MS = 120_000;
@@ -21,6 +22,9 @@ const BLOCKED_RESPONSE_HEADERS = new Set([
 ]);
 // Request headers we (re)generate ourselves.
 const FORWARDING_HEADERS = new Set(['x-forwarded-for', 'x-forwarded-proto', 'x-forwarded-host', 'x-real-ip', 'forwarded']);
+// Dashboard session cookies (names are case-sensitive): never sent to a
+// device, and a device can never set them.
+const DASHBOARD_COOKIES = new Set([COOKIE_SECURE, COOKIE_PLAIN]);
 
 /** Host header -> lower-case hostname without port / trailing dot ('' if invalid). */
 function hostnameOf(hostHeader) {
@@ -33,6 +37,50 @@ function hostnameOf(hostHeader) {
   const colon = host.indexOf(':');
   if (colon >= 0) host = host.slice(0, colon);
   return host.replace(/\.$/, '');
+}
+
+/**
+ * Hostname of a URL ("https://host:port/path") or of a bare host[:port]
+ * value, normalised like hostnameOf ('' if empty or invalid).
+ */
+function hostnameOfUrl(value) {
+  if (typeof value !== 'string') return '';
+  const v = value.trim();
+  if (!v) return '';
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(v)) {
+    try { return hostnameOf(new URL(v).host); } catch { return ''; }
+  }
+  return hostnameOf(v);
+}
+
+/** Name of a cookie pair "name=value" (trimmed), or null for a pair without a name. */
+function cookiePairName(pair) {
+  const eq = pair.indexOf('=');
+  return eq > 0 ? pair.slice(0, eq).trim() : null;
+}
+
+/**
+ * Cookie request header(s) without the dashboard session cookies, as one
+ * header value, or undefined when no cookie remains. Accepts a string or an
+ * array of header values (repeated / HTTP/2-style Cookie headers).
+ */
+function stripDashboardCookies(value) {
+  if (value === undefined || value === null) return undefined;
+  const kept = [];
+  for (const header of [].concat(value)) {
+    for (const part of String(header).split(';')) {
+      const pair = part.trim();
+      if (!pair) continue;
+      if (DASHBOARD_COOKIES.has(cookiePairName(pair))) continue;
+      kept.push(pair);
+    }
+  }
+  return kept.length > 0 ? kept.join('; ') : undefined;
+}
+
+/** Does this Set-Cookie value set one of the dashboard session cookies? */
+function setsDashboardCookie(setCookie) {
+  return DASHBOARD_COOKIES.has(cookiePairName(String(setCookie).split(';')[0].trim()));
 }
 
 /** Remove every Domain= attribute so cookies stay host-only. */
@@ -69,7 +117,8 @@ function filterResponseHeaders(headers) {
     if (value === undefined) continue;
     if (HOP_BY_HOP.has(name) || listed.has(name) || BLOCKED_RESPONSE_HEADERS.has(name)) continue;
     if (name === 'set-cookie') {
-      out[name] = [].concat(value).map(stripCookieDomain);
+      const cookies = [].concat(value).filter(c => !setsDashboardCookie(c)).map(stripCookieDomain);
+      if (cookies.length > 0) out[name] = cookies;
       continue;
     }
     out[name] = value;
@@ -99,7 +148,10 @@ function serializeResponseHead(proxyRes, upgraded) {
     if (BLOCKED_RESPONSE_HEADERS.has(lower)) continue;
     const keepForUpgrade = upgraded && (lower === 'connection' || lower === 'upgrade');
     if (!keepForUpgrade && (HOP_BY_HOP.has(lower) || listed.has(lower))) continue;
-    if (lower === 'set-cookie') value = stripCookieDomain(value);
+    if (lower === 'set-cookie') {
+      if (setsDashboardCookie(value)) continue;
+      value = stripCookieDomain(value);
+    }
     lines.push(`${name}: ${value}`);
   }
   if (!upgraded) lines.push('Connection: close');
@@ -136,15 +188,27 @@ function rejectRaw(socket, status, text) {
  * Routing: Host header "<subdomain>.<DOMAIN>" (only hosts under DOMAIN), or
  * the `?tunnel=<id>` query parameter for hosts outside DOMAIN (e.g. a bare IP;
  * all tunnels then share one origin, so this is meant for testing only).
+ * Nothing is ever served on DOMAIN itself or on the dashboard's host
+ * (PUBLIC_URL / options.dashboardHost), and the dashboard session cookies are
+ * never forwarded to (or accepted from) a device.
  *
  * @param {TunnelManager} tunnelManager
  * @param {ConnectionTracker} connectionTracker
- * @param {object} [options] - { tcpProxy, getClientIp, trustProxy, domain, idleTimeoutMs }
+ * @param {object} [options] - { tcpProxy, getClientIp, trustProxy, domain, idleTimeoutMs,
+ *   publicUrl (dashboard URL; default env PUBLIC_URL), dashboardHost (extra dashboard host name(s)) }
  * @returns {http.Server|https.Server}
  */
 function createProxyServer(tunnelManager, connectionTracker, options = {}) {
   const domain = normalizeDomain(options.domain || process.env.DOMAIN);
   const domainSuffix = `.${domain}`;
+  // Hosts the dashboard is served on: tunnel content must never appear there
+  // (it could read or toss the dashboard's cookies, which are not port-scoped).
+  const dashboardHosts = new Set([domain]);
+  const publicUrl = options.publicUrl !== undefined ? options.publicUrl : process.env.PUBLIC_URL;
+  for (const value of [publicUrl].concat(options.dashboardHost === undefined ? [] : options.dashboardHost)) {
+    const host = hostnameOfUrl(value);
+    if (host) dashboardHosts.add(host);
+  }
   const idleTimeoutMs = options.idleTimeoutMs > 0
     ? options.idleTimeoutMs
     : (parseInt(process.env.HTTP_PROXY_IDLE_TIMEOUT_MS, 10) || DEFAULT_IDLE_TIMEOUT_MS);
@@ -156,15 +220,16 @@ function createProxyServer(tunnelManager, connectionTracker, options = {}) {
 
   function resolveTunnel(req) {
     const hostname = hostnameOf(req.headers.host);
+    // Never on the dashboard's own host (DOMAIN or PUBLIC_URL's host), whatever the port.
+    if (dashboardHosts.has(hostname)) return null;
     if (hostname.endsWith(domainSuffix)) {
       const sub = hostname.slice(0, -domainSuffix.length);
       if (sub && !sub.includes('.')) return tunnelManager.getTunnelBySubdomain(sub);
       return null;
     }
     // `?tunnel=<id>` fallback (setups without wildcard DNS). Never on our own
-    // names: tunnel content must not appear on the dashboard's host or on
-    // another tunnel's subdomain (cookie tossing / same-origin access).
-    if (hostname === domain) return null;
+    // names: tunnel content must not appear on the dashboard's host (checked
+    // above) or on another tunnel's subdomain (cookie tossing / same-origin access).
     const q = typeof req.url === 'string' ? req.url.indexOf('?') : -1;
     if (q >= 0) {
       let id = null;
@@ -204,7 +269,8 @@ function createProxyServer(tunnelManager, connectionTracker, options = {}) {
 
   /**
    * Headers sent to the device: hop-by-hop headers dropped (Connection and
-   * Upgrade kept for upgrade requests), forwarding headers regenerated.
+   * Upgrade kept for upgrade requests), forwarding headers regenerated, the
+   * dashboard session cookies removed from Cookie (never hand them to a device).
    */
   function requestHeaders(req, fwd, upgrade) {
     const listed = connectionTokens(req.headers.connection);
@@ -213,6 +279,11 @@ function createProxyServer(tunnelManager, connectionTracker, options = {}) {
       if (value === undefined || name === 'expect') continue;
       if (HOP_BY_HOP.has(name) || listed.has(name)) continue;
       if (FORWARDING_HEADERS.has(name) && !(fwd.trusted && name === 'forwarded')) continue;
+      if (name === 'cookie') {
+        const cookie = stripDashboardCookies(value);
+        if (cookie !== undefined) headers.cookie = cookie;
+        continue;
+      }
       headers[name] = value;
     }
     if (upgrade) {
@@ -437,4 +508,12 @@ function createProxyServer(tunnelManager, connectionTracker, options = {}) {
   return server;
 }
 
-module.exports = { createProxyServer, stripCookieDomain, filterResponseHeaders, serializeResponseHead, hostnameOf };
+module.exports = {
+  createProxyServer,
+  stripCookieDomain,
+  stripDashboardCookies,
+  filterResponseHeaders,
+  serializeResponseHead,
+  hostnameOf,
+  hostnameOfUrl,
+};

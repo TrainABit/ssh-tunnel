@@ -295,8 +295,29 @@ function tokensRouter(db, deps = {}) {
       return res.status(400).json({ error: 'No valid fields to update' });
     }
 
+    // A key on a token created without one (linux_user 'ws-<token>'): it becomes a
+    // gateway token, exactly as if it had been created with the key (POST).
+    const gatewayUser = `gw-${token}`;
+    const becomesGateway = !!newPublicKey
+      && !(typeof existing.linux_user === 'string' && existing.linux_user.startsWith('gw-'));
+    if (becomesGateway) {
+      const taken = db.queryOne('SELECT id FROM tokens WHERE linux_user = ? AND id != ?', [gatewayUser, existing.id]);
+      if (taken) {
+        return res.status(409).json({ error: 'Token or linux_user already exists' });
+      }
+      set('linux_user', gatewayUser);
+    }
+
     values.push(token);
-    const result = db.run(`UPDATE tokens SET ${sets.join(', ')} WHERE token = ?`, values);
+    let result;
+    try {
+      result = db.run(`UPDATE tokens SET ${sets.join(', ')} WHERE token = ?`, values);
+    } catch (err) {
+      if (err.message && err.message.includes('UNIQUE')) {
+        return res.status(409).json({ error: 'Token or linux_user already exists' });
+      }
+      throw err;
+    }
     if (result.changes === 0) {
       return res.status(404).json({ error: 'Token not found' });
     }
@@ -318,9 +339,14 @@ function tokensRouter(db, deps = {}) {
       log.info('Token reactivated', { token: hint(token) });
     }
 
-    // Keep the gateway Linux user's authorized key in sync.
-    if (newPublicKey !== null && newPublicKey !== existing.public_key
+    if (becomesGateway) {
+      // Gateway user creation is reported, never silent (same fields as POST).
+      const r = await userManager.createLinuxUser(gatewayUser, newPublicKey);
+      Object.assign(response, linuxUserResult('created', r));
+      log.info('Token turned into a gateway token', { token: hint(token), queued: !!(r && r.queued), ok: !!(r && r.ok) });
+    } else if (newPublicKey !== null && newPublicKey !== existing.public_key
         && typeof existing.linux_user === 'string' && existing.linux_user.startsWith('gw-')) {
+      // Keep the gateway Linux user's authorized key in sync.
       const r = newPublicKey
         ? await userManager.createLinuxUser(existing.linux_user, newPublicKey)
         : await userManager.deleteLinuxUser(existing.linux_user);

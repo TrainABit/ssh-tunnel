@@ -42,6 +42,10 @@ describe('logger redaction', () => {
     assert.equal(redactText(`user gw-${DEVICE_TOKEN} created`), 'user gw-Zq7v*** created');
     assert.equal(redactText('ws-handler started'), 'ws-handler started');
     assert.equal(redactPath('/api/sessions?active=1'), '/api/sessions?active=1');
+    // Web terminal session key (Sec-WebSocket-Protocol entry)
+    const key = 'k'.repeat(43);
+    assert.equal(redactText(`protocols tunnelvault.v1, tv-key.${key}`), 'protocols tunnelvault.v1, tv-key.***');
+    assert.equal(redactText('tv-key.***'), 'tv-key.***');
   });
 
   test('redactMeta: sensitive keys, token keys, nested objects, errors', () => {
@@ -55,6 +59,9 @@ describe('logger redaction', () => {
       cookie: 'tv_session=abc',
       sessionId: 'abcdef',
       session_id: 42,
+      sessionKey: 'k'.repeat(43),
+      'x-tv-session-key': 'k'.repeat(43),
+      'sec-websocket-protocol': `tunnelvault.v1, tv-key.${'k'.repeat(43)}`,
       token: DEVICE_TOKEN,
       linux_user: `gw-${DEVICE_TOKEN}`,
       nested: { headers: { Cookie: 'x=y', 'set-cookie': ['a'] }, url: '/x?auth_token=zzz' },
@@ -71,6 +78,9 @@ describe('logger redaction', () => {
     assert.equal(out.cookie, '[REDACTED]');
     assert.equal(out.sessionId, '[REDACTED]');
     assert.equal(out.session_id, 42); // numeric row id: not a secret
+    assert.equal(out.sessionKey, '[REDACTED]');
+    assert.equal(out['x-tv-session-key'], '[REDACTED]');
+    assert.equal(out['sec-websocket-protocol'], '[REDACTED]');
     assert.equal(out.token, 'Zq7v***');
     assert.equal(out.linux_user, 'gw-Zq7v***');
     assert.equal(out.nested.headers.Cookie, '[REDACTED]');

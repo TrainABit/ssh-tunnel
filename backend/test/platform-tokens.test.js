@@ -202,6 +202,73 @@ describe('tokens API', () => {
     assert.equal(del.body.linux_user_error, 'boom');
   });
 
+  test('PATCH public_key on a token created without one turns it into a gateway token (user created, reported)', async () => {
+    const created = await request(srv.base, 'POST', '/api/tokens', { body: { token: 'PlainTok1' } });
+    assert.equal(created.status, 201);
+    assert.equal(created.body.linux_user, 'ws-PlainTok1');
+    assert.equal(fakes.calls.createUser.length, 0);
+
+    const r = await request(srv.base, 'PATCH', '/api/tokens/PlainTok1', { body: { public_key: `${PUBKEY}\n` } });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.token.linux_user, 'gw-PlainTok1');
+    assert.equal(r.body.token.public_key, PUBKEY.trim());
+    assert.equal(db.queryOne('SELECT linux_user FROM tokens WHERE token = ?', ['PlainTok1']).linux_user, 'gw-PlainTok1');
+    assert.deepEqual(fakes.calls.createUser, [['gw-PlainTok1', PUBKEY.trim()]]);
+    assert.equal(r.body.linux_user_created, false);
+    assert.equal(r.body.linux_user_queued, true);
+    assert.equal(r.body.linux_user_error, undefined);
+    assertNoPrivateKey(r.body);
+
+    // From now on it is an ordinary gateway token: key changes re-sync, clearing deletes the user.
+    const other = generateKeyPair('ed25519').public;
+    const sync = await request(srv.base, 'PATCH', '/api/tokens/PlainTok1', { body: { public_key: other } });
+    assert.equal(sync.status, 200);
+    assert.equal(sync.body.linux_user_queued, true);
+    assert.deepEqual(fakes.calls.createUser[1], ['gw-PlainTok1', other.trim()]);
+    const rm = await request(srv.base, 'PATCH', '/api/tokens/PlainTok1', { body: { public_key: '' } });
+    assert.equal(rm.status, 200);
+    assert.deepEqual(fakes.calls.deleteUser, ['gw-PlainTok1']);
+
+    // A failing user manager is reported, not swallowed
+    const failing = await startApp({
+      ...fakes,
+      secretBox: box,
+      userManager: {
+        normalizePublicKey: userManager.normalizePublicKey,
+        async createLinuxUser() { return { ok: false, error: 'useradd failed' }; },
+        async deleteLinuxUser() { return { ok: true }; },
+      },
+    });
+    try {
+      await request(failing.base, 'POST', '/api/tokens', { body: { token: 'PlainTok2' } });
+      const f = await request(failing.base, 'PATCH', '/api/tokens/PlainTok2', { body: { public_key: PUBKEY, label: 'gw' } });
+      assert.equal(f.status, 200);
+      assert.equal(f.body.token.linux_user, 'gw-PlainTok2');
+      assert.equal(f.body.token.label, 'gw');
+      assert.equal(f.body.linux_user_created, false);
+      assert.equal(f.body.linux_user_queued, false);
+      assert.equal(f.body.linux_user_error, 'useradd failed');
+    } finally {
+      await failing.close();
+    }
+
+    // A 30-character token cannot become a gateway token (Linux user name limit)
+    const t30 = 'Q'.repeat(30);
+    assert.equal((await request(srv.base, 'POST', '/api/tokens', { body: { token: t30 } })).status, 201);
+    const long = await request(srv.base, 'PATCH', `/api/tokens/${t30}`, { body: { public_key: PUBKEY } });
+    assert.equal(long.status, 400);
+    assert.equal(db.queryOne('SELECT linux_user FROM tokens WHERE token = ?', [t30]).linux_user, `ws-${t30}`);
+
+    // gw-<token> held by another row (legacy data): refused, nothing changed
+    await request(srv.base, 'POST', '/api/tokens', { body: { token: 'PlainTok3' } });
+    db.run("INSERT INTO tokens (token, label, linux_user) VALUES ('LegacyRow1', 'legacy', 'gw-PlainTok3')");
+    const clash = await request(srv.base, 'PATCH', '/api/tokens/PlainTok3', { body: { public_key: PUBKEY } });
+    assert.equal(clash.status, 409);
+    const row = db.queryOne('SELECT linux_user, public_key FROM tokens WHERE token = ?', ['PlainTok3']);
+    assert.deepEqual(row, { linux_user: 'ws-PlainTok3', public_key: '' });
+    assert.equal(fakes.calls.createUser.length, 2);
+  });
+
   test('input validation', async () => {
     assert.equal((await request(srv.base, 'POST', '/api/tokens', { body: { token: 'has space' } })).status, 400);
     assert.equal((await request(srv.base, 'POST', '/api/tokens', { body: { target_ip: '999.1.1.1' } })).status, 400);

@@ -64,11 +64,11 @@ function closeServer(server) {
  * Boot the core stack on ephemeral ports.
  * @param {object} [opts] - authToken, heartbeatMs, maxConnectionsPerToken, maxTunnelsPerToken,
  *   upgradeAttemptsPerMin, authFailuresPerMin, getClientIp, portMin, proxy (bool), domain,
- *   trustProxy, idleTimeoutMs, statsFlushMs
+ *   trustProxy, idleTimeoutMs, statsFlushMs, activityRefreshMs, publicUrl, dashboardHost
  */
 async function startHarness(opts = {}) {
   const authToken = opts.authToken === undefined ? 'admin-secret-token' : opts.authToken;
-  const tunnelManager = new TunnelManager(db, { statsFlushMs: opts.statsFlushMs });
+  const tunnelManager = new TunnelManager(db, { statsFlushMs: opts.statsFlushMs, activityRefreshMs: opts.activityRefreshMs });
   const connectionTracker = new ConnectionTracker();
   // Random 200-port window per harness so parallel test files rarely collide.
   const portMin = opts.portMin || 20000 + Math.floor(Math.random() * 150) * 200;
@@ -103,6 +103,9 @@ async function startHarness(opts = {}) {
       trustProxy,
       getClientIp: createIpResolver(trustProxy),
       idleTimeoutMs: opts.idleTimeoutMs,
+      // Explicit (null = none) so an inherited PUBLIC_URL cannot change routing in tests.
+      publicUrl: opts.publicUrl === undefined ? null : opts.publicUrl,
+      dashboardHost: opts.dashboardHost,
     });
     proxyPort = await listen(proxyServer);
   }

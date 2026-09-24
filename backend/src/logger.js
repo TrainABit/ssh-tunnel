@@ -49,8 +49,8 @@ function nextRequestId() {
 }
 
 // ─── Redaction ──────────────────────────────────────────
-// Secrets must never reach the logs: tokens, passwords, keys, cookies, session ids.
-const SENSITIVE_KEY_RE = /authorization|password|passphrase|private_?key|secret|cookie|session_?id/i;
+// Secrets must never reach the logs: tokens, passwords, keys, cookies, session ids and session keys.
+const SENSITIVE_KEY_RE = /authorization|password|passphrase|private_?key|secret|cookie|session[_-]?(?:id|key)|sec-websocket-protocol/i;
 // Keys that carry device tokens: logged as a 4-char prefix + '***'.
 const TOKEN_KEY_RE = /^(token|auth_?token|client_?token|device_?token|linux_?user)$/i;
 const MAX_REDACT_DEPTH = 6;
@@ -70,11 +70,13 @@ function tokenHint(value) {
  *   Authorization/Bearer credentials                    -> Bearer ***
  *   /api/tokens/<token>                                 -> /api/tokens/abcd***
  *   gw-<token> / ws-<token> Linux user names            -> gw-abcd***
+ *   tv-key.<sessionKey> (web terminal subprotocol)      -> tv-key.***
  */
 function redactText(text) {
   if (typeof text !== 'string' || text.length === 0) return text;
   return text
-    .replace(/([?&;](?:auth_token|token|ticket|access_token|session|password|secret)=)[^&#\s"']*/gi, '$1***')
+    .replace(/([?&;](?:auth_token|token|ticket|access_token|session|session_key|password|secret)=)[^&#\s"']*/gi, '$1***')
+    .replace(/\btv-key\.[A-Za-z0-9_-]+/g, 'tv-key.***')
     .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, '$1 ***')
     .replace(/(\/api\/tokens\/)([A-Za-z0-9]{1,4})[A-Za-z0-9]*(?:\*\*\*)?/g, '$1$2***') // idempotent
     .replace(/\b(gw|ws)-([A-Za-z0-9]{4})[A-Za-z0-9]{4,}\b/g, '$1-$2***');

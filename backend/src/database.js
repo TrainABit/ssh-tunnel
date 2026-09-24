@@ -73,9 +73,11 @@ db.exec(`
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
-  -- Dashboard login sessions. Only a SHA-256 hash of the session id is stored.
+  -- Dashboard login sessions. Only hashes are stored: a keyed SHA-256 of the
+  -- session id (cookie) and a SHA-256 of the session key (X-TV-Session-Key).
   CREATE TABLE IF NOT EXISTS admin_sessions (
       id_hash TEXT PRIMARY KEY,
+      key_hash TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       expires_at TEXT NOT NULL,
       last_seen TEXT,
@@ -89,10 +91,13 @@ function columnInfo(table) {
   return db.prepare(`PRAGMA table_info(${table})`).all();
 }
 
+/** Returns true when the column was added. */
 function addColumnIfMissing(table, column, definition) {
   if (!columnInfo(table).some(c => c.name === column)) {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    return true;
   }
+  return false;
 }
 
 addColumnIfMissing('tunnels', 'protocol', "TEXT NOT NULL DEFAULT 'http'");
@@ -109,6 +114,11 @@ addColumnIfMissing('sessions', 'city', 'TEXT');
 addColumnIfMissing('sessions', 'tunnel_id', 'TEXT');
 // Encrypted at rest (see secretBox.js); '' = no stored key
 addColumnIfMissing('tokens', 'private_key', "TEXT NOT NULL DEFAULT ''");
+// Dashboard sessions are bound to a session key (auth.js). Sessions from before
+// have none and can never validate again: drop them (one-time re-login).
+if (addColumnIfMissing('admin_sessions', 'key_hash', 'TEXT')) {
+  db.exec('DELETE FROM admin_sessions');
+}
 
 // ─── Versioned migrations (table rebuilds) ────────────────
 const SCHEMA_VERSION = 2;

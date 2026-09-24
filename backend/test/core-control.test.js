@@ -3,14 +3,19 @@
 // Control plane: revocation (registry + heartbeat), per-token limits,
 // connection cap (4003), upgrade auth + rate limiting, tunnel cleanup and
 // batched stats.
-const { startHarness, listen, closeServer, waitUntil } = require('./helpers/core-harness');
+const { startHarness, listen, closeServer, waitUntil, db: realDb } = require('./helpers/core-harness');
 const { test, describe, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const net = require('net');
 const crypto = require('crypto');
 const { once } = require('events');
 const TunnelManager = require('../src/tunnelManager');
+const { createMaintenance } = require('../src/maintenance');
 const { FakeDevice } = require('./helpers/core-device');
+
+const DAY_MS = 86400_000;
+/** SQLite datetime format (created_at default). */
+const sqlTime = (ms) => new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
 
 let echoServer;
 let echoPort;
@@ -473,6 +478,56 @@ describe('TunnelManager stats flushing (unit)', () => {
     tm.destroy();
   });
 
+  test('flushStats refreshes last_activity of connected tunnels without traffic (throttled), not of offline ones', () => {
+    const db = fakeDb();
+    const tm = new TunnelManager(db, { statsFlushMs: 60_000, activityRefreshMs: 3_600_000 });
+    const ws = { readyState: 1, clientId: 'c1' };
+    const live = tm.createTunnel({ name: 'live', localPort: 1, protocol: 'tcp' }, ws);
+    const offWs = { readyState: 1, clientId: 'c2' };
+    const off = tm.createTunnel({ name: 'off', localPort: 2, protocol: 'tcp' }, offWs);
+    tm.markDisconnected(off.id, offWs);
+    offWs.readyState = 3;
+    assert.equal(tm.flushStats(), 0, 'fresh tunnels need no refresh');
+
+    const old = new Date(Date.now() - 40 * DAY_MS).toISOString();
+    live.lastActivity = old;
+    off.lastActivity = old;
+    db.calls.run.length = 0;
+    const t0 = Date.now();
+    assert.equal(tm.flushStats(), 1, 'only the connected tunnel is refreshed');
+    const [u] = db.calls.run.filter(c => c.sql.startsWith('UPDATE tunnels SET connections'));
+    assert.equal(u.params[3], live.id);
+    assert.ok(Date.parse(u.params[2]) >= t0);
+    assert.equal(live.lastActivity, u.params[2]);
+    assert.equal(off.lastActivity, old, 'an offline tunnel stays idle');
+    assert.equal(tm.flushStats(), 0, 'throttled: at most once per activityRefreshMs');
+
+    live.lastActivity = new Date(Date.now() - 3_600_000 - 1000).toISOString();
+    assert.equal(tm.flushStats(), 1, 'refreshed again after activityRefreshMs');
+    tm.destroy();
+  });
+
+  test('beginShutdown records connected tunnels as live at shutdown; later disconnects are not persisted', () => {
+    const db = fakeDb();
+    const tm = new TunnelManager(db, { statsFlushMs: 60_000 });
+    const ws = { readyState: 1, clientId: 'c1' };
+    const a = tm.createTunnel({ name: 'a', localPort: 1, protocol: 'tcp' }, ws);
+    a.lastActivity = new Date(Date.now() - 40 * DAY_MS).toISOString();
+    db.calls.run.length = 0;
+    const t0 = Date.now();
+    tm.beginShutdown();
+    const touched = db.calls.run.filter(c => c.sql.startsWith('UPDATE tunnels SET connections') && c.params[3] === a.id);
+    assert.equal(touched.length, 1, 'last_activity of the connected tunnel written');
+    assert.ok(Date.parse(touched[0].params[2]) >= t0);
+    db.calls.run.length = 0;
+    ws.readyState = 3;
+    tm.markDisconnected(a.id, ws);
+    assert.equal(a.status, 'inactive', 'in memory the device is gone');
+    assert.deepEqual(db.calls.run, [], "the DB keeps it live (no 'inactive' written during shutdown)");
+    tm.destroy();
+    assert.deepEqual(db.calls.run, [], 'nothing left to flush');
+  });
+
   test('createTunnel requires a device connection (no simulated tunnels); API views hide secrets', () => {
     const tm = new TunnelManager(fakeDb(), { statsFlushMs: 60_000 });
     assert.throws(() => tm.createTunnel({ name: 'sim', localPort: 80, protocol: 'http' }));
@@ -589,5 +644,173 @@ describe('dev mode (no AUTH_TOKEN)', () => {
     h.db.run('UPDATE tokens SET active = 0 WHERE token = ?', [revoked]);
     await assert.rejects(device({ token: revoked }), (e) => e.statusCode === 401);
     await Promise.all([anon.close(), d.close()]);
+  });
+});
+
+describe('tunnel records survive restarts (idle retention, stable ports)', () => {
+  const startupPass = (h) => createMaintenance({ db: h.db, tunnelManager: h.tunnelManager, tunnelIdleRetentionDays: 30 })
+    .runStartup();
+  const tunnelRow = (id) => realDb.queryOne('SELECT status, last_activity, client_token FROM tunnels WHERE id = ?', [id]);
+
+  function insertRow(fields) {
+    const row = {
+      name: 'row', local_port: 22, status: 'inactive', created_at: sqlTime(Date.now()), protocol: 'tcp',
+      allocated_port: null, owner_secret: crypto.randomBytes(32).toString('hex'), preferred_port: null,
+      client_token: null, last_activity: null, ...fields,
+    };
+    row.id = row.id || crypto.randomUUID();
+    row.subdomain = row.subdomain || row.name;
+    row.public_url = row.public_url || (row.allocated_port ? `tcp:${row.allocated_port}` : 'tcp:?');
+    realDb.run(`INSERT INTO tunnels (id, name, subdomain, local_port, public_url, status, created_at, connections,
+        bytes_transferred, protocol, allocated_port, owner_secret, preferred_port, client_token, last_activity)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?)`,
+    [row.id, row.name, row.subdomain, row.local_port, row.public_url, row.status, row.created_at, row.protocol,
+      row.allocated_port, row.owner_secret, row.preferred_port, row.client_token, row.last_activity]);
+    return row;
+  }
+
+  test('a pre-2.0 record (created 60 days ago) survives the upgrade boot and a second restart, then is claimed on its old port', async () => {
+    const portMin = 20000 + Math.floor(Math.random() * 150) * 200;
+    const P = portMin + 150; // not the first free port: keeping it proves the stable port
+    // 1.x shape: the 2.0 columns client_token / last_activity were added as NULL.
+    const legacy = insertRow({ name: 'legacy-ssh', local_port: echoPort, status: 'active',
+      created_at: sqlTime(Date.now() - 60 * DAY_MS), allocated_port: P, preferred_port: P });
+
+    let h = await startHarness({ portMin });
+    try {
+      startupPass(h); // what app.start() runs before the listeners open
+      assert.ok(h.tunnelManager.getTunnel(legacy.id), 'kept by the startup retention pass');
+      h.tunnelManager.cleanupIdleTunnels(30 * DAY_MS);
+      assert.ok(h.tunnelManager.getTunnel(legacy.id), 'and by later passes');
+      // Nothing persisted: the next start still sees an unclaimed pre-2.0 record.
+      assert.deepEqual(tunnelRow(legacy.id), { status: 'inactive', last_activity: null, client_token: null });
+    } finally {
+      await h.close();
+    }
+
+    h = await startHarness({ portMin });
+    const d = new FakeDevice({ url: h.wsUrl, token: h.createToken('legacy-device') });
+    try {
+      startupPass(h);
+      assert.ok(h.tunnelManager.getTunnel(legacy.id), 'kept after another restart');
+      await d.connect();
+      const rec = await d.reconnect(legacy.id, legacy.owner_secret);
+      assert.equal(rec.type, 'reconnected', JSON.stringify(rec));
+      assert.equal(rec.allocatedPort, P, 'same public port as before the upgrade');
+      (await openEcho(P)).destroy();
+      const row = tunnelRow(legacy.id);
+      assert.equal(row.client_token, d.token, 'claimed by the device token');
+      assert.ok(row.last_activity);
+    } finally {
+      await d.terminate().catch(() => {});
+      await h.close();
+    }
+  });
+
+  test('a pre-2.0 record is still removed once this process has run longer than the retention', async () => {
+    const legacy = insertRow({ name: 'legacy-gone', created_at: sqlTime(Date.now() - 60 * DAY_MS) });
+    const tm = new TunnelManager(realDb, { statsFlushMs: 60_000 });
+    try {
+      assert.equal(tm.cleanupIdleTunnels(60_000), 0);
+      assert.ok(tm.getTunnel(legacy.id));
+      await new Promise(r => setTimeout(r, 30));
+      tm.cleanupIdleTunnels(10); // idle since this process started (> 10 ms ago)
+      assert.equal(tm.getTunnel(legacy.id), null);
+      assert.equal(tunnelRow(legacy.id), undefined);
+    } finally {
+      tm.destroy();
+    }
+  });
+
+  test('a record live at the last stop/crash survives a restart however old its last_activity; offline ones still expire', async () => {
+    const old = new Date(Date.now() - 40 * DAY_MS).toISOString();
+    const created = sqlTime(Date.now() - 100 * DAY_MS);
+    const token = 'tok-retention';
+    // Device connected (but without traffic) when the server was killed.
+    const wasLive = insertRow({ name: 'was-live', status: 'active', client_token: token, last_activity: old, created_at: created });
+    // Device offline for 40 days before the restart.
+    const offline = insertRow({ name: 'offline', status: 'inactive', client_token: token, last_activity: old, created_at: created });
+    const paused = insertRow({ name: 'paused', status: 'paused', client_token: token, last_activity: old, created_at: created });
+
+    const t0 = Date.now();
+    const tm = new TunnelManager(realDb, { statsFlushMs: 60_000 });
+    try {
+      tm.cleanupIdleTunnels(30 * DAY_MS);
+      const t = tm.getTunnel(wasLive.id);
+      assert.ok(t, 'live at shutdown: kept');
+      assert.equal(t.status, 'inactive');
+      assert.ok(Date.parse(t.lastActivity) >= t0);
+      const row = tunnelRow(wasLive.id);
+      assert.equal(row.status, 'inactive');
+      assert.ok(Date.parse(row.last_activity) >= t0, 'refreshed last_activity is persisted (survives the next restart too)');
+
+      assert.equal(tm.getTunnel(offline.id), null, 'offline for 40 days: removed');
+      assert.equal(tunnelRow(offline.id), undefined);
+      assert.ok(tm.getTunnel(paused.id), 'paused: never removed');
+      assert.equal(tunnelRow(paused.id).last_activity, old);
+    } finally {
+      tm.destroy();
+    }
+  });
+
+  test('a connected device without traffic keeps its tunnel fresh (heartbeat flush)', async () => {
+    const h = await startHarness({ statsFlushMs: 50, activityRefreshMs: 200 });
+    const d = new FakeDevice({ url: h.wsUrl, token: h.createToken('quiet-device') });
+    try {
+      await d.connect();
+      const reg = await d.register({ localPort: echoPort, protocol: 'tcp' });
+      const old = new Date(Date.now() - 40 * DAY_MS).toISOString();
+      const t0 = Date.now();
+      h.tunnelManager.getTunnel(reg.tunnelId).lastActivity = old;
+      realDb.run('UPDATE tunnels SET last_activity = ? WHERE id = ?', [old, reg.tunnelId]);
+      await waitUntil(() => Date.parse(tunnelRow(reg.tunnelId).last_activity) >= t0, 3000, 'last_activity refreshed');
+      assert.equal(h.tunnelManager.getTunnel(reg.tunnelId).bytesTransferred, 0, 'without any traffic');
+    } finally {
+      await d.terminate().catch(() => {});
+      await h.close();
+    }
+  });
+
+  test('a graceful stop keeps connected tunnels (and their ports) however long the server stays down', async () => {
+    const portMin = 20000 + Math.floor(Math.random() * 150) * 200;
+    let h = await startHarness({ portMin, statsFlushMs: 60_000 });
+    const token = h.createToken('stop-device');
+    const d = new FakeDevice({ url: h.wsUrl, token });
+    let reg;
+    try {
+      await d.connect();
+      reg = await d.register({ localPort: echoPort, protocol: 'tcp' });
+      assert.equal(reg.type, 'registered');
+      // Connected for 40 days without traffic.
+      const old = new Date(Date.now() - 40 * DAY_MS).toISOString();
+      h.tunnelManager.getTunnel(reg.tunnelId).lastActivity = old;
+      realDb.run('UPDATE tunnels SET last_activity = ? WHERE id = ?', [old, reg.tunnelId]);
+    } finally {
+      const t0 = Date.now();
+      await h.close();
+      const { code } = await d.closed;
+      assert.equal(code, 1001);
+      await new Promise(r => setTimeout(r, 50)); // let the server-side close handlers run
+      const row = tunnelRow(reg.tunnelId);
+      assert.equal(row.status, 'active', 'recorded as live at shutdown');
+      assert.ok(Date.parse(row.last_activity) >= t0);
+    }
+    // The server stays down for 40 days.
+    realDb.run('UPDATE tunnels SET last_activity = ? WHERE id = ?',
+      [new Date(Date.now() - 40 * DAY_MS).toISOString(), reg.tunnelId]);
+
+    h = await startHarness({ portMin });
+    const d2 = new FakeDevice({ url: h.wsUrl, token });
+    try {
+      startupPass(h);
+      assert.ok(h.tunnelManager.getTunnel(reg.tunnelId), 'kept by the startup retention pass');
+      await d2.connect();
+      const rec = await d2.reconnect(reg.tunnelId, reg.ownerSecret);
+      assert.equal(rec.type, 'reconnected', JSON.stringify(rec));
+      assert.equal(rec.allocatedPort, reg.allocatedPort, 'same public port');
+    } finally {
+      await d2.terminate().catch(() => {});
+      await h.close();
+    }
   });
 });

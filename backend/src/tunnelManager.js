@@ -4,6 +4,9 @@ const { createLogger } = require('./logger');
 const log = createLogger('tunnel-mgr');
 
 const STATS_FLUSH_MS = 5000;
+// How often last_activity of a connected device's tunnel is refreshed without
+// traffic (idle means "device offline", not "no traffic").
+const ACTIVITY_REFRESH_MS = 60 * 60 * 1000;
 const MAX_RECORDS_PER_TOKEN = 50;
 const WS_OPEN = 1;
 
@@ -58,6 +61,8 @@ class TunnelManager extends EventEmitter {
    * @param {number} [options.statsFlushMs=5000] - stats flush interval (never more often than this)
    * @param {number} [options.maxRecordsPerToken=50] - stored tunnel records per device token;
    *   the least recently used inactive ones are pruned beyond this
+   * @param {number} [options.activityRefreshMs=3600000] - last_activity of tunnels with a
+   *   connected device is refreshed at least this often, even without traffic
    */
   constructor(db, options = {}) {
     super();
@@ -65,8 +70,11 @@ class TunnelManager extends EventEmitter {
     this.db = db || null;
     this.statsFlushMs = options.statsFlushMs > 0 ? options.statsFlushMs : STATS_FLUSH_MS;
     this.maxRecordsPerToken = options.maxRecordsPerToken > 0 ? options.maxRecordsPerToken : MAX_RECORDS_PER_TOKEN;
+    this.activityRefreshMs = options.activityRefreshMs > 0 ? options.activityRefreshMs : ACTIVITY_REFRESH_MS;
     this._dirty = new Set(); // tunnel ids with unflushed stats
     this._destroyed = false;
+    this._shuttingDown = false; // see beginShutdown()
+    this._loadedAt = Date.now(); // this process's start, for records restored from the DB
 
     this._load();
 
@@ -74,14 +82,33 @@ class TunnelManager extends EventEmitter {
     this._flushTimer.unref();
   }
 
+  /**
+   * Restore the tunnel records after a (re)start. No device is connected yet,
+   * so every record starts 'inactive' (a manual pause survives). Records must
+   * survive until their devices had a chance to reconnect (stable public ports):
+   *  - a record the DB still marks live (not 'inactive'/'paused') had its
+   *    device connected when the previous process stopped or crashed: its
+   *    last_activity is refreshed (and persisted) to now;
+   *  - a pre-2.0 record (no client_token and no last_activity) keeps NULL in
+   *    the DB so it can still be claimed after another restart; its idle time
+   *    counts from this process start instead (see cleanupIdleTunnels).
+   */
   _load() {
     if (!this.db) return;
     try {
       // Simulated (API-created, device-less) tunnels no longer exist.
       this.db.run("DELETE FROM tunnels WHERE status = 'simulated'");
       const rows = this.db.query('SELECT * FROM tunnels');
+      const loadedAt = new Date(this._loadedAt).toISOString();
+      const liveAtShutdown = [];
       for (const row of rows) {
         const protocol = row.protocol === 'tcp' ? 'tcp' : 'http';
+        // Rows written before client_token was persisted (neither column set).
+        // Their owner is unknown; the first reconnect that proves the
+        // ownerSecret claims them, so devices keep their stable ports.
+        const legacyUnowned = !row.client_token && !row.last_activity;
+        const wasLive = row.status !== 'inactive' && row.status !== 'paused';
+        if (wasLive && !legacyUnowned) liveAtShutdown.push(row.id);
         const tunnel = {
           id: row.id,
           name: row.name,
@@ -100,15 +127,19 @@ class TunnelManager extends EventEmitter {
           preferredPort: row.preferred_port || null,
           clientToken: row.client_token || null,
           clientId: null,
-          lastActivity: row.last_activity || null,
-          // Rows written before client_token was persisted (neither column set).
-          // Their owner is unknown; the first reconnect that proves the
-          // ownerSecret claims them, so devices keep their stable ports.
-          legacyUnowned: !row.client_token && !row.last_activity,
+          lastActivity: wasLive && !legacyUnowned ? loadedAt : (row.last_activity || null),
+          legacyUnowned,
         };
         this.tunnels.set(tunnel.id, tunnel);
       }
-      this.db.run("UPDATE tunnels SET status = 'inactive' WHERE status NOT IN ('inactive', 'paused')");
+      const persist = () => {
+        for (const id of liveAtShutdown) {
+          this.db.run('UPDATE tunnels SET last_activity = ? WHERE id = ?', [loadedAt, id]);
+        }
+        this.db.run("UPDATE tunnels SET status = 'inactive' WHERE status NOT IN ('inactive', 'paused')");
+      };
+      if (liveAtShutdown.length > 0 && typeof this.db.transaction === 'function') this.db.transaction(persist);
+      else persist();
       log.info(`Loaded ${rows.length} tunnel(s) from database`);
     } catch (err) {
       log.error('Failed to load tunnels from DB', { error: err });
@@ -317,7 +348,9 @@ class TunnelManager extends EventEmitter {
 
   /**
    * Remove 'inactive' tunnels whose last activity (or creation) is older than
-   * maxIdleMs. Active and paused tunnels are never removed. Returns the count.
+   * maxIdleMs. Active and paused tunnels are never removed. A pre-2.0 record
+   * (never claimed, no last_activity) is idle at most since this process
+   * started. Returns the count.
    */
   cleanupIdleTunnels(maxIdleMs) {
     if (!(maxIdleMs > 0)) return 0;
@@ -325,7 +358,10 @@ class TunnelManager extends EventEmitter {
     let count = 0;
     for (const t of [...this.tunnels.values()]) {
       if (t.status !== 'inactive' || this._isLive(t)) continue;
-      const ts = parseTimestamp(t.lastActivity) ?? parseTimestamp(t.createdAt);
+      let ts = parseTimestamp(t.lastActivity) ?? parseTimestamp(t.createdAt);
+      // Its created_at can be years old; in-memory only, so the DB keeps
+      // last_activity NULL and the record stays claimable after a restart.
+      if (t.legacyUnowned) ts = Math.max(ts ?? 0, this._loadedAt);
       if (ts === null || ts >= cutoff) continue;
       if (this.removeTunnel(t.id, { closeWs: false })) count++;
     }
@@ -408,15 +444,25 @@ class TunnelManager extends EventEmitter {
   }
 
   /**
-   * Write accumulated connection/byte counters (and last_activity) of every
-   * tunnel with traffic since the last flush, in ONE transaction.
+   * Write accumulated connection/byte counters and last_activity in ONE
+   * transaction for every tunnel with traffic since the last flush, and for
+   * every tunnel with a connected device whose last_activity is older than
+   * activityRefreshMs (a connected device without traffic is not idle).
+   * options.touchLive: write every tunnel with a connected device (shutdown).
    * Returns the number of tunnels written.
    */
-  flushStats() {
-    if (this._dirty.size === 0) return 0;
-    const ids = [...this._dirty];
+  flushStats(options = {}) {
+    const touchLive = options.touchLive === true;
+    const nowMs = Date.now();
+    const ids = new Set(this._dirty);
     this._dirty.clear();
-    const now = new Date().toISOString();
+    for (const t of this.tunnels.values()) {
+      if (ids.has(t.id) || !this._isLive(t)) continue;
+      const last = parseTimestamp(t.lastActivity);
+      if (touchLive || last === null || last > nowMs || nowMs - last >= this.activityRefreshMs) ids.add(t.id);
+    }
+    if (ids.size === 0) return 0;
+    const now = new Date(nowMs).toISOString();
     const rows = [];
     for (const id of ids) {
       const t = this.tunnels.get(id);
@@ -462,8 +508,14 @@ class TunnelManager extends EventEmitter {
     t.lastActivity = new Date().toISOString();
     // Don't overwrite 'paused' — tunnel was manually stopped
     if (t.status !== 'paused') t.status = 'inactive';
-    this._dbRun('UPDATE tunnels SET status = ?, last_activity = ? WHERE id = ?',
-      [t.status, t.lastActivity, id], 'markDisconnected', id);
+    // During shutdown the connection closes because the server stops, not the
+    // device: the DB keeps the record as it was (live, last_activity written
+    // by beginShutdown) so the next start treats it as live at shutdown,
+    // exactly like after a crash (see _load).
+    if (!this._shuttingDown) {
+      this._dbRun('UPDATE tunnels SET status = ?, last_activity = ? WHERE id = ?',
+        [t.status, t.lastActivity, id], 'markDisconnected', id);
+    }
     t.clientWs = null;
     this.emit('tunnel:disconnected', { id });
   }
@@ -525,11 +577,25 @@ class TunnelManager extends EventEmitter {
     return true;
   }
 
-  /** Flush stats and stop timers (graceful shutdown). */
+  /**
+   * The server is shutting down; call it before the device connections are
+   * closed. Records last_activity of every tunnel whose device is still
+   * connected and keeps them marked live in the DB (disconnects are no longer
+   * persisted), so the next start treats them exactly like after a crash:
+   * they are kept until their devices reconnect, however long the downtime.
+   */
+  beginShutdown() {
+    if (this._shuttingDown || this._destroyed) return;
+    this.flushStats({ touchLive: true });
+    this._shuttingDown = true;
+  }
+
+  /** Graceful shutdown: stop the timer and flush stats (implies beginShutdown). */
   destroy() {
     if (this._destroyed) return;
     clearInterval(this._flushTimer);
-    this.flushStats();
+    this.flushStats({ touchLive: !this._shuttingDown });
+    this._shuttingDown = true;
     this._destroyed = true;
   }
 

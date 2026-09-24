@@ -10,7 +10,7 @@ const crypto = require('crypto');
 const { once } = require('events');
 const WebSocket = require('ws');
 const { FakeDevice } = require('./helpers/core-device');
-const { stripCookieDomain, hostnameOf } = require('../src/proxyServer');
+const { createProxyServer, stripCookieDomain, stripDashboardCookies, hostnameOf, hostnameOfUrl } = require('../src/proxyServer');
 
 const MiB = 1024 * 1024;
 
@@ -30,7 +30,10 @@ function createApp() {
       case '/cookies':
         res.setHeader('Set-Cookie', [
           'a=1; Domain=.test.local; Path=/; HttpOnly',
+          // A device must not set (toss) the dashboard's session cookies.
+          'tv_session=tossed; Path=/api',
           'b=2; path=/; domain=evil.example; Secure',
+          ' __Host-tv_session =tossed; Path=/; Secure',
           'c=3',
         ]);
         res.setHeader('Strict-Transport-Security', 'max-age=63072000; includeSubDomains');
@@ -38,6 +41,10 @@ function createApp() {
         res.setHeader('Connection', 'X-Hop');
         res.setHeader('X-Hop', 'must-be-dropped');
         res.setHeader('X-Keep', 'yes');
+        res.end('ok');
+        break;
+      case '/session-cookie-only':
+        res.setHeader('Set-Cookie', 'tv_session=tossed; Path=/');
         res.end('ok');
         break;
       case '/stream':
@@ -85,6 +92,7 @@ function createApp() {
   const wss = new WebSocket.Server({ noServer: true });
   wss.on('headers', (headers) => {
     headers.push('Set-Cookie: ws=1; Domain=.test.local; Path=/');
+    headers.push('Set-Cookie: tv_session=tossed; Path=/');
     headers.push('Strict-Transport-Security: max-age=1');
   });
   wss.on('connection', (ws) => {
@@ -93,7 +101,8 @@ function createApp() {
   server.on('upgrade', (req, socket, head) => {
     state.upgradeHeaders = req.headers;
     if (req.url === '/deny') {
-      socket.end('HTTP/1.1 403 Forbidden\r\nContent-Length: 6\r\nSet-Cookie: d=1; Domain=test.local\r\n\r\ndenied');
+      socket.end('HTTP/1.1 403 Forbidden\r\nContent-Length: 6\r\nSet-Cookie: d=1; Domain=test.local\r\n'
+        + 'Set-Cookie: __Host-tv_session=tossed; Path=/; Secure\r\n\r\ndenied');
       return;
     }
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
@@ -122,7 +131,14 @@ describe('HTTP tunnel proxy', () => {
   let reg;
 
   before(async () => {
-    h = await startHarness({ proxy: true, domain: 'test.local', idleTimeoutMs: 1500 });
+    h = await startHarness({
+      proxy: true,
+      domain: 'test.local',
+      idleTimeoutMs: 1500,
+      // The dashboard (as the plain-HTTP installer prints it) and one more dashboard name under DOMAIN.
+      publicUrl: 'http://198.51.100.7:4000',
+      dashboardHost: 'dash.test.local',
+    });
     app = createApp();
     appPort = await listen(app.server);
     device = new FakeDevice({ url: h.wsUrl, token: h.authToken });
@@ -173,6 +189,71 @@ describe('HTTP tunnel proxy', () => {
     }
   });
 
+  test('?tunnel=<id> and Host routing are refused on the dashboard host (PUBLIC_URL / dashboardHost)', async () => {
+    const path = `/hello?tunnel=${reg.tunnelId}`;
+    // Same host as the dashboard at http://198.51.100.7:4000 (cookies are not port-scoped).
+    for (const host of ['198.51.100.7:4001', '198.51.100.7', '198.51.100.7.:80']) {
+      assert.equal((await request(h.proxyPort, { host, path })).status, 404, host);
+    }
+    // Other hosts outside DOMAIN keep the fallback.
+    for (const host of ['198.51.100.8:4001', 'elsewhere.example']) {
+      assert.equal((await request(h.proxyPort, { host, path })).status, 200, host);
+    }
+    // Upgrades too.
+    const ws = new WebSocket(`ws://127.0.0.1:${h.proxyPort}/chat?tunnel=${reg.tunnelId}`, { headers: { Host: '198.51.100.7:4001' } });
+    ws.on('error', () => {});
+    const [, res] = await once(ws, 'unexpected-response');
+    assert.equal(res.statusCode, 404);
+    ws.terminate();
+    // A dashboard host under DOMAIN is not routed to a tunnel that registered that subdomain.
+    const d = new FakeDevice({ url: h.wsUrl, token: h.authToken });
+    await d.connect();
+    try {
+      const dashReg = await d.register({ localPort: appPort, protocol: 'http', subdomain: 'dash' });
+      assert.equal(dashReg.type, 'registered');
+      assert.equal((await request(h.proxyPort, { host: 'dash.test.local' })).status, 404);
+      assert.equal((await request(h.proxyPort, { host: 'x.example', path: `/hello?tunnel=${dashReg.tunnelId}` })).status, 200);
+    } finally {
+      await d.close();
+    }
+  });
+
+  test('dashboard session cookies are never forwarded to the device', async () => {
+    const cookiesSeen = async (headers) => {
+      const r = await request(h.proxyPort, { path: '/headers', headers });
+      assert.equal(r.status, 200);
+      return JSON.parse(r.body.toString()).headers.cookie;
+    };
+    assert.equal(await cookiesSeen({ Cookie: 'a=1; tv_session=X; __Host-tv_session=Y; b=2' }), 'a=1; b=2');
+    assert.equal(await cookiesSeen({ Cookie: 'tv_session=X' }), undefined, 'no Cookie header left');
+    assert.equal(await cookiesSeen({ Cookie: '__Host-tv_session=Y;tv_session=X' }), undefined);
+    // Several Cookie header lines (joined by the server) are filtered the same way.
+    assert.equal(await cookiesSeen({ Cookie: ['a=1; tv_session=X', '__Host-tv_session=Y; b=2'] }), 'a=1; b=2');
+    // Names are case-sensitive; similar names are not the dashboard's cookies.
+    assert.equal(await cookiesSeen({ Cookie: 'TV_SESSION=1; tv_session2=2; x_tv_session=3' }),
+      'TV_SESSION=1; tv_session2=2; x_tv_session=3');
+    assert.equal(await cookiesSeen({ Cookie: 'plain=1' }), 'plain=1');
+    // Also through the ?tunnel= fallback (the case where a browser would really send them).
+    const r = await request(h.proxyPort, {
+      host: '198.51.100.8:4001', path: `/headers?tunnel=${reg.tunnelId}`, headers: { Cookie: 'tv_session=X; keep=1' },
+    });
+    assert.equal(JSON.parse(r.body.toString()).headers.cookie, 'keep=1');
+  });
+
+  test('dashboard session cookies are never forwarded on WebSocket upgrades', async () => {
+    const upgradeCookie = async (cookie) => {
+      app.state.upgradeHeaders = null;
+      const ws = new WebSocket(`ws://127.0.0.1:${h.proxyPort}/chat`, { headers: { Host: 'app.test.local', Cookie: cookie } });
+      await once(ws, 'open');
+      const seen = app.state.upgradeHeaders.cookie;
+      ws.close();
+      await once(ws, 'close');
+      return seen;
+    };
+    assert.equal(await upgradeCookie('a=1; tv_session=X; __Host-tv_session=Y; b=2'), 'a=1; b=2');
+    assert.equal(await upgradeCookie('tv_session=X'), undefined);
+  });
+
   test('forwarding headers are regenerated (untrusted peer cannot spoof them)', async () => {
     const r = await request(h.proxyPort, {
       path: '/headers',
@@ -198,10 +279,13 @@ describe('HTTP tunnel proxy', () => {
     assert.equal(headers.connection, 'close');
   });
 
-  test('response headers: Set-Cookie passes with Domain stripped; HSTS/HPKP and hop-by-hop dropped', async () => {
+  test('response headers: Set-Cookie passes with Domain stripped (dashboard session cookies dropped); HSTS/HPKP and hop-by-hop dropped', async () => {
     const r = await request(h.proxyPort, { path: '/cookies' });
     assert.equal(r.status, 200);
     assert.deepEqual(r.headers['set-cookie'], ['a=1; Path=/; HttpOnly', 'b=2; path=/; Secure', 'c=3']);
+    const only = await request(h.proxyPort, { path: '/session-cookie-only' });
+    assert.equal(only.status, 200);
+    assert.equal(only.headers['set-cookie'], undefined);
     assert.equal(r.headers['strict-transport-security'], undefined);
     assert.equal(r.headers['public-key-pins'], undefined);
     assert.equal(r.headers['x-hop'], undefined);
@@ -380,4 +464,46 @@ test('stripCookieDomain / hostnameOf helpers', () => {
   assert.equal(hostnameOf('App.Test.Local:4001'), 'app.test.local');
   assert.equal(hostnameOf('[::1]:80'), '[::1]');
   assert.equal(hostnameOf(undefined), '');
+  assert.equal(hostnameOfUrl('https://Tunnel.Example.com:8443/dash'), 'tunnel.example.com');
+  assert.equal(hostnameOfUrl('http://[::1]:4000'), '[::1]');
+  assert.equal(hostnameOfUrl('http://198.51.100.7:4000/'), '198.51.100.7');
+  assert.equal(hostnameOfUrl('dash.example.com:4000'), 'dash.example.com');
+  assert.equal(hostnameOfUrl('https://'), '');
+  assert.equal(hostnameOfUrl(null), '');
+});
+
+test('stripDashboardCookies', () => {
+  assert.equal(stripDashboardCookies('a=1; tv_session=X; __Host-tv_session=Y; b=2'), 'a=1; b=2');
+  assert.equal(stripDashboardCookies('tv_session=X'), undefined);
+  assert.equal(stripDashboardCookies(' tv_session = X ;; '), undefined);
+  assert.equal(stripDashboardCookies(['a=1; tv_session=X', '__Host-tv_session=Y', 'b=2']), 'a=1; b=2');
+  assert.equal(stripDashboardCookies(['tv_session=X', '__Host-tv_session=Y']), undefined);
+  assert.equal(stripDashboardCookies('Tv_Session=1;a=2'), 'Tv_Session=1; a=2');
+  assert.equal(stripDashboardCookies(''), undefined);
+  assert.equal(stripDashboardCookies(undefined), undefined);
+});
+
+test('PUBLIC_URL (env) is the dashboard host when no publicUrl option is given', async (t) => {
+  const h = await startHarness({ proxy: false });
+  const app = createApp();
+  const appPort = await listen(app.server);
+  const saved = process.env.PUBLIC_URL;
+  process.env.PUBLIC_URL = 'https://Dash.Example.org';
+  let proxy;
+  let device;
+  t.after(async () => {
+    if (saved === undefined) delete process.env.PUBLIC_URL; else process.env.PUBLIC_URL = saved;
+    if (device) await device.terminate().catch(() => {});
+    await closeServer(proxy);
+    await h.close();
+    await closeServer(app.server);
+  });
+  proxy = createProxyServer(h.tunnelManager, h.connectionTracker, { tcpProxy: h.tcpProxy, domain: 'test.local' });
+  const proxyPort = await listen(proxy);
+  device = new FakeDevice({ url: h.wsUrl, token: h.authToken });
+  await device.connect();
+  const reg = await device.register({ localPort: appPort, protocol: 'http', subdomain: 'envapp' });
+  const path = `/hello?tunnel=${reg.tunnelId}`;
+  assert.equal((await request(proxyPort, { host: 'dash.example.org', path })).status, 404);
+  assert.equal((await request(proxyPort, { host: 'other.example.org', path })).status, 200);
 });
