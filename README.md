@@ -1,206 +1,165 @@
 # TunnelVault
 
-> Self-hosted SSH & TCP tunneling over WebSocket — like ngrok, but private.
+> Self-hosted SSH and TCP tunneling over WebSocket. Like ngrok, but on your own server.
 
----
+TunnelVault gives you SSH access to devices behind NAT, CGNAT or restrictive firewalls, such as Raspberry Pis, edge boxes, lab machines or home servers. You don't need port forwarding or a VPN, and no third-party relay sees your traffic. Each device keeps one outbound WebSocket connection open to your server. The server gives that device a fixed public TCP port and pipes connections through.
 
-## Schnellstart
-
-**1. Server deployen** (auf einem Linux-Server, z.B. EC2):
-```bash
-git clone https://github.com/TrainABit/ssh-tunnel.git ~/tunnelvault
-cd ~/tunnelvault
-sudo bash install-server.sh
-```
-Den Auth-Token am Ende der Ausgabe notieren.
-
-**2. Client-Token erstellen:**
-
-Dashboard öffnen: `http://SERVER-IP:4000` → Tokens → New Token (z.B. "Gerät A")
-
-**3. Client installieren** (auf dem Zielgerät):
-```bash
-git clone https://github.com/TrainABit/ssh-tunnel.git ~/tunnelvault
-cd ~/tunnelvault
-sudo bash install-client.sh --server ws://SERVER-IP:4000 --token CLIENT_TOKEN
-```
-
-Optional: mehrere Ports gleichzeitig tunneln (z.B. SSH + Web-Dashboard):
-```bash
-sudo bash install-client.sh --server ws://SERVER-IP:4000 --token CLIENT_TOKEN \
-  --extra-port 8080:tcp:dashboard
-```
-
-**4. Von überall verbinden:**
-
-Das Dashboard zeigt den zugewiesenen Port unter Tunnels:
-```bash
-ssh user@SERVER-IP -p PORT_AUS_DASHBOARD
-```
-
-> Firewall/Security Group muss eingehend TCP auf den Ports **22**, **4000**, **4001** und **10000–10999** freigeben.
-
----
-
-## Architektur
-
-```
-Beliebiges Gerät      EC2 Instanz
-──────────┐    ┌──────────────────────────────┐
-          │    │  Dashboard + API  (Port 4000) │
-ssh -p N  ├───▶│  TCP Proxy        (Port N)    │
-          │    │  HTTP Proxy       (Port 4001) │
-──────────┘    └────────────┬─────────────────┘
-                            │ WebSocket (persistent)
-                   ┌────────▼───────────┐
-                   │  TunnelVault       │
-                   │  Client (Gerät)    │
-                   │  läuft als systemd │
-                   └────────┬───────────┘
-                            │
-                   ┌────────▼───────────┐
-                   │  localhost:22      │
-                   │  (SSH / belieb.)   │
-                   └────────────────────┘
-```
-
-Der Client baut eine persistente WebSocket-Verbindung zum Server auf. Der Server weist einen Port zu (10000–10999) und piped eingehende TCP-Verbindungen durch den WebSocket zum Client.
+![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
+![Node.js 20](https://img.shields.io/badge/node-20.x-green.svg)
+![Platform: Linux](https://img.shields.io/badge/platform-linux-lightgrey.svg)
 
 ---
 
 ## Features
 
-- **TCP Tunneling** — beliebige TCP-Ports (SSH, Web-Dashboards, Datenbanken) durch WebSocket tunneln
-- **Multi-Port** — mehrere Ports pro Gerät über eine einzige Verbindung (`--extra-port`)
-- **Gruppierte Tunnel-Karten** — alle Tunnel eines Geräts erscheinen zusammen im Dashboard
-- **Web-SSH Terminal** — direkt aus dem Dashboard per Browser ins Gerät einloggen
-- **Named Client Tokens** — jedes Gerät bekommt ein eigenes Token; erscheint im Dashboard mit Gerätename
-- **Feste TCP-Ports** — Port bleibt über Reconnects und Neustarts hinweg gleich
-- **Systemd Service** — startet automatisch beim Boot, reconnectet bei Verbindungsabbruch
-- **Auto-Updater** — Server prüft alle 12h auf neue Commits und deployed automatisch
-- **Web Dashboard** — Echtzeit-Monitoring von Tunneln, Tokens, Sessions und Verbindungen
-- **Webhook-Benachrichtigungen** — ntfy, Slack, Discord oder generisches JSON bei Connect/Disconnect
-- **Sicherheit** — Token-Auth, Rate Limiting, Security Headers, Input Validation
+- **TCP tunneling over WebSocket.** Tunnel SSH, web dashboards, databases or any other TCP service. The device only needs outbound access.
+- **Multiple ports per device.** One connection carries several ports (`--extra-port 8080:tcp:dashboard`).
+- **Stable ports.** A device keeps its assigned port across reconnects and reboots.
+- **Browser SSH terminal.** Open a shell on any connected device straight from the dashboard.
+- **Named device tokens.** Every device gets its own token that you can revoke, and it shows up by name in the dashboard.
+- **Web dashboard.** Live view of tunnels, tokens, TCP sessions (with client IP and GeoIP), bytes transferred and connection history.
+- **Webhooks.** Connect and disconnect events go to ntfy, Slack, Discord or plain JSON.
+- **Unattended operation.** The client runs as a systemd service and reconnects with backoff. The server can update itself from Git every 12 hours.
+- **Hardening.** Token auth, rate limiting, security headers and input validation. Gateway SSH users are locked down with `ForceCommand`. Optional Nginx + Let's Encrypt TLS with a single flag.
 
----
+## How it works
 
-## Server-Deployment
+```
+ Your laptop          Your server (VPS / EC2 / on-prem)          Remote device (behind NAT)
+┌────────────┐       ┌──────────────────────────────────┐       ┌────────────────────┐
+│            │ ssh   │ TCP proxy          10000–10999   │  WS   │ TunnelVault client │
+│ ssh / web  ├──────▶│ HTTP proxy         4001          │◀──────┤ (systemd service)  │
+│            │ -p N  │ API + dashboard    4000          │ out-  │         │          │
+└────────────┘       │ SQLite: tokens, sessions, stats  │ bound │         ▼          │
+                     └──────────────────────────────────┘ only  │   localhost:22     │
+                                                                └────────────────────┘
+```
+
+1. The client opens a persistent WebSocket to the server and authenticates with its token.
+2. The server reserves a port from the pool (10000–10999 by default) and stores it for that token.
+3. A TCP connection that arrives on that port is multiplexed over the WebSocket to the client, which connects to the local target port (e.g. `22`).
+
+| Component | Path | Stack |
+|---|---|---|
+| Server (API, WebSocket hub, TCP/HTTP proxy) | `backend/` | Node.js, Express 5, `ws`, `ssh2`, better-sqlite3 |
+| Dashboard | `frontend/` | React + Vite |
+| Device client / CLI | `client/` | Node.js, `ws`, commander |
+| SSH gateway (`ForceCommand` router) | `gateway/` | Bash, OpenSSH |
+| Installers | `install-*.sh`, `uninstall-*.sh` | Bash, systemd |
+
+## Quick start
+
+**1. Deploy the server** on any Linux host (Ubuntu 22.04 recommended):
 
 ```bash
 git clone https://github.com/TrainABit/ssh-tunnel.git ~/tunnelvault
 cd ~/tunnelvault
-sudo bash install-server.sh --domain tunnel.example.com
+sudo bash install-server.sh
 ```
 
-Läuft auf jedem Linux-Server (Ubuntu 22.04 empfohlen) — lokal, EC2, VPS, etc.
+Save the admin auth token that the installer prints at the end.
 
-### install-server.sh Optionen
+**2. Create a device token.** Open `http://SERVER_IP:4000`, go to **Tokens → New Token** and give it a name (e.g. `office-pi`).
 
-| Flag | Beschreibung | Standard |
-|------|-------------|---------|
-| `--domain DOMAIN` | Server-Domain | `tunnel.local` |
-| `--auth-token TOKEN` | API Auth-Token | Auto-generiert |
-| `--port PORT` | API Server Port | `4000` |
-| `--proxy-port PORT` | Proxy Port | `4001` |
-| `--upgrade` | Upgrade (DB + Config behalten, Frontend neu bauen) | — |
-| `--tls` | Nginx + Let's Encrypt automatisch einrichten | — |
-
-### Server-Anforderungen
-
-| | Minimum | Empfohlen |
-|---|---------|-----------|
-| CPU / RAM | 1 vCPU, 1 GB | 2 vCPU, 2 GB |
-| OS | Ubuntu 22.04 LTS | Ubuntu 22.04 LTS |
-| Storage | 8 GB | 20 GB |
-
-### Firewall-Regeln
-
-| Port | Protokoll | Zweck |
-|------|-----------|-------|
-| 22 | TCP | Admin SSH auf den Server |
-| 4000 | TCP | API + Dashboard + WebSocket |
-| 4001 | TCP | HTTP Proxy |
-| 10000–10999 | TCP | TCP Tunnel Ports |
-| 80/443 | TCP | Optional: Nginx + TLS |
-
----
-
-## Client-Installation
-
-Client-Token im Dashboard anlegen (Tokens → New Token), dann auf dem Gerät:
+**3. Install the client on the device:**
 
 ```bash
 git clone https://github.com/TrainABit/ssh-tunnel.git ~/tunnelvault
 cd ~/tunnelvault
-sudo bash install-client.sh --server ws://SERVER-IP:4000 --token DEIN_TOKEN
+sudo bash install-client.sh --server ws://SERVER_IP:4000 --token DEVICE_TOKEN
 ```
 
-### install-client.sh Optionen
+**4. Connect from anywhere.** The dashboard shows the assigned port under **Tunnels**:
 
-| Flag | Beschreibung | Standard |
-|------|-------------|---------|
-| `--server URL` | WebSocket URL des Servers | erforderlich |
-| `--token TOKEN` | Client-Token aus dem Dashboard | erforderlich |
-| `--port PORT` | Lokaler Port (primär) | `22` |
-| `--protocol PROTO` | `tcp` oder `http` | `tcp` |
-| `--extra-port PORT:PROTO:NAME` | Zusätzlichen Port hinzufügen (wiederholbar) | — |
-| `--upgrade` | Client aktualisieren, Config + Service neu schreiben | — |
+```bash
+ssh user@SERVER_IP -p ASSIGNED_PORT
+```
 
-> **Upgrade über aktiven Tunnel:** Das Script kopiert alle Dateien zuerst ohne den Service zu stoppen, dann plant es einen Neustart in 30 Sekunden. Die SSH-Session trennt kurz und reconnectet automatisch.
+> Your firewall or security group must allow inbound TCP on **22**, **4000**, **4001** and **10000–10999**.
 
----
+## Server
 
-## Web Dashboard
+```bash
+sudo bash install-server.sh --domain tunnel.example.com --tls
+```
 
-| Seite | Beschreibung |
-|-------|-------------|
-| Dashboard | Übersicht, Verbindungshistorie, Live-Sessions |
-| Tunnels | Aktive Tunnel — mehrere Ports pro Gerät in einer Karte zusammengefasst |
-| Tokens | Tokens erstellen, aktivieren/deaktivieren, löschen |
-| Sessions | TCP Session-History mit Client-IP, Port, Dauer |
-| Connections | Aktive Verbindungen mit übertragenen Bytes |
-| Settings | Server-Konfiguration |
+| Flag | Description | Default |
+|---|---|---|
+| `--domain DOMAIN` | Public domain of the server | `tunnel.local` |
+| `--auth-token TOKEN` | Admin API token | generated |
+| `--port PORT` | API, dashboard and WebSocket port | `4000` |
+| `--proxy-port PORT` | HTTP proxy port | `4001` |
+| `--tls` | Set up Nginx and a Let's Encrypt certificate | off |
+| `--upgrade` | Update in place, keep database and config | — |
 
----
+**Requirements:** 1 vCPU / 1 GB RAM / 8 GB disk is enough (2 vCPU / 2 GB recommended). The installer sets up Node.js 20.
 
-## Konfiguration
+**Firewall**
 
-Alle Einstellungen via Environment Variables in `backend/.env`:
+| Port | Purpose |
+|---|---|
+| 22/tcp | Admin SSH and gateway SSH |
+| 4000/tcp | API, dashboard, WebSocket |
+| 4001/tcp | HTTP proxy |
+| 10000–10999/tcp | Tunnel ports |
+| 80, 443/tcp | Optional: Nginx + TLS |
 
-| Variable | Standard | Beschreibung |
-|----------|---------|-------------|
-| `PORT` | `4000` | API + WebSocket + Dashboard Port |
-| `PROXY_PORT` | `4001` | HTTP Proxy Port |
-| `DOMAIN` | `tunnel.local` | Domain für HTTP Tunnel URLs |
-| `AUTH_TOKEN` | — | Admin Auth-Token |
-| `TCP_PORT_MIN` | `10000` | Anfang des TCP Port-Bereichs |
-| `TCP_PORT_MAX` | `10999` | Ende des TCP Port-Bereichs |
-| `WEBHOOK_URL` | — | URL für Tunnel-Events (ntfy, Slack, Discord, JSON) |
-| `WEBHOOK_TYPE` | `json` | Webhook-Format |
+For a step-by-step AWS walkthrough with a hardening checklist, see [DEPLOYMENT.md](DEPLOYMENT.md).
 
-Token generieren:
+## Client
+
+```bash
+sudo bash install-client.sh --server ws://SERVER_IP:4000 --token DEVICE_TOKEN \
+  --extra-port 8080:tcp:dashboard
+```
+
+| Flag | Description | Default |
+|---|---|---|
+| `--server URL` | WebSocket URL of the server (`ws://` or `wss://`) | required |
+| `--token TOKEN` | Device token from the dashboard | required |
+| `--port PORT` | Primary local port | `22` |
+| `--protocol PROTO` | `tcp` or `http` | `tcp` |
+| `--extra-port PORT:PROTO:NAME` | Additional port, can be repeated | — |
+| `--user USER` | User the service runs as | — |
+| `--upgrade` | Update the client and rewrite config and service | — |
+
+The installer can upgrade the client through a live tunnel. It copies the new files without stopping the service and schedules a restart 30 seconds later. Your SSH session drops briefly and reconnects on its own.
+
+## Configuration
+
+The server reads `backend/.env`:
+
+| Variable | Default | Description |
+|---|---|---|
+| `PORT` | `4000` | API, dashboard and WebSocket |
+| `PROXY_PORT` | `4001` | HTTP proxy |
+| `DOMAIN` | `tunnel.local` | Domain for HTTP tunnel URLs |
+| `AUTH_TOKEN` | — | Admin token |
+| `TCP_PORT_MIN` / `TCP_PORT_MAX` | `10000` / `10999` | Tunnel port pool |
+| `WEBHOOK_URL` | — | Target for tunnel events |
+| `WEBHOOK_TYPE` | `json` | `json`, `ntfy`, `slack` or `discord` |
+
+Generate a strong token:
+
 ```bash
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
----
-
 ## Troubleshooting
 
-**Client verbindet nicht (ECONNREFUSED)**
-Firewall prüfen — Port 4000 muss eingehend freigegeben sein. Manche Unternehmensnetzwerke blockieren ausgehend Port 4000 → Gerät in einem anderen Netzwerk testen.
+| Symptom | Fix |
+|---|---|
+| Client fails with `ECONNREFUSED` | Port 4000 isn't reachable. Check the firewall. Some corporate networks block outbound 4000; use `--tls` and `wss://` on 443 instead. |
+| Tunnel is up but SSH fails | Check `journalctl -u tunnelvault-client -f` on the device, and make sure 10000–10999/tcp is open on the server. |
+| Dashboard shows an old UI after an update | Run `sudo bash install-server.sh --upgrade`, then hard-refresh the browser. |
+| Extra ports are missing after an upgrade | Run `sudo bash install-client.sh --upgrade --extra-port …` to rewrite the config and service. |
 
-**Tunnel aktiv, SSH schlägt fehl**
-`journalctl -u tunnelvault-client -f` auf dem Gerät prüfen. EC2 Security Group muss TCP 10000–10999 freigeben.
+## Security notes
 
-**Dashboard zeigt veraltete UI nach Update**
-`sudo bash install-server.sh --upgrade` ausführen, dann Browser hard-refresh (`Strg+Shift+R`).
+- Use `--tls` for anything beyond a lab setup, so tokens and traffic are encrypted between device and server.
+- Tunnel ports are publicly reachable. The service behind them (e.g. `sshd` with key-only auth) still has to be secure.
+- Revoke a device token in the dashboard to cut that device off immediately.
 
-**Port nach Upgrade noch hardcoded im Service**
-`sudo bash install-client.sh --upgrade --extra-port 8080:tcp:dashboard` — das überschreibt Config und Service-Datei.
+## License
 
----
-
-## Lizenz
-
-MIT
+[MIT](LICENSE) © Florian Groß
